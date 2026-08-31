@@ -87,7 +87,7 @@ function modelLabel(config: ModelConfig): string {
   return `${config.format}:${config.model || "auto"}`;
 }
 
-function traceStore(kb: KnowledgeBase): TraceStore {
+export function traceStore(kb: KnowledgeBase): TraceStore {
   return new TraceStore(kb.bundle.root);
 }
 

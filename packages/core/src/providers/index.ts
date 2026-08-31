@@ -11,6 +11,24 @@ export interface ModelConfig {
   apiKey: string;
   format: ApiFormat;
   model: string;
+  /**
+   * Extra fields merged into the chat-completion request body. Needed for
+   * server-specific knobs the AI SDK has no first-class option for — notably
+   * vLLM's `chat_template_kwargs`, which is how a reasoning budget is asked
+   * of a thinking model (see `thinkingBudgetBody`). Ignored by Anthropic.
+   */
+  extraBody?: Record<string, unknown>;
+}
+
+/**
+ * Request body asking a reasoning model to think within a token budget instead
+ * of at its default length. Long reasoning traces are the dominant generation
+ * cost of a short, grounded answer, so bounded thinking is much faster without
+ * dropping the grounding. Endpoints that do not implement it ignore the field.
+ */
+export function thinkingBudgetBody(budget: number): Record<string, unknown> {
+  if (!Number.isFinite(budget) || budget < 0) return {};
+  return { chat_template_kwargs: { thinking: true, thinking_budget: budget } };
 }
 
 const LEGACY_NOTICE =
@@ -116,6 +134,21 @@ function legacyConfig(env: NodeJS.ProcessEnv): ModelConfig | null {
   );
 }
 
+/**
+ * Request-body knobs shared by the primary and fallback configs:
+ * - `<p>THINKING_BUDGET`: cap the reasoning tokens of a thinking model.
+ * - `<p>MAX_OUTPUT_TOKENS`: hard ceiling per generation, so a model that loops
+ *   on its thinking channel cannot run an agent step for minutes.
+ */
+function envExtras(env: NodeJS.ProcessEnv, prefix = "LLM_"): Pick<ModelConfig, "extraBody"> | object {
+  const extra: Record<string, unknown> = {};
+  const budget = Number.parseInt(env[`${prefix}THINKING_BUDGET`] ?? "", 10);
+  if (Number.isFinite(budget) && budget >= 0) Object.assign(extra, thinkingBudgetBody(budget));
+  const cap = Number.parseInt(env[`${prefix}MAX_OUTPUT_TOKENS`] ?? "", 10);
+  if (Number.isFinite(cap) && cap > 0) extra.max_tokens = cap;
+  return Object.keys(extra).length ? { extraBody: extra } : {};
+}
+
 export function resolveModelConfig(env: NodeJS.ProcessEnv = process.env): ModelConfig {
   if (env.LLM_API_BASE_URL) {
     return {
@@ -123,6 +156,7 @@ export function resolveModelConfig(env: NodeJS.ProcessEnv = process.env): ModelC
       apiKey: env.LLM_API_KEY ?? "not-needed",
       format: parseFormat(env.LLM_API_FORMAT, "openai", "LLM_API_FORMAT"),
       model: env.LLM_MODEL ?? "",
+      ...envExtras(env),
     };
   }
 
@@ -141,6 +175,7 @@ export function resolveFallbackConfig(env: NodeJS.ProcessEnv = process.env): Mod
     apiKey: env.LLM_FALLBACK_API_KEY ?? "not-needed",
     format: parseFormat(env.LLM_FALLBACK_API_FORMAT, "openai", "LLM_FALLBACK_API_FORMAT"),
     model: env.LLM_FALLBACK_MODEL ?? "",
+    ...envExtras(env, "LLM_FALLBACK_"),
   };
 }
 
@@ -207,6 +242,14 @@ export async function createModel(cfg: ModelConfig): Promise<ResolvedLanguageMod
         name: "custom",
         baseURL: normalizeV1(cfg.baseURL),
         apiKey: cfg.apiKey,
+        ...(cfg.extraBody && Object.keys(cfg.extraBody).length
+          ? {
+              transformRequestBody: (args: Record<string, unknown>) => ({
+                ...args,
+                ...cfg.extraBody,
+              }),
+            }
+          : {}),
       })(model) as ResolvedLanguageModel;
   }
 }

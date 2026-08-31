@@ -4,12 +4,16 @@ import type { KnowledgeBase } from "../okf/index.js";
 import { parseDuration } from "../util/duration.js";
 import { runQuery, type AgentOptions, type QueryResult } from "./agent.js";
 import { hotLookup, recordHotQuery, type HotGenerate } from "./hot-memory.js";
+import { runRecall } from "./recall.js";
+import { traceStore } from "./agent.js";
+import { TraceRecorder } from "./trace.js";
 
 export interface CachedQueryResult extends QueryResult {
   /** True when the answer came from the exact cache (no agent run, no trace). */
   cached: boolean;
-  /** Which memory layer answered: exact cache, hot working set, or the deep agent. */
-  source: "cache" | "hot" | "deep";
+  /** Which memory layer answered: exact cache, hot working set, deterministic
+   * recall, or the deep agent. */
+  source: "cache" | "hot" | "recall" | "deep";
 }
 
 const MAX_ENTRIES = 200;
@@ -57,7 +61,8 @@ export async function runQueryCached(
   options: AgentOptions = {},
   // Injectable for tests.
   runner: typeof runQuery = runQuery,
-  hot: (kb: KnowledgeBase, q: string, o: AgentOptions, g?: HotGenerate) => Promise<string | null> = hotLookup
+  hot: (kb: KnowledgeBase, q: string, o: AgentOptions, g?: HotGenerate) => Promise<string | null> = hotLookup,
+  recall: typeof runRecall = runRecall
 ): Promise<CachedQueryResult> {
   if (process.env.QUERY_CACHE === "false") {
     return { ...(await runner(kb, question, options)), cached: false, source: "deep" };
@@ -89,15 +94,52 @@ export async function runQueryCached(
     return { ...result, cached: false, source: "hot" };
   }
 
-  // Layer 3: deep memory — the full agent loop. Its answer feeds the hot set.
-  const result = await runner(kb, question, options);
+  // Layer 3: deterministic recall — search + graph walk in code, then one
+  // tool-free generation. Answers the ordinary question in a single
+  // round-trip; returns null when retrieval looks too thin to trust, and then
+  // the deep agent's retry loop is still the backstop. The recorder is made
+  // before the call so the trace duration covers the retrieval and generation.
+  const recorder = new TraceRecorder();
+  const recalled = await recall(kb, question, options);
+  if (recalled.answer !== null) {
+    // Traced like any other query, with the retrieval it did as its single
+    // step — this is how a slow query is attributed to a layer later.
+    recorder.record("recall", question, recalled.paths);
+    const trace = recorder.finalize("query", question, recalled.answer, "success");
+    await traceStore(kb).save(trace).catch(() => {
+      /* a failed trace must not lose an answer */
+    });
+    const result: QueryResult = { answer: recalled.answer, steps: 1, traceId: trace.id };
+    store(key, result, ttl);
+    recordHotQuery(question, recalled.answer);
+    return { ...result, cached: false, source: "recall" };
+  }
+
+  // Layer 4: deep memory — the full agent loop. Its answer feeds the hot set.
+  // Anything recall already found is handed over, so a declined attempt buys
+  // the deep run a head start instead of costing an extra round-trip.
+  const result = await runner(kb, withCandidateHint(question, recalled.paths), options); // writes its own trace
   store(key, result, ttl);
   recordHotQuery(question, result.answer);
   return { ...result, cached: false, source: "deep" };
 }
 
-function store(key: string, result: QueryResult, ttl: number): void {
-  cache.set(key, { expiresAt: Date.now() + ttl, result });
+/**
+ * When deterministic recall declines, the deep agent inherits what was already
+ * found instead of repeating the search. Phrased as a head start, not a
+ * boundary — the deep loop must still widen on its own judgement.
+ */
+export function withCandidateHint(question: string, paths: string[]): string {
+  if (paths.length === 0) return question;
+  return (
+    `${question}\n\n[Retrieval hint] Keyword search and link expansion already ` +
+    `located these related concepts. Read them first with one read_concepts ` +
+    `call, then widen only if they do not answer the question:\n` +
+    paths.map((p) => `- ${p}`).join("\n")
+  );
+}
+
+function store(key: string, result: QueryResult, ttl: number): void {  cache.set(key, { expiresAt: Date.now() + ttl, result });
   while (cache.size > MAX_ENTRIES) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;

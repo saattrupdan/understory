@@ -43,11 +43,13 @@ export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
         if (hits.length > 0) return hits;
         // Keyword miss ≠ knowledge absent. Put the map in the tool result so
         // the model's next step is to read plausible concepts, not give up.
-        const tree = formatTree(await kb.listTree());
+        // Paths and types only: this lands in the transcript at every missed
+        // step, and descriptions would triple its cost for no navigation gain.
+        const tree = formatTree(await kb.listTree(), 0, false);
         return {
           hits: [],
           notice:
-            "No keyword matches — but this search is literal, not semantic. The knowledge may exist under different wording. Before concluding it is absent: (1) retry with 1-2 synonyms or broader terms, (2) review the layout below and read_concept ANY concept whose type, name, or description could plausibly relate to the question.",
+            "No keyword matches — but this search is literal, not semantic. The knowledge may exist under different wording. Before concluding it is absent: (1) retry with 1-2 synonyms or broader terms, (2) review the layout below and read_concepts ANY concepts whose type, name, or description could plausibly relate to the question — in one call, not one per step.",
           bundle_layout: tree,
         };
       },
@@ -59,6 +61,28 @@ export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
         const c = await kb.readConcept(path);
         trace?.record("read_concept", c.path, [c.path]);
         return { path: c.path, frontmatter: c.frontmatter, body: c.body };
+      },
+    }),
+    read_concepts: tool({
+      description:
+        "Read several concepts in one call. Preferred over repeated read_concept calls " +
+        "whenever more than one candidate is known — one step serves them all.",
+      inputSchema: z.object({
+        paths: z.array(conceptPath).min(1).max(12).describe("Concept paths to read together"),
+      }),
+      execute: async ({ paths }) => {
+        trace?.record("read_concepts", paths.slice(0, 3).join(", "), paths);
+        const concepts = [];
+        const missing: string[] = [];
+        for (const p of paths) {
+          try {
+            const c = await kb.readConcept(p);
+            concepts.push({ path: c.path, frontmatter: c.frontmatter, body: c.body });
+          } catch {
+            missing.push(p); // Reported rather than guessed at.
+          }
+        }
+        return { read: concepts, missing };
       },
     }),
     list_directory: tool({
@@ -162,16 +186,18 @@ export function buildWriteTools(kb: KnowledgeBase, filesChanged: Set<string>, tr
 }
 
 /** Compact indented listing for prompts and the list_directory tool. */
-export function formatTree(node: TreeNode, depth = 0): string {
+export function formatTree(node: TreeNode, depth = 0, descriptions = true): string {
   const lines: string[] = [];
   if (depth === 0) lines.push("/");
   for (const child of node.children ?? []) {
     const indent = "  ".repeat(depth + 1);
     if (child.kind === "directory") {
       lines.push(`${indent}${child.name}/`);
-      lines.push(formatTree(child, depth + 1));
+      lines.push(formatTree(child, depth + 1, descriptions));
     } else if (child.kind === "concept") {
-      const meta = [child.type, child.description].filter(Boolean).join(" — ");
+      const meta = [child.type, descriptions ? child.description : undefined]
+        .filter(Boolean)
+        .join(" — ");
       lines.push(`${indent}${child.name}${meta ? `  [${meta}]` : ""}`);
     }
   }

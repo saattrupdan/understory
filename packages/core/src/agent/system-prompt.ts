@@ -47,8 +47,10 @@ Answer the user's question from the knowledge base. Search, read the relevant co
 RETRIEVAL PROTOCOL — search is keyword-based, not semantic, so one empty search proves nothing:
 1. Search with the question's key terms.
 2. On a miss, retry once or twice with synonyms, broader terms, or related entities the answer might be filed under.
-3. Still nothing? Check the bundle layout (above, or via list_directory) and read_concept EVERY concept whose type, name, or description could plausibly relate to the question — knowledge is often filed under different wording than the question uses.
-4. Only after steps 1-3 may you answer that the knowledge base has no coverage; then suggest what concept could be added.`;
+3. Still nothing? Check the bundle layout (above, or via list_directory) and read EVERY concept whose type, name, or description could plausibly relate to the question — knowledge is often filed under different wording than the question uses.
+4. Only after steps 1-3 may you answer that the knowledge base has no coverage; then suggest what concept could be added.
+
+Every step is a full round-trip, so spend them: read several concepts in ONE read_concepts call rather than one read_concept per step, and never re-read a concept you have already read.`;
     case "mutate":
       return `## Your task mode: MUTATE
 

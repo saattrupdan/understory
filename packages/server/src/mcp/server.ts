@@ -41,7 +41,8 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
     },
     async ({ question }) => {
       const { answer, source } = await runQueryCached(kb, question);
-      const marker = source === "cache" ? "\n\n(cached answer)" : source === "hot" ? "\n\n(hot memory)" : "";
+      const marker =
+        source === "cache" ? "\n\n(cached answer)" : source === "hot" ? "\n\n(hot memory)" : source === "recall" ? "\n\n(recall)" : "";
       return {
         content: [{ type: "text", text: `${answer}${marker}` }],
       };
