@@ -3,8 +3,8 @@ import { promises as fs } from "node:fs";
 import type { KnowledgeBase } from "../okf/index.js";
 import { parseDuration } from "../util/duration.js";
 import { runQuery, type AgentOptions, type QueryResult } from "./agent.js";
-import { hotLookup, recordHotQuery, type HotGenerate } from "./hot-memory.js";
-import { runRecall } from "./recall.js";
+import { hotLookup, recordHotQuery } from "./hot-memory.js";
+import { runRecall, type RecallOutcome } from "./recall.js";
 import { traceStore } from "./agent.js";
 import { TraceRecorder } from "./trace.js";
 
@@ -61,7 +61,7 @@ export async function runQueryCached(
   options: AgentOptions = {},
   // Injectable for tests.
   runner: typeof runQuery = runQuery,
-  hot: (kb: KnowledgeBase, q: string, o: AgentOptions, g?: HotGenerate) => Promise<string | null> = hotLookup,
+  hot: typeof hotLookup = hotLookup,
   recall: typeof runRecall = runRecall
 ): Promise<CachedQueryResult> {
   if (process.env.QUERY_CACHE === "false") {
@@ -87,7 +87,23 @@ export async function runQueryCached(
   // Layer 2: hot working set — recently written concepts + recent answers,
   // one tool-free LLM call. A confident hot answer also lands in the exact
   // cache so identical repeats become instant.
-  const hotAnswer = await hot(kb, question, options);
+  //
+  // A layer that cannot reach its model may only cost the query the attempt.
+  // The deep agent is the one layer with a primary-then-fallback model chain
+  // (resolveAgentModel + withFallback in agent.ts), so a connection error or a
+  // non-retryable provider error thrown here used to unwind past it: the MCP
+  // layer in packages/server turned it into an isError tool result, the one
+  // layer that could still have answered never ran, and the query wrote no
+  // trace at all. Degrade instead — and say so in the log, which is the only
+  // place a swallowed layer failure is visible.
+  let hotAnswer: string | null = null;
+  try {
+    hotAnswer = await hot(kb, question, options);
+  } catch (err) {
+    console.error(
+      `[understory] hot memory failed, falling through to the next layer: ${errorMessage(err)}`
+    );
+  }
   if (hotAnswer !== null) {
     const result: QueryResult = { answer: hotAnswer, steps: 0, traceId: "" };
     store(key, result, ttl);
@@ -99,8 +115,25 @@ export async function runQueryCached(
   // round-trip; returns null when retrieval looks too thin to trust, and then
   // the deep agent's retry loop is still the backstop. The recorder is made
   // before the call so the trace duration covers the retrieval and generation.
+  //
+  // A throwing recall degrades exactly like a hot miss: the deep agent still
+  // gets the question. It is worth a trace, though — finalising that recorder
+  // with the failed outcome is what makes a broken layer show up in the trace
+  // store instead of vanishing, and the empty outcome keeps the candidate hint
+  // honest, since nothing was located.
   const recorder = new TraceRecorder();
-  const recalled = await recall(kb, question, options);
+  let recalled: RecallOutcome = { answer: null, paths: [] };
+  try {
+    recalled = await recall(kb, question, options);
+  } catch (err) {
+    console.error(
+      `[understory] recall failed, escalating to the deep agent: ${errorMessage(err)}`
+    );
+    const trace = recorder.finalize("query", question, errorMessage(err), "failed");
+    await traceStore(kb).save(trace).catch(() => {
+      /* a failed trace must not lose an answer */
+    });
+  }
   if (recalled.answer !== null) {
     // Traced like any other query, with the retrieval it did as its single
     // step — this is how a slow query is attributed to a layer later.
@@ -150,6 +183,10 @@ function store(key: string, result: QueryResult, ttl: number): void {  cache.set
 /** Test hook: reset module-level cache state. */
 export function clearQueryCache(): void {
   cache.clear();
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function normalize(question: string): string {
