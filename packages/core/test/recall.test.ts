@@ -22,8 +22,10 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   for (const k of ["RECALL", "RECALL_SEEDS", "RECALL_CANDIDATES", "RECALL_MIN_SCORE",
-    "LLM_THINKING_BUDGET"]) {
+    "RECALL_MAX_OUTPUT_TOKENS", "LLM_THINKING_BUDGET"]) {
     delete process.env[k];
   }
 });
@@ -36,7 +38,10 @@ describe("runRecall", () => {
       "We deploy on Fridays, after the review meeting.",
       "add"
     );
-    const generate = vi.fn(async () => "Fridays, after the review. Sources: /facts/deploy.md");
+    const generate = vi.fn(async () => ({
+      text: "Fridays, after the review. Sources: /facts/deploy.md",
+      finishReason: "stop" as const,
+    }));
 
     const result = await runRecall(kb, "when do we deploy cadence?", {}, generate);
 
@@ -45,7 +50,73 @@ describe("runRecall", () => {
     expect(generate).toHaveBeenCalledTimes(1);
     const prompt = generate.mock.calls[0][1] as string;
     expect(prompt).toContain("CONCEPT /facts/deploy.md");
-    expect(generate.mock.calls[0][3]).toMatchObject({ maxOutputTokens: 900 });
+    expect(generate.mock.calls[0][3]).toMatchObject({ maxOutputTokens: 2048 });
+  });
+
+  it("strips the verdict line from a complete answer", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays, after the review meeting.",
+      "add"
+    );
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nWe deploy on Fridays, after the review meeting.\nSources: /facts/deploy.md",
+      finishReason: "stop" as const,
+    }));
+
+    const result = await runRecall(kb, "when do we deploy cadence?", {}, generate);
+
+    expect(result.answer).toBe(
+      "We deploy on Fridays, after the review meeting.\nSources: /facts/deploy.md"
+    );
+  });
+
+  // The bug this layer used to have: on llama.cpp thinking tokens are billed
+  // against max_tokens, so the cap was hit mid-sentence and the fragment was
+  // returned as a success, cached for 24 h, and never escalated. A decline
+  // writes no trace, so the warning is the only signal it happened.
+  it("declines a truncated answer and warns, keeping the candidates", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays, after the review meeting, and the migration runs overnight.",
+      "add"
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nWe deploy on Fridays, after the review meeting and then the",
+      finishReason: "length" as const,
+    }));
+
+    const result = await runRecall(kb, "when do we deploy cadence?", {}, generate);
+
+    expect(result.answer).toBeNull();
+    expect(result.paths).toContain("/facts/deploy.md"); // still handed to the deep run
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0][0]);
+    expect(line).toContain("2048");
+    expect(line).toContain("RECALL_MAX_OUTPUT_TOKENS");
+    expect(line).toContain("when do we deploy cadence?");
+  });
+
+  it("names the configured cap in the truncation warning", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays.",
+      "add"
+    );
+    vi.stubEnv("RECALL_MAX_OUTPUT_TOKENS", "640");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nWe deploy on Fridays, after the review meeting and then the",
+      finishReason: "length" as const,
+    }));
+
+    expect((await runRecall(kb, "deploy cadence day?", {}, generate)).answer).toBeNull();
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain("640");
   });
 
   it("declines when the model reports the excerpts are not enough", async () => {
@@ -55,7 +126,7 @@ describe("runRecall", () => {
       "We deploy on Fridays.",
       "add"
     );
-    const generate = vi.fn(async () => "UNKNOWN");
+    const generate = vi.fn(async () => ({ text: "UNKNOWN", finishReason: "stop" as const }));
     const result = await runRecall(kb, "deploy day cadence", {}, generate);
     expect(result.answer).toBeNull();
     expect(result.paths).toContain("/facts/deploy.md"); // still handed to the deep run
@@ -63,7 +134,7 @@ describe("runRecall", () => {
 
   it("does not spend a generation when the literal match is too weak", async () => {
     await kb.writeConcept("/facts/odd.md", { type: "Fact", title: "Odd note" }, "A zebra once passed by.", "add");
-    const generate = vi.fn(async () => "should not run");
+    const generate = vi.fn(async () => ({ text: "should not run", finishReason: "stop" as const }));
     // One incidental body mention scores far below the confidence gate.
     const result = await runRecall(kb, "zebra", {}, generate);
     expect(result.answer).toBeNull();
@@ -86,7 +157,10 @@ describe("runRecall", () => {
       "Recall widens by walking one hop of the link graph.",
       "add"
     );
-    const generate = vi.fn(async () => "It walks one hop of the link graph. Sources: /facts/b.md");
+    const generate = vi.fn(async () => ({
+      text: "It walks one hop of the link graph. Sources: /facts/b.md",
+      finishReason: "stop" as const,
+    }));
 
     const result = await runRecall(kb, "how does retrieval work?", {}, generate);
 
@@ -97,9 +171,40 @@ describe("runRecall", () => {
   it("is disabled by RECALL=false", async () => {
     await kb.writeConcept("/facts/deploy.md", { type: "Fact", title: "Deploy" }, "Fridays.", "add");
     process.env.RECALL = "false";
-    const generate = vi.fn(async () => "should not run");
+    const generate = vi.fn(async () => ({ text: "should not run", finishReason: "stop" as const }));
     expect((await runRecall(kb, "deploy?", {}, generate)).answer).toBeNull();
     expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("asks for the 2048-token default cap when the env var is unset", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays.",
+      "add"
+    );
+    const generate = vi.fn(async () => ({ text: "Fridays.", finishReason: "stop" as const }));
+
+    await runRecall(kb, "deploy cadence day?", {}, generate);
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate.mock.calls[0][3].maxOutputTokens).toBeGreaterThanOrEqual(2048);
+  });
+
+  it("honours RECALL_MAX_OUTPUT_TOKENS", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays.",
+      "add"
+    );
+    vi.stubEnv("RECALL_MAX_OUTPUT_TOKENS", "640");
+    const generate = vi.fn(async () => ({ text: "Fridays.", finishReason: "stop" as const }));
+
+    await runRecall(kb, "deploy cadence day?", {}, generate);
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate.mock.calls[0][3].maxOutputTokens).toBe(640);
   });
 });
 
@@ -147,7 +252,10 @@ describe("runQueryCached layer order", () => {
       "add"
     );
     const runner = deep("should not run");
-    const generate = vi.fn(async () => "Fridays. Sources: /facts/deploy.md");
+    const generate = vi.fn(async () => ({
+      text: "Fridays. Sources: /facts/deploy.md",
+      finishReason: "stop" as const,
+    }));
 
     const result = await runQueryCached(
       kb,
@@ -163,6 +271,38 @@ describe("runQueryCached layer order", () => {
     const trace = stored.find((t) => t.id === result.traceId);
     expect(trace?.notation).toContain("recall");
     expect(runner).not.toHaveBeenCalled();
+  });
+
+  it("answers from the deep agent when recall is truncated, and caches that", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays, after the review meeting.",
+      "add"
+    );
+    const runner = deep("Fridays, after the review meeting, then the migration runs.");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nWe deploy on Fridays, after the review meeting and then the",
+      finishReason: "length" as const,
+    }));
+    const question = "deploy cadence day?";
+
+    const result = await runQueryCached(kb, question, {}, runner, noHot, (k, q, o) =>
+      runRecall(k, q, o, generate)
+    );
+
+    // The fragment is neither the answer nor cached: the deep run answers.
+    expect(result.source).toBe("deep");
+    expect(result.answer).toContain("migration runs");
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(runner.mock.calls[0][1]).toContain("/facts/deploy.md");
+
+    const again = await runQueryCached(kb, question, {}, runner, noHot, (k, q, o) =>
+      runRecall(k, q, o, generate)
+    );
+    expect(again.cached).toBe(true);
+    expect(again.answer).toBe(result.answer);
   });
 });
 
