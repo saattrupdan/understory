@@ -1,4 +1,5 @@
 import type { KnowledgeBase } from "../okf/index.js";
+import { capEnv } from "../util/env.js";
 import type { AgentOptions } from "./agent.js";
 
 /**
@@ -90,17 +91,6 @@ export type RecallGenerate = (
 function intEnv(value: string | undefined, fallback: number): number {
   const n = value === undefined ? NaN : Number.parseInt(value, 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
-/**
- * An output cap has to be strictly positive, which `intEnv` is not: 0 parses
- * fine and asks the endpoint for zero completion tokens, so every query would
- * burn one doomed generation and get nothing — the layer switched off with
- * extra latency on top. Same guard as the env cap in providers/index.ts.
- */
-function capEnv(value: string | undefined, fallback: number): number {
-  const n = value === undefined ? NaN : Number.parseInt(value, 10);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 /** Neighbour sets over the concept link graph (undirected, 1 hop). */

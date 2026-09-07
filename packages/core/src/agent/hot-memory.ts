@@ -1,6 +1,8 @@
 import type { KnowledgeBase } from "../okf/index.js";
 import { parseDuration } from "../util/duration.js";
+import { capEnv } from "../util/env.js";
 import type { AgentOptions } from "./agent.js";
+import type { RecallFinish, RecallGeneration } from "./recall.js";
 
 /**
  * Hot memory: a small working set of recently written concepts and recent
@@ -12,6 +14,21 @@ import type { AgentOptions } from "./agent.js";
  * - Hot concepts are stored as PATHS and read fresh at lookup — never stale.
  * - Hot Q&A pairs are purged on any write (the write may contradict them).
  * - Everything expires after HOT_MEMORY_TTL (default 1h).
+ *
+ * Tunables (all optional):
+ * - HOT_MEMORY=false                disable the layer entirely
+ * - HOT_MEMORY_TTL                  how long an entry stays hot (default 1h)
+ * - HOT_MEMORY_MAX_OUTPUT_TOKENS    generation cap, REASONING TOKENS INCLUDED
+ *                                   (default 2048)
+ *
+ * On the output cap: the evidence gathered for the recall layer applies here
+ * verbatim — llama.cpp bills thinking tokens against max_tokens and ignores
+ * every thinking knob — and it matters more here, because this layer runs
+ * first. With no cap of its own the only bound was whatever the server allows,
+ * and a reply cut off mid-sentence was returned as a confident answer: it
+ * short-circuited the recall layer and the deep agent both, and query-cache.ts
+ * wrote the fragment into the 24 h exact cache with no trace at all. So the cap
+ * is sent explicitly, and a run that hits it declines like any other miss.
  */
 
 interface HotQA {
@@ -24,6 +41,7 @@ const MAX_CONCEPTS = 10;
 const MAX_QAS = 10;
 const DEFAULT_TTL_MS = 3_600_000;
 const MAX_EXCERPT_CHARS = 1500;
+const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
 
 // Module-level: survives per-request McpServer instances (stateless HTTP).
 const hotConcepts = new Map<string, number>(); // path → touchedAt
@@ -60,11 +78,19 @@ export function clearHotMemory(): void {
   hotQAs = [];
 }
 
+/**
+ * The generation seam, deliberately the same shape the recall layer uses: the
+ * finish reason is the part that tells a truncated reply from a complete one,
+ * and a bare string cannot carry it. The two layers share the types so their
+ * handling of a truncated answer cannot drift apart.
+ */
 export type HotGenerate = (
   system: string,
   prompt: string,
-  options: AgentOptions
-) => Promise<string>;
+  options: AgentOptions,
+  /** Generation controls a tool-free call should honour. */
+  controls: { maxOutputTokens: number }
+) => Promise<RecallGeneration>;
 
 /**
  * Try to answer from the hot set. Returns the answer, or null when hot
@@ -112,17 +138,49 @@ export async function hotLookup(
     `answer confidently, reply with exactly: UNKNOWN`;
   const prompt = `RECENT MEMORY:\n\n${sections.join("\n\n---\n\n")}\n\nQUESTION: ${question}`;
 
-  const text = (await generate(system, prompt, options)).trim();
+  const maxOutputTokens = capEnv(
+    process.env.HOT_MEMORY_MAX_OUTPUT_TOKENS,
+    DEFAULT_MAX_OUTPUT_TOKENS
+  );
+  const generation = await generate(system, prompt, options, { maxOutputTokens });
+  const text = generation.text.trim();
+
+  // Ran out of output tokens: the reply is cut off mid-sentence and reads like
+  // a complete answer. Never pass one on — this layer answers before the two
+  // that were built to handle exactly this, and query-cache.ts would cache the
+  // fragment for 24 h. Declining is a normal miss, so no trace is written; the
+  // line below is the only signal the layer dropped an answer for this reason.
+  if (generation.finishReason === "length") {
+    console.error(
+      `[understory] hot memory declined: the generation hit its ${maxOutputTokens}-token output cap ` +
+        `(HOT_MEMORY_MAX_OUTPUT_TOKENS) and would have been a truncated answer: ` +
+        `"${question.slice(0, 80)}"`
+    );
+    return null;
+  }
+
   if (!text || /^UNKNOWN\b/i.test(text)) return null;
+  // An unrecognised finish reason with usable text: answer it, loudly. "other"
+  // is also where a provider that never reports a finish reason at all lands,
+  // so declining here would switch the layer off for that deployment; a request
+  // that really failed surfaces as a throw, not as this bucket. Same rule as
+  // the recall layer, so the two layers behave alike from the caller's seat.
+  if (generation.finishReason === "other") {
+    console.error(
+      `[understory] hot memory: the generation reported an unexpected finish reason; ` +
+        `answering with the text it did produce: "${question.slice(0, 80)}"`
+    );
+  }
   return text;
 }
 
 /**
- * One tool-free generation. Provider access is feature-detected so this file
- * works with both the current provider API (resolveModel) and the upcoming
- * generic-slots API (resolveModelConfig/createModel) without edits.
+ * One tool-free generation, capped like the recall layer's. Provider access is
+ * feature-detected so this file works with both the current provider API
+ * (resolveModel — not exported by providers/index.ts today, so that branch is
+ * dead code) and the generic-slots API (resolveModelConfig/createModel).
  */
-const defaultGenerate: HotGenerate = async (system, prompt, options) => {
+const defaultGenerate: HotGenerate = async (system, prompt, options, controls) => {
   /* eslint-disable @typescript-eslint/no-explicit-any */
   const providers: any = await import("../providers/index.js");
   let model;
@@ -130,9 +188,29 @@ const defaultGenerate: HotGenerate = async (system, prompt, options) => {
     model = await providers.resolveModel((options as any).provider, options.model);
   } else {
     const cfg = providers.resolveModelConfig(process.env);
-    model = await providers.createModel(options.model ? { ...cfg, model: options.model } : cfg);
+    model = await providers.createModel({
+      ...(options.model ? { ...cfg, model: options.model } : cfg),
+      // Sent as extraBody exactly as recall sends it: transformRequestBody
+      // applies it after the SDK writes max_tokens, so this wins over both the
+      // call-level option below and LLM_MAX_OUTPUT_TOKENS in the environment —
+      // HOT_MEMORY_MAX_OUTPUT_TOKENS is the knob that moves it. No thinking
+      // budget is set here; the layer has no such knob.
+      extraBody: { max_tokens: controls.maxOutputTokens },
+    });
   }
   const { generateText } = await import("ai");
-  const result = await generateText({ model, system, prompt, temperature: 0 });
-  return result.text;
+  const result = await generateText({
+    model,
+    system,
+    prompt,
+    temperature: 0,
+    // The only cap that would reach a model built without extraBody, i.e. the
+    // branch above that does not exist yet.
+    maxOutputTokens: controls.maxOutputTokens,
+  });
+  const finishReason: RecallFinish =
+    result.finishReason === "stop" || result.finishReason === "length"
+      ? result.finishReason
+      : "other";
+  return { text: result.text, finishReason };
 };
