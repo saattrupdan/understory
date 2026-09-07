@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { KnowledgeBase } from "../src/okf/index.js";
 import { bundleFingerprint, clearQueryCache, runQueryCached } from "../src/agent/query-cache.js";
+import { TraceStore } from "../src/agent/trace.js";
 import { clearHotMemory } from "../src/agent/hot-memory.js";
 import { parseDuration } from "../src/util/duration.js";
 import type { QueryResult } from "../src/agent/agent.js";
@@ -31,6 +32,7 @@ afterEach(async () => {
   delete process.env.QUERY_CACHE;
   delete process.env.QUERY_CACHE_TTL;
   delete process.env.HOT_MEMORY;
+  vi.restoreAllMocks();
 });
 
 describe("runQueryCached", () => {
@@ -98,5 +100,54 @@ describe("parseDuration", () => {
     expect(parseDuration("1d")).toBe(86_400_000);
     expect(parseDuration(undefined)).toBeNull();
     expect(parseDuration("soon")).toBeNull();
+  });
+});
+
+// A layer that cannot reach its model must cost the query nothing but the
+// attempt. Thrown out of the seam, an error unwinds past the deep agent — the
+// only layer with a primary-then-fallback model chain — and the MCP layer
+// answers with an isError tool result instead of an answer, with no trace.
+describe("runQueryCached degradation", () => {
+  function deep(answer: string) {
+    return vi.fn(async (): Promise<QueryResult> => ({ answer, steps: 9, traceId: "t" }));
+  }
+  const noHot = async () => null;
+
+  it("escalates to the deep agent when the recall seam throws, and traces it", async () => {
+    const runner = deep("deep answer");
+    const recall = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await runQueryCached(kb, "q?", {}, runner, noHot, recall);
+
+    expect(result.source).toBe("deep");
+    expect(result.answer).toBe("deep answer");
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(String(logged.mock.calls[0][0])).toContain("[understory]");
+
+    // The failed layer is visible in the trace store rather than vanishing.
+    const failed = (await new TraceStore(root).list()).find((t) => t.outcome === "failed");
+    expect(failed).toBeTruthy();
+    expect(failed!.kind).toBe("query");
+    expect(failed!.input).toContain("q?");
+    expect(failed!.answer).toContain("connection refused");
+  });
+
+  it("falls through to the next layer when the hot seam throws", async () => {
+    const runner = deep("deep answer");
+    const hot = vi.fn(async () => {
+      throw new Error("no route to host");
+    });
+    const recall = vi.fn(async () => ({ answer: "recall answer", paths: [] as string[] }));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await runQueryCached(kb, "q?", {}, runner, hot, recall);
+
+    expect(result.answer).toBe("recall answer");
+    expect(result.source).toBe("recall");
+    expect(runner).not.toHaveBeenCalled();
+    expect(String(logged.mock.calls[0][0])).toContain("[understory]");
   });
 });

@@ -1,4 +1,5 @@
 import type { KnowledgeBase } from "../okf/index.js";
+import { capEnv } from "../util/env.js";
 import type { AgentOptions } from "./agent.js";
 
 /**
@@ -172,7 +173,7 @@ export async function runRecall(
     `else at all.`;
   const prompt = `CONCEPTS:\n\n${sections.join("\n\n---\n\n")}\n\nQUESTION: ${question}`;
 
-  const maxOutputTokens = intEnv(process.env.RECALL_MAX_OUTPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS);
+  const maxOutputTokens = capEnv(process.env.RECALL_MAX_OUTPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS);
   const generation = await generate(system, prompt, options, {
     maxOutputTokens,
     thinkingBudget: intEnv(process.env.RECALL_THINKING_BUDGET, DEFAULT_THINKING_BUDGET),
@@ -187,8 +188,8 @@ export async function runRecall(
   // this reason: a decline writes no trace at all, because the TraceRecorder
   // built in query-cache.ts is discarded when the answer comes back null.
   if (generation.finishReason === "length") {
-    console.warn(
-      `[recall] declined: the generation hit its ${maxOutputTokens}-token output cap ` +
+    console.error(
+      `[understory] recall declined: the generation hit its ${maxOutputTokens}-token output cap ` +
         `(RECALL_MAX_OUTPUT_TOKENS) and would have been a truncated answer: ` +
         `"${question.slice(0, 80)}"`
     );
@@ -200,6 +201,18 @@ export async function runRecall(
   if (/^\s*UNKNOWN\b/i.test(text)) return { answer: null, paths };
   const answer = text.replace(/^\s*SUFFICIENT\s*\n?/i, "").trim();
   if (!answer) return { answer: null, paths };
+  // An unrecognised finish reason with usable text: answer it, loudly.
+  // Declining here would be the mirror image of the truncation bug above.
+  // "other" is also where a provider that never reports a finish reason at all
+  // lands, so treating it as a failure would switch recall off entirely for
+  // that deployment and quietly hand every question to the deep agent. A
+  // request that really failed surfaces as a throw, not as this bucket.
+  if (generation.finishReason === "other") {
+    console.error(
+      `[understory] recall: the generation reported an unexpected finish reason; ` +
+        `answering with the text it did produce: "${question.slice(0, 80)}"`
+    );
+  }
   return { answer, paths };
 }
 
@@ -228,9 +241,14 @@ const defaultGenerate: RecallGenerate = async (system, prompt, options, controls
     system,
     prompt,
     temperature: 0,
-    // The cap on the call itself as well as in extraBody: the resolveModel
-    // branch above hands back a model built without our extraBody, so the
-    // spread in providers/index.ts would not reach it at all.
+    // The cap on the call as well as in extraBody. What each half does, said
+    // straight: providers/index.ts exports resolveModelConfig and createModel
+    // and no resolveModel at all, so the feature-detected branch above is dead
+    // code today; and on the branch that does run, extraBody is applied by
+    // transformRequestBody after the SDK has written max_tokens, so the spread
+    // in providers/index.ts wins over this option wherever both are set. The
+    // option stays because it is the only cap that would reach a model built
+    // without extraBody — which is precisely the branch that does not exist yet.
     maxOutputTokens: controls.maxOutputTokens,
   });
   return {

@@ -83,7 +83,7 @@ describe("runRecall", () => {
       "We deploy on Fridays, after the review meeting, and the migration runs overnight.",
       "add"
     );
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const generate = vi.fn(async () => ({
       text: "SUFFICIENT\nWe deploy on Fridays, after the review meeting and then the",
       finishReason: "length" as const,
@@ -93,8 +93,8 @@ describe("runRecall", () => {
 
     expect(result.answer).toBeNull();
     expect(result.paths).toContain("/facts/deploy.md"); // still handed to the deep run
-    expect(warn).toHaveBeenCalledTimes(1);
-    const line = String(warn.mock.calls[0][0]);
+    expect(logged).toHaveBeenCalledTimes(1);
+    const line = String(logged.mock.calls[0][0]);
     expect(line).toContain("2048");
     expect(line).toContain("RECALL_MAX_OUTPUT_TOKENS");
     expect(line).toContain("when do we deploy cadence?");
@@ -108,7 +108,7 @@ describe("runRecall", () => {
       "add"
     );
     vi.stubEnv("RECALL_MAX_OUTPUT_TOKENS", "640");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const generate = vi.fn(async () => ({
       text: "SUFFICIENT\nWe deploy on Fridays, after the review meeting and then the",
       finishReason: "length" as const,
@@ -116,7 +116,7 @@ describe("runRecall", () => {
 
     expect((await runRecall(kb, "deploy cadence day?", {}, generate)).answer).toBeNull();
     expect(generate).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0][0])).toContain("640");
+    expect(String(logged.mock.calls[0][0])).toContain("640");
   });
 
   it("declines when the model reports the excerpts are not enough", async () => {
@@ -188,9 +188,84 @@ describe("runRecall", () => {
     await runRecall(kb, "deploy cadence day?", {}, generate);
 
     expect(generate).toHaveBeenCalledTimes(1);
-    expect(generate.mock.calls[0][3].maxOutputTokens).toBeGreaterThanOrEqual(2048);
+    expect(generate.mock.calls[0][3].maxOutputTokens).toBe(2048);
   });
 
+  // The silent-success sibling of the truncation bug: "other" is the bucket a
+  // provider that never reports a finish reason lands on, so declining here
+  // would turn recall off for that whole deployment without a word. It answers,
+  // and the log line is what stops it from being silent.
+  it("answers an unrecognised finish reason and says so once", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays.",
+      "add"
+    );
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const generate = vi.fn(async () => ({
+      text: "Fridays, after the review. Sources: /facts/deploy.md",
+      finishReason: "other" as const,
+    }));
+
+    const result = await runRecall(kb, "when do we deploy cadence?", {}, generate);
+
+    expect(result.answer).toContain("Fridays");
+    expect(logged).toHaveBeenCalledTimes(1);
+    expect(String(logged.mock.calls[0][0])).toContain("[understory]");
+  });
+
+  // The shape where reasoning ate the whole cap: nothing at all came back
+  // before the stop. Still a decline, and never an empty answer.
+  it("declines an empty completion cut off by the cap", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays.",
+      "add"
+    );
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const generate = vi.fn(async () => ({ text: "", finishReason: "length" as const }));
+
+    const result = await runRecall(kb, "deploy cadence day?", {}, generate);
+
+    expect(result.answer).toBeNull();
+    expect(result.paths).toContain("/facts/deploy.md");
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(String(logged.mock.calls[0][0])).toContain("RECALL_MAX_OUTPUT_TOKENS");
+  });
+
+  it("logs nothing on a generation that completed", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays.",
+      "add"
+    );
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const generate = vi.fn(async () => ({ text: "Fridays.", finishReason: "stop" as const }));
+
+    expect((await runRecall(kb, "deploy cadence day?", {}, generate)).answer).toBe("Fridays.");
+    expect(logged).not.toHaveBeenCalled();
+  });
+
+  // intEnv accepts 0, and max_tokens 0 is a request every completion dies on:
+  // one doomed generation per query, i.e. the layer off with extra latency.
+  it("falls back to the default cap when RECALL_MAX_OUTPUT_TOKENS is not positive", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays.",
+      "add"
+    );
+    for (const raw of ["0", "-1"]) {
+      vi.stubEnv("RECALL_MAX_OUTPUT_TOKENS", raw);
+      const generate = vi.fn(async () => ({ text: "Fridays.", finishReason: "stop" as const }));
+
+      expect((await runRecall(kb, "deploy cadence day?", {}, generate)).answer).toBe("Fridays.");
+      expect(generate.mock.calls[0][3].maxOutputTokens).toBe(2048);
+    }
+  });
   it("honours RECALL_MAX_OUTPUT_TOKENS", async () => {
     await kb.writeConcept(
       "/facts/deploy.md",
@@ -281,7 +356,7 @@ describe("runQueryCached layer order", () => {
       "add"
     );
     const runner = deep("Fridays, after the review meeting, then the migration runs.");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const generate = vi.fn(async () => ({
       text: "SUFFICIENT\nWe deploy on Fridays, after the review meeting and then the",
       finishReason: "length" as const,
