@@ -32,6 +32,7 @@ const logSummary = z
 export interface ReadPage {
   path: string;
   frontmatter: Concept["frontmatter"];
+  frontmatter_truncated: boolean;
   body: string;
   offset: number;
   total_chars: number;
@@ -51,12 +52,102 @@ function readPage(concept: Concept, offset: number, maxChars: number): ReadPage 
   return {
     path: concept.path,
     frontmatter: concept.frontmatter,
+    frontmatter_truncated: false,
     body,
     offset,
     total_chars: concept.body.length,
     truncated,
     next_offset: truncated ? nextOffset : null,
   };
+}
+
+function boundedReadPage(
+  page: ReadPage,
+  bodyLimit: number,
+  budget: number,
+  state: AgentRunContext
+): ReadPage | undefined {
+  const emptyBodyPage = (
+    frontmatter: Concept["frontmatter"],
+    frontmatterTruncated: boolean
+  ): ReadPage => ({
+    path: page.path,
+    frontmatter,
+    frontmatter_truncated: frontmatterTruncated,
+    body: "",
+    offset: page.offset,
+    total_chars: page.total_chars,
+    truncated: page.offset < page.total_chars,
+    next_offset: page.offset < page.total_chars ? page.offset : null,
+  });
+
+  const sourceBody = page.body.slice(0, bodyLimit);
+  const minimumBodyPage = sourceBody.length
+    ? {
+        path: page.path,
+        frontmatter: {},
+        frontmatter_truncated: true,
+        body: sourceBody.slice(0, 1),
+        offset: page.offset,
+        total_chars: page.total_chars,
+        truncated: page.offset + 1 < page.total_chars,
+        next_offset: page.offset + 1 < page.total_chars ? page.offset + 1 : null,
+      }
+    : undefined;
+  let bestFrontmatter = {} as Concept["frontmatter"];
+  let low = 0;
+  let high = minimumBodyPage
+    ? Math.max(0, budget - JSON.stringify(minimumBodyPage).length)
+    : budget;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = state.fit(page.frontmatter, middle);
+    const frontmatter =
+      candidate && typeof candidate === "object" && !Array.isArray(candidate)
+        ? (candidate as Concept["frontmatter"])
+        : ({} as Concept["frontmatter"]);
+    if (JSON.stringify(emptyBodyPage(frontmatter, true)).length <= budget) {
+      bestFrontmatter = frontmatter;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  const frontmatterTruncated = JSON.stringify(bestFrontmatter) !== JSON.stringify(page.frontmatter);
+  const makePage = (body: string): ReadPage => {
+    const nextOffset = page.offset + body.length;
+    const truncated = nextOffset < page.total_chars;
+    return {
+      path: page.path,
+      frontmatter: bestFrontmatter,
+      frontmatter_truncated: frontmatterTruncated,
+      body,
+      offset: page.offset,
+      total_chars: page.total_chars,
+      truncated,
+      next_offset: truncated ? nextOffset : null,
+    };
+  };
+
+  if (sourceBody.length === 0) {
+    const empty = emptyBodyPage(bestFrontmatter, frontmatterTruncated);
+    return JSON.stringify(empty).length <= budget ? empty : undefined;
+  }
+
+  low = 1;
+  high = sourceBody.length;
+  let bestBody: string | undefined;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const body = sourceBody.slice(0, middle);
+    if (JSON.stringify(makePage(body)).length <= budget) {
+      bestBody = body;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return bestBody === undefined ? undefined : makePage(bestBody);
 }
 
 function boundText(text: string, maxChars: number): string {
@@ -122,7 +213,8 @@ export function buildReadTools(
         const c = await kb.readConcept(path);
         trace?.record("read_concept", c.path, [c.path]);
         const page = readPage(c, offset, state.maxDocumentChars);
-        const result = state.result(page);
+        const bounded = boundedReadPage(page, page.body.length, state.remaining, state);
+        const result = bounded === undefined ? state.exhausted() : state.consume(bounded);
         if (isReadPage(result)) {
           state.recordBodyPage(c.path, offset, c.body, page.body, result.body);
         }
@@ -138,34 +230,78 @@ export function buildReadTools(
       }),
       execute: async ({ paths }) => {
         trace?.record("read_concepts", paths.slice(0, 3).join(", "), paths);
-        const concepts: ReadPage[] = [];
-        const missing: string[] = [];
-        let returnedChars = 0;
-        let totalChars = 0;
         const sourceConcepts = new Map<string, Concept>();
         const sourcePages = new Map<string, ReadPage>();
+        const missing: string[] = [];
         for (const p of paths) {
           try {
             const c = await kb.readConcept(p);
             sourceConcepts.set(c.path, c);
-            totalChars += c.body.length;
-            const page = readPage(c, 0, state.maxDocumentChars);
-            sourcePages.set(c.path, page);
-            returnedChars += page.body.length;
-            concepts.push(page);
+            sourcePages.set(c.path, readPage(c, 0, state.maxDocumentChars));
           } catch {
             missing.push(p); // Reported rather than guessed at.
           }
         }
-        const result = state.result({
-          read: concepts,
+        const totalChars = [...sourceConcepts.values()].reduce(
+          (total, concept) => total + concept.body.length,
+          0
+        );
+        const base = {
+          read: [] as ReadPage[],
           missing,
-          returned_body_chars: returnedChars,
+          omitted: [] as string[],
+          returned_body_chars: 0,
           total_body_chars: totalChars,
-          truncated: returnedChars < totalChars,
+          truncated: false,
           max_body_chars: state.maxDocumentChars,
-        });
-        if (typeof result === "object" && result !== null && "read" in result && Array.isArray(result.read)) {
+          continuation:
+            "Page included bodies with each page's next_offset; retry omitted paths in a fresh request.",
+        };
+        if (JSON.stringify(base).length > state.remaining) return state.exhausted();
+
+        for (const path of paths) {
+          const source = sourceConcepts.get(path);
+          const page = sourcePages.get(path);
+          if (!source || !page) continue;
+          let low = page.body.length === 0 ? 0 : 1;
+          let high = page.body.length;
+          let best: ReadPage | undefined;
+          while (low <= high) {
+            const middle = Math.floor((low + high) / 2);
+            const candidate = boundedReadPage(page, middle, state.remaining, state);
+            if (!candidate) {
+              high = middle - 1;
+              continue;
+            }
+            const result = {
+              ...base,
+              read: [...base.read, candidate],
+              returned_body_chars: base.returned_body_chars + candidate.body.length,
+            };
+            if (JSON.stringify(result).length <= state.remaining) {
+              best = candidate;
+              low = middle + 1;
+            } else {
+              high = middle - 1;
+            }
+          }
+          if (best === undefined) {
+            base.omitted.push(path);
+            base.truncated = true;
+            continue;
+          }
+          base.read.push(best);
+          base.returned_body_chars += best.body.length;
+          base.truncated ||= best.truncated;
+        }
+        base.truncated ||= base.omitted.length > 0 || base.missing.length > 0;
+        const result = state.consume(base) ?? state.exhausted();
+        if (
+          typeof result === "object" &&
+          result !== null &&
+          "read" in result &&
+          Array.isArray(result.read)
+        ) {
           for (const page of result.read) {
             if (!isReadPage(page)) continue;
             const source = sourceConcepts.get(page.path);
