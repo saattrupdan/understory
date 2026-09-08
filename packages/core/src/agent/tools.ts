@@ -1,30 +1,47 @@
 import { tool } from "ai";
 import { z } from "zod";
-import type { KnowledgeBase } from "../okf/index.js";
+import { BundleError, type KnowledgeBase } from "../okf/index.js";
 import type { Concept, TreeNode } from "../okf/types.js";
 import type { TraceRecorder } from "./trace.js";
 import { recordHotDelete, recordHotWrite } from "./hot-memory.js";
 import { resolveAgentLimits } from "./limits.js";
 import { AgentRunContext } from "./run-context.js";
 
+const MAX_CONCEPT_PATH_CHARS = 512;
+const MAX_QUERY_CHARS = 2_048;
+const MAX_TYPE_CHARS = 256;
+const MAX_TAG_CHARS = 128;
+const MAX_TAGS = 32;
+const MAX_LOG_SUMMARY_CHARS = 1_000;
+
 /** Bundle-relative concept path, e.g. "/tables/customers.md". */
 const conceptPath = z
   .string()
-  .describe('Bundle-relative path starting with "/", ending in .md');
+  .max(MAX_CONCEPT_PATH_CHARS)
+  .regex(/^\/(?!\/).+\.md$/)
+  .refine((value) =>
+    value.split("/").slice(1).every((segment) => segment.length > 0 && segment !== "." && segment !== "..")
+  )
+  .describe('Canonical bundle-relative path starting with exactly one "/", ending in .md');
 
 const frontmatterSchema = z
   .object({
-    type: z.string().min(1).describe("Concept kind, e.g. 'API Endpoint'. Required."),
-    title: z.string().optional(),
-    description: z.string().optional().describe("One-line summary"),
-    resource: z.string().optional().describe("Canonical URI of the underlying asset"),
-    tags: z.array(z.string()).optional(),
+    type: z
+      .string()
+      .min(1)
+      .max(MAX_TYPE_CHARS)
+      .describe("Concept kind, e.g. 'API Endpoint'. Required."),
+    title: z.string().max(512).optional(),
+    description: z.string().max(4_000).optional().describe("One-line summary"),
+    resource: z.string().max(2_048).optional().describe("Canonical URI of the underlying asset"),
+    tags: z.array(z.string().max(MAX_TAG_CHARS)).max(MAX_TAGS).optional(),
   })
   .passthrough()
   .describe("YAML frontmatter. Additional producer-defined keys are allowed.");
 
 const logSummary = z
   .string()
+  .max(MAX_LOG_SUMMARY_CHARS)
   .describe(
     "One past-tense sentence for the update log, with bundle-relative links, e.g. 'Added [Billing API](/apis/billing-api.md).'"
   );
@@ -82,44 +99,87 @@ function boundedReadPage(
   });
 
   const sourceBody = page.body.slice(0, bodyLimit);
-  const minimumBodyPage = sourceBody.length
-    ? {
-        path: page.path,
-        frontmatter: {},
-        frontmatter_truncated: true,
-        body: sourceBody.slice(0, 1),
-        offset: page.offset,
-        total_chars: page.total_chars,
-        truncated: page.offset + 1 < page.total_chars,
-        next_offset: page.offset + 1 < page.total_chars ? page.offset + 1 : null,
-      }
-    : undefined;
-  let bestFrontmatter = {} as Concept["frontmatter"];
-  let low = 0;
-  let high = minimumBodyPage
-    ? Math.max(0, budget - JSON.stringify(minimumBodyPage).length)
-    : budget;
+  if (sourceBody.length === 0) {
+    const frontmatter = fitFrontmatter(budget);
+    if (!frontmatter) return undefined;
+    return emptyBodyPage(frontmatter.value, frontmatter.truncated);
+  }
+
+  // Reserve half of the practical result budget for the body before fitting
+  // frontmatter. At the defaults this is the complete 12k body page; with a
+  // small budget it still prevents metadata from consuming the whole page.
+  const reservedBody = Math.min(sourceBody.length, Math.max(1, Math.floor(budget / 2)));
+  let low = 1;
+  let high = sourceBody.length;
+  let best: { body: string; frontmatter: Concept["frontmatter"]; truncated: boolean } | undefined;
+
+  // First establish that the reserved quota fits. If metadata overhead leaves
+  // less room, reduce the body only as far as necessary to retain valid metadata.
+  const reserveFit = fitForBody(reservedBody);
+  if (reserveFit) best = reserveFit;
+  else {
+    high = reservedBody - 1;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const candidate = fitForBody(middle);
+      if (candidate) {
+        best = candidate;
+        low = middle + 1;
+      } else high = middle - 1;
+    }
+    if (!best) return undefined;
+    low = best.body.length + 1;
+    high = sourceBody.length;
+  }
+
+  // Once the body quota is secured, use remaining capacity for more body, not
+  // for restoring frontmatter. This makes large metadata fail soft.
   while (low <= high) {
     const middle = Math.floor((low + high) / 2);
-    const candidate = state.fit(page.frontmatter, middle);
-    const frontmatter =
-      candidate && typeof candidate === "object" && !Array.isArray(candidate)
-        ? (candidate as Concept["frontmatter"])
-        : ({} as Concept["frontmatter"]);
-    if (JSON.stringify(emptyBodyPage(frontmatter, true)).length <= budget) {
-      bestFrontmatter = frontmatter;
+    const candidate = fitForBody(middle);
+    if (candidate) {
+      best = candidate;
       low = middle + 1;
-    } else {
-      high = middle - 1;
-    }
+    } else high = middle - 1;
   }
-  const frontmatterTruncated = JSON.stringify(bestFrontmatter) !== JSON.stringify(page.frontmatter);
-  const makePage = (body: string): ReadPage => {
+  return best ? makePage(best.body, best.frontmatter, best.truncated) : undefined;
+
+  function fitForBody(bodyLength: number):
+    | { body: string; frontmatter: Concept["frontmatter"]; truncated: boolean }
+    | undefined {
+    const body = sourceBody.slice(0, bodyLength);
+    let fmLow = 0;
+    let fmHigh = budget;
+    let bestFrontmatter = {} as Concept["frontmatter"];
+    while (fmLow <= fmHigh) {
+      const middle = Math.floor((fmLow + fmHigh) / 2);
+      const candidate = state.fit(page.frontmatter, middle);
+      const frontmatter =
+        candidate && typeof candidate === "object" && !Array.isArray(candidate)
+          ? (candidate as Concept["frontmatter"])
+          : ({} as Concept["frontmatter"]);
+      if (JSON.stringify(makePage(body, frontmatter, true)).length <= budget) {
+        bestFrontmatter = frontmatter;
+        fmLow = middle + 1;
+      } else fmHigh = middle - 1;
+    }
+    const truncated = JSON.stringify(bestFrontmatter) !== JSON.stringify(page.frontmatter);
+    const result = makePage(body, bestFrontmatter, truncated);
+    return JSON.stringify(result).length <= budget
+      ? { body, frontmatter: bestFrontmatter, truncated }
+      : undefined;
+  }
+
+  function makePage(
+    body: string,
+    frontmatter: Concept["frontmatter"],
+    frontmatterTruncated: boolean
+  ): ReadPage {
     const nextOffset = page.offset + body.length;
     const truncated = nextOffset < page.total_chars;
     return {
       path: page.path,
-      frontmatter: bestFrontmatter,
+      frontmatter,
       frontmatter_truncated: frontmatterTruncated,
       body,
       offset: page.offset,
@@ -127,27 +187,32 @@ function boundedReadPage(
       truncated,
       next_offset: truncated ? nextOffset : null,
     };
-  };
-
-  if (sourceBody.length === 0) {
-    const empty = emptyBodyPage(bestFrontmatter, frontmatterTruncated);
-    return JSON.stringify(empty).length <= budget ? empty : undefined;
   }
 
-  low = 1;
-  high = sourceBody.length;
-  let bestBody: string | undefined;
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    const body = sourceBody.slice(0, middle);
-    if (JSON.stringify(makePage(body)).length <= budget) {
-      bestBody = body;
-      low = middle + 1;
-    } else {
-      high = middle - 1;
+  function fitFrontmatter(
+    resultBudget: number
+  ): { value: Concept["frontmatter"]; truncated: boolean } | undefined {
+    let fmLow = 0;
+    let fmHigh = resultBudget;
+    let bestFrontmatter = {} as Concept["frontmatter"];
+    while (fmLow <= fmHigh) {
+      const middle = Math.floor((fmLow + fmHigh) / 2);
+      const candidate = state.fit(page.frontmatter, middle);
+      const frontmatter =
+        candidate && typeof candidate === "object" && !Array.isArray(candidate)
+          ? (candidate as Concept["frontmatter"])
+          : ({} as Concept["frontmatter"]);
+      if (JSON.stringify(emptyBodyPage(frontmatter, true)).length <= resultBudget) {
+        bestFrontmatter = frontmatter;
+        fmLow = middle + 1;
+      } else fmHigh = middle - 1;
     }
+    const truncated = JSON.stringify(bestFrontmatter) !== JSON.stringify(page.frontmatter);
+    const empty = emptyBodyPage(bestFrontmatter, truncated);
+    return JSON.stringify(empty).length <= resultBudget
+      ? { value: bestFrontmatter, truncated }
+      : undefined;
   }
-  return bestBody === undefined ? undefined : makePage(bestBody);
 }
 
 function boundText(text: string, maxChars: number): string {
@@ -163,6 +228,26 @@ function isReadPage(value: unknown): value is ReadPage {
   return typeof value === "object" && value !== null && "body" in value && typeof value.body === "string";
 }
 
+function isExpectedReadError(error: unknown): boolean {
+  return (
+    (error instanceof BundleError && error.code !== "INVALID_FRONTMATTER") ||
+    (error instanceof Error && error.message.startsWith("Invalid offset "))
+  );
+}
+
+function readError(path: string, error: unknown): {
+  path: string;
+  read: false;
+  error: { code: string };
+} {
+  const code = error instanceof BundleError ? error.code.toLowerCase() : "invalid_offset";
+  return { path: boundedConceptPath(path), read: false, error: { code } };
+}
+
+function boundedConceptPath(value: string): string {
+  return value.slice(0, MAX_CONCEPT_PATH_CHARS);
+}
+
 export function buildReadTools(
   kb: KnowledgeBase,
   trace?: TraceRecorder,
@@ -173,13 +258,24 @@ export function buildReadTools(
       description:
         "Search the knowledge base by keywords, optionally filtered by concept type and/or tags. Returns ranked hits with paths and snippets. NOTE: matching is keyword-based, not semantic — a miss does NOT mean the knowledge is absent; it may be worded differently.",
       inputSchema: z.object({
-        query: z.string().describe("Keywords to search for. May be empty when filtering by type/tags only."),
-        type: z.string().optional().describe("Exact concept type filter"),
-        tags: z.array(z.string()).optional().describe("Require ALL of these tags"),
+        query: z
+          .string()
+          .max(MAX_QUERY_CHARS)
+          .describe("Keywords to search for. May be empty when filtering by type/tags only."),
+        type: z.string().max(MAX_TYPE_CHARS).optional().describe("Exact concept type filter"),
+        tags: z
+          .array(z.string().max(MAX_TAG_CHARS))
+          .max(MAX_TAGS)
+          .optional()
+          .describe("Require ALL of these tags"),
       }),
       execute: async ({ query, type, tags }) => {
         const hits = await kb.search(query, { type, tags });
-        trace?.record("search_knowledge", query, hits.map((h) => h.path));
+        trace?.record(
+          "search_knowledge",
+          boundText(query, MAX_QUERY_CHARS),
+          hits.map((h) => boundedConceptPath(h.path))
+        );
         if (hits.length > 0) {
           return state.fits(hits)
             ? state.result(hits)
@@ -210,9 +306,21 @@ export function buildReadTools(
         offset: z.number().int().min(0).default(0).describe("Body character offset"),
       }),
       execute: async ({ path, offset = 0 }) => {
-        const c = await kb.readConcept(path);
+        let c: Concept;
+        try {
+          c = await kb.readConcept(path);
+        } catch (error) {
+          if (!isExpectedReadError(error)) throw error;
+          return state.result(readError(path, error));
+        }
         trace?.record("read_concept", c.path, [c.path]);
-        const page = readPage(c, offset, state.maxDocumentChars);
+        let page: ReadPage;
+        try {
+          page = readPage(c, offset, state.maxDocumentChars);
+        } catch (error) {
+          if (!isExpectedReadError(error)) throw error;
+          return state.result(readError(c.path, error));
+        }
         const bounded = boundedReadPage(page, page.body.length, state.remaining, state);
         const result = bounded === undefined ? state.exhausted() : state.consume(bounded);
         if (isReadPage(result)) {
@@ -229,17 +337,29 @@ export function buildReadTools(
         paths: z.array(conceptPath).min(1).max(12).describe("Concept paths to read together"),
       }),
       execute: async ({ paths }) => {
-        trace?.record("read_concepts", paths.slice(0, 3).join(", "), paths);
+        trace?.record(
+          "read_concepts",
+          paths.slice(0, 3).map((path) => boundedConceptPath(path)).join(", "),
+          paths.map((path) => boundedConceptPath(path))
+        );
         const sourceConcepts = new Map<string, Concept>();
         const sourcePages = new Map<string, ReadPage>();
+        const sourceByCanonicalPath = new Map<string, Concept>();
+        const sourcePagesByCanonicalPath = new Map<string, ReadPage>();
         const missing: string[] = [];
-        for (const p of paths) {
+        for (const requested of paths) {
           try {
-            const c = await kb.readConcept(p);
-            sourceConcepts.set(c.path, c);
-            sourcePages.set(c.path, readPage(c, 0, state.maxDocumentChars));
-          } catch {
-            missing.push(p); // Reported rather than guessed at.
+            const c = await kb.readConcept(requested);
+            const page = readPage(c, 0, state.maxDocumentChars);
+            // Keep the request key for allocation, but retain the canonical
+            // result path for callers and body-coverage bookkeeping.
+            sourceConcepts.set(requested, c);
+            sourcePages.set(requested, page);
+            sourceByCanonicalPath.set(c.path, c);
+            sourcePagesByCanonicalPath.set(c.path, page);
+          } catch (error) {
+            if (!isExpectedReadError(error)) throw error;
+            missing.push(boundedConceptPath(requested)); // Reported rather than guessed at.
           }
         }
         const totalChars = [...sourceConcepts.values()].reduce(
@@ -259,9 +379,9 @@ export function buildReadTools(
         };
         if (JSON.stringify(base).length > state.remaining) return state.exhausted();
 
-        for (const path of paths) {
-          const source = sourceConcepts.get(path);
-          const page = sourcePages.get(path);
+        for (const requested of paths) {
+          const source = sourceConcepts.get(requested);
+          const page = sourcePages.get(requested);
           if (!source || !page) continue;
           let low = page.body.length === 0 ? 0 : 1;
           let high = page.body.length;
@@ -286,7 +406,7 @@ export function buildReadTools(
             }
           }
           if (best === undefined) {
-            base.omitted.push(path);
+            base.omitted.push(boundedConceptPath(requested));
             base.truncated = true;
             continue;
           }
@@ -304,8 +424,8 @@ export function buildReadTools(
         ) {
           for (const page of result.read) {
             if (!isReadPage(page)) continue;
-            const source = sourceConcepts.get(page.path);
-            const sourcePage = sourcePages.get(page.path);
+            const source = sourceByCanonicalPath.get(page.path);
+            const sourcePage = sourcePagesByCanonicalPath.get(page.path);
             if (source && sourcePage) {
               state.recordBodyPage(source.path, 0, source.body, sourcePage.body, page.body);
             }

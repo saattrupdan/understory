@@ -101,7 +101,8 @@ export class Bundle {
   async writeConcept(
     bundlePath: string,
     frontmatter: ConceptFrontmatter,
-    body: string
+    body: string,
+    options: { exclusive?: boolean } = {}
   ): Promise<Concept> {
     const canonical = this.toBundlePath(bundlePath);
     this.assertConceptPath(canonical);
@@ -117,8 +118,12 @@ export class Bundle {
     };
     const abs = this.resolve(canonical);
     await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, serializeDoc(stamped, body), "utf-8");
-    return { path: canonical, frontmatter: stamped, body, raw: serializeDoc(stamped, body) };
+    const raw = serializeDoc(stamped, body);
+    await fs.writeFile(abs, raw, {
+      encoding: "utf-8",
+      flag: options.exclusive ? "wx" : "w",
+    });
+    return { path: canonical, frontmatter: stamped, body, raw };
   }
 
   /**

@@ -92,7 +92,11 @@ describe("agent context bounds", () => {
       expect(last).toMatchObject({ body: "89\n", truncated: false, next_offset: null });
       await expect(
         tools.read_concept!.execute!({ path: "/facts/long.md", offset: 12 }, toolContext)
-      ).rejects.toThrow("Invalid offset");
+      ).resolves.toMatchObject({
+        path: "/facts/long.md",
+        read: false,
+        error: { code: "invalid_offset" },
+      });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -286,8 +290,59 @@ describe("agent context bounds", () => {
       };
 
       expect(page.frontmatter_truncated).toBe(true);
-      expect(page.body).toBe("bod");
-      expect(page).toMatchObject({ offset: 0, total_chars: 13, truncated: true, next_offset: 3 });
+      expect(page.body.length).toBeGreaterThan(3);
+      expect(page).toMatchObject({ offset: 0, total_chars: 13, truncated: false, next_offset: null });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a useful body page when frontmatter exceeds the result budget", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
+    try {
+      const kb = new KnowledgeBase(root);
+      await kb.writeConcept(
+        "/facts/huge-frontmatter.md",
+        { type: "Fact", title: "x".repeat(30_000) },
+        "body ".repeat(4_000),
+        "add"
+      );
+      const tools = buildReadTools(kb);
+      const page = await tools.read_concept!.execute!(
+        { path: "/facts/huge-frontmatter.md" },
+        toolContext
+      ) as ReadPage;
+
+      expect(page.frontmatter_truncated).toBe(true);
+      expect(page.body.length).toBeGreaterThan(4_000);
+      expect(page.next_offset).toBe(page.body.length);
+      expect(JSON.stringify(page).length).toBeLessThanOrEqual(DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("meters compact missing and invalid-offset read results", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
+    try {
+      const kb = new KnowledgeBase(root);
+      await kb.writeConcept("/facts/read.md", { type: "Fact" }, "body", "add");
+      const state = new AgentRunContext({
+        maxSteps: 8,
+        maxDocumentChars: 1_000,
+        maxToolResultChars: 500,
+        maxSystemContextChars: 24_000,
+      });
+      const tools = buildReadTools(kb, undefined, state);
+      expect(
+        tools.read_concept!.inputSchema.safeParse({
+          path: "/facts/" + "x".repeat(600) + ".md",
+        }).success
+      ).toBe(false);
+      const before = state.remaining;
+      const missing = await tools.read_concept!.execute!({ path: "/facts/missing.md" }, toolContext);
+      expect(missing).toMatchObject({ read: false, error: { code: "not_found" } });
+      expect(state.remaining).toBeLessThan(before);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

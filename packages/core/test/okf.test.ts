@@ -14,6 +14,7 @@ import {
   searchBundle,
   lintBundle,
 } from "../src/okf/index.js";
+import { hashBody } from "../src/agent/run-context.js";
 
 let root: string;
 let kb: KnowledgeBase;
@@ -257,6 +258,39 @@ describe("graph export", () => {
 });
 
 describe("mutation serialization", () => {
+  it("serializes instances sharing one bundle root", async () => {
+    const first = new KnowledgeBase(root);
+    const second = new KnowledgeBase(path.join(root, "."));
+    const results = await Promise.allSettled([
+      first.createConcept("/same.md", { type: "T" }, "first", "first"),
+      second.createConcept("/same.md", { type: "T" }, "second", "second"),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    await expect(first.readConcept("/same.md")).resolves.toMatchObject({
+      body: expect.stringMatching(/^(first|second)\n$/),
+    });
+  });
+
+  it("checks a replace precondition inside the shared mutation queue", async () => {
+    const first = new KnowledgeBase(root);
+    const second = new KnowledgeBase(root);
+    await first.createConcept("/stale.md", { type: "T" }, "original", "initial");
+    const expected = hashBody("original\n");
+
+    const results = await Promise.allSettled([
+      first.patchConcept("/stale.md", { replaceBody: "first" }, "first", expected),
+      second.patchConcept("/stale.md", { replaceBody: "second" }, "second", expected),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    await expect(first.readConcept("/stale.md")).resolves.toMatchObject({
+      body: expect.stringMatching(/^(first|second)\n$/),
+    });
+  });
+
   it("concurrent writes all land and log all entries", async () => {
     await Promise.all(
       Array.from({ length: 8 }, (_, i) =>

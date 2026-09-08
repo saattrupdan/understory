@@ -31,7 +31,8 @@ export interface KnowledgeBaseOptions {
 export class KnowledgeBase {
   readonly bundle: Bundle;
   private readonly git: SimpleGit | null;
-  private mutationQueue: Promise<unknown> = Promise.resolve();
+  /** Queues are shared by every instance targeting the same resolved bundle root. */
+  private static readonly mutationQueues = new Map<string, Promise<void>>();
 
   constructor(bundleRoot: string, private readonly options: KnowledgeBaseOptions = {}) {
     this.bundle = new Bundle(bundleRoot);
@@ -75,6 +76,10 @@ export class KnowledgeBase {
   }
 
   // ── Mutations (serialized; auto index + log + optional commit) ──────
+  // The queue covers every instance in this process for one resolved root.
+  // `createConcept` additionally uses an exclusive filesystem create, so an
+  // external creator cannot overwrite it. Replace preconditions are not a
+  // cross-process CAS: external writers must provide their own coordination.
 
   createConcept(
     conceptPath: string,
@@ -87,7 +92,17 @@ export class KnowledgeBase {
       if (await this.bundle.exists(canonical)) {
         throw new Error(`Concept already exists: ${canonical}; use patch_concept`);
       }
-      const concept = await this.bundle.writeConcept(canonical, frontmatter, body);
+      let concept: Concept;
+      try {
+        // The existence check gives a useful error for the common case. `wx`
+        // also closes the race with a creator outside this process.
+        concept = await this.bundle.writeConcept(canonical, frontmatter, body, { exclusive: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error(`Concept already exists: ${canonical}; use patch_concept`);
+        }
+        throw error;
+      }
       await this.afterMutation(concept.path, "Creation", logSummary);
       return concept;
     });
@@ -136,8 +151,19 @@ export class KnowledgeBase {
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.mutationQueue.then(fn, fn);
-    this.mutationQueue = next.catch(() => {});
+    const key = this.bundle.root;
+    const previous = KnowledgeBase.mutationQueues.get(key) ?? Promise.resolve();
+    const next = previous.then(fn, fn);
+    const settled = next.then(
+      () => undefined,
+      () => undefined
+    );
+    const cleanup = settled.then(() => {
+      if (KnowledgeBase.mutationQueues.get(key) === cleanup) {
+        KnowledgeBase.mutationQueues.delete(key);
+      }
+    });
+    KnowledgeBase.mutationQueues.set(key, cleanup);
     return next;
   }
 
