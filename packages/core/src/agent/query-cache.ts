@@ -7,6 +7,10 @@ import { hotLookup, recordHotQuery } from "./hot-memory.js";
 import { runRecall, type RecallOutcome } from "./recall.js";
 import { traceStore } from "./agent.js";
 import { TraceRecorder } from "./trace.js";
+import {
+  assertInputWithinLimit,
+  resolveAgentLimits,
+} from "./limits.js";
 
 export interface CachedQueryResult extends QueryResult {
   /** True when the answer came from the exact cache (no agent run, no trace). */
@@ -64,6 +68,11 @@ export async function runQueryCached(
   hot: typeof hotLookup = hotLookup,
   recall: typeof runRecall = runRecall
 ): Promise<CachedQueryResult> {
+  assertInputWithinLimit(
+    question,
+    resolveAgentLimits().maxInputChars,
+    "Query input"
+  );
   if (process.env.QUERY_CACHE === "false") {
     return { ...(await runner(kb, question, options)), cached: false, source: "deep" };
   }

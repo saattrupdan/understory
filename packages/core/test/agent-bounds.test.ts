@@ -9,6 +9,7 @@ import { buildReadTools, buildWriteTools, formatTree } from "../src/agent/tools.
 import { AgentRunContext } from "../src/agent/run-context.js";
 import {
   DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
+  DEFAULT_AGENT_MAX_INPUT_CHARS,
   DEFAULT_AGENT_MAX_STEPS,
   DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
   DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
@@ -31,6 +32,7 @@ describe("agent context bounds", () => {
       maxDocumentChars: DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
       maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
       maxSystemContextChars: DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+      maxInputChars: DEFAULT_AGENT_MAX_INPUT_CHARS,
     });
     expect(
       resolveAgentLimits({
@@ -43,6 +45,7 @@ describe("agent context bounds", () => {
       maxDocumentChars: DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
       maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
       maxSystemContextChars: DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+      maxInputChars: DEFAULT_AGENT_MAX_INPUT_CHARS,
     });
     expect(resolveAgentLimits({ AGENT_MAX_STEPS: "1" }).maxSteps).toBe(MIN_AGENT_MAX_STEPS);
     expect(
@@ -57,6 +60,7 @@ describe("agent context bounds", () => {
       maxDocumentChars: 400,
       maxToolResultChars: 900,
       maxSystemContextChars: 700,
+      maxInputChars: DEFAULT_AGENT_MAX_INPUT_CHARS,
     });
   });
 
@@ -485,6 +489,57 @@ describe("agent context bounds", () => {
       const listing = (await tools.list_directory!.execute!({}, toolContext)) as string;
       expect(listing).toContain("fact.md  [Fact]");
       expect(listing).not.toContain("A description");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects giant write fields and meters cumulative writes without blocking normal writes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
+    try {
+      const kb = new KnowledgeBase(root);
+      const state = new AgentRunContext({
+        maxSteps: 8,
+        maxDocumentChars: 1_000,
+        maxToolResultChars: 10_000,
+        maxSystemContextChars: 24_000,
+        maxInputChars: 180,
+      });
+      const writes = buildWriteTools(kb, new Set(), undefined, state);
+      const giant = "x".repeat(1_000_000);
+      expect(
+        writes.write_concept!.inputSchema.safeParse({
+          path: "/facts/giant.md",
+          frontmatter: { type: "Fact", nested: { payload: giant } },
+          body: "small",
+          log_summary: "Added giant.",
+        }).success
+      ).toBe(false);
+      await expect(
+        writes.write_concept!.execute!({
+          path: "/facts/giant.md",
+          frontmatter: { type: "Fact", nested: { payload: giant } },
+          body: "small",
+          log_summary: "Added giant.",
+        }, toolContext)
+      ).rejects.toThrow("AGENT_MAX_INPUT_CHARS");
+
+      await writes.write_concept!.execute!({
+        path: "/facts/a.md",
+        frontmatter: { type: "Fact" },
+        body: "a".repeat(20),
+        log_summary: "Added a.",
+      }, toolContext);
+      await expect(
+        writes.write_concept!.execute!({
+          path: "/facts/b.md",
+          frontmatter: { type: "Fact" },
+          body: "b".repeat(20),
+          log_summary: "Added b.",
+        }, toolContext)
+      ).rejects.toThrow("AGENT_MAX_INPUT_CHARS");
+      await expect(kb.readConcept("/facts/a.md")).resolves.toBeDefined();
+      await expect(kb.readConcept("/facts/b.md")).rejects.toThrow();
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
