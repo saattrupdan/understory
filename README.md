@@ -217,3 +217,5 @@ pnpm --filter @understory/server exec tsx scripts/mcp-smoke.mts   # MCP stdio ro
 ## Environment
 
 See [.env.example](.env.example). `BUNDLE_ROOT` is required; `GIT_AUTOCOMMIT=true` commits every mutation.
+
+Agent context bounds are configurable with positive-integer settings: `AGENT_MAX_STEPS` (default 8 model/tool rounds per query, mutation, or chat turn), `AGENT_MAX_DOCUMENT_CHARS` (default 12000 characters per `read_concept` body page), and `AGENT_MAX_TOOL_RESULT_CHARS` (default 24000 combined body characters per `read_concepts` call). Invalid or non-positive values use the defaults. Large bodies return `next_offset` metadata so the agent can page safely; it must not use a truncated page for `replace_body`.
