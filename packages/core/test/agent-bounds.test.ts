@@ -11,6 +11,7 @@ import {
   DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
   DEFAULT_AGENT_MAX_STEPS,
   DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
+  DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
   MIN_AGENT_MAX_STEPS,
   resolveAgentLimits,
 } from "../src/agent/limits.js";
@@ -28,6 +29,7 @@ describe("agent context bounds", () => {
       maxSteps: DEFAULT_AGENT_MAX_STEPS,
       maxDocumentChars: DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
       maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
+      maxSystemContextChars: DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
     });
     expect(
       resolveAgentLimits({
@@ -39,6 +41,7 @@ describe("agent context bounds", () => {
       maxSteps: DEFAULT_AGENT_MAX_STEPS,
       maxDocumentChars: DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
       maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
+      maxSystemContextChars: DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
     });
     expect(resolveAgentLimits({ AGENT_MAX_STEPS: "1" }).maxSteps).toBe(MIN_AGENT_MAX_STEPS);
     expect(
@@ -46,8 +49,14 @@ describe("agent context bounds", () => {
         AGENT_MAX_STEPS: "3",
         AGENT_MAX_DOCUMENT_CHARS: "400",
         AGENT_MAX_TOOL_RESULT_CHARS: "900",
+        AGENT_MAX_SYSTEM_CONTEXT_CHARS: "700",
       })
-    ).toEqual({ maxSteps: 3, maxDocumentChars: 400, maxToolResultChars: 900 });
+    ).toEqual({
+      maxSteps: 3,
+      maxDocumentChars: 400,
+      maxToolResultChars: 900,
+      maxSystemContextChars: 700,
+    });
   });
 
   it("reserves the final step for synthesis", () => {
@@ -96,16 +105,19 @@ describe("agent context bounds", () => {
       await kb.writeConcept("/facts/a.md", { type: "Fact", title: "A" }, "abcdefghij", "add");
       await kb.writeConcept("/facts/b.md", { type: "Fact", title: "B" }, "klmnopqrst", "add");
       vi.stubEnv("AGENT_MAX_DOCUMENT_CHARS", "8");
-      vi.stubEnv("AGENT_MAX_TOOL_RESULT_CHARS", "12");
+      vi.stubEnv("AGENT_MAX_TOOL_RESULT_CHARS", "500");
       const tools = buildReadTools(kb);
       const out = (await tools.read_concepts!.execute!(
         { paths: ["/facts/a.md", "/facts/b.md"] },
         toolContext
       )) as { read: Array<{ frontmatter: { title?: string }; body: string }>; truncated: boolean; returned_body_chars: number };
 
-      expect(JSON.stringify(out).length).toBeLessThanOrEqual(12);
-      expect(out.read).toEqual([]);
-      expect(out.truncated).toBeUndefined();
+      expect(JSON.stringify(out).length).toBeLessThanOrEqual(500);
+      expect(out).toHaveProperty("missing");
+      expect(out).toHaveProperty("omitted");
+      expect(out).toHaveProperty("truncated");
+      expect(out).toHaveProperty("continuation");
+      expect(out.omitted).toContain("/facts/b.md");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -127,6 +139,7 @@ describe("agent context bounds", () => {
         maxSteps: 8,
         maxDocumentChars: 1_000,
         maxToolResultChars: 500,
+        maxSystemContextChars: 24_000,
       });
       const tools = buildReadTools(kb, undefined, state);
       const results = await Promise.all([
@@ -155,6 +168,7 @@ describe("agent context bounds", () => {
         maxSteps: 8,
         maxDocumentChars: 4,
         maxToolResultChars: 10_000,
+        maxSystemContextChars: 24_000,
       });
       const reads = buildReadTools(kb, undefined, state);
       const writes = buildWriteTools(kb, new Set(), undefined, state);
@@ -197,6 +211,83 @@ describe("agent context bounds", () => {
           log_summary: "Updated [a](/facts/a.md).",
         }, toolContext)
       ).rejects.toThrow("already exists");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds system context separately and keeps truncation markers", () => {
+    const state = new AgentRunContext({
+      maxSteps: 8,
+      maxDocumentChars: 12_000,
+      maxToolResultChars: 100_000,
+      maxSystemContextChars: 240,
+    });
+    const types = state.systemTypes(["type-" + "x".repeat(500)]);
+    const tree = state.systemTree("t".repeat(500));
+
+    expect(tree).toContain("system tree truncated");
+    expect(types.join(", ")).toContain("system types truncated");
+    expect(tree.length + types.join(", ").length).toBeLessThanOrEqual(240);
+    expect(state.remaining).toBe(100_000);
+  });
+
+  it("allows a default first page after system context", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
+    try {
+      const kb = new KnowledgeBase(root);
+      await kb.writeConcept("/facts/large.md", { type: "Fact" }, "x".repeat(12_000), "add");
+      const state = new AgentRunContext({
+        maxSteps: DEFAULT_AGENT_MAX_STEPS,
+        maxDocumentChars: DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
+        maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
+        maxSystemContextChars: DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+      });
+      state.systemTree("tree ".repeat(3_000));
+      state.systemTypes(["Fact", "Decision"]);
+      const tools = buildReadTools(kb, undefined, state);
+      const page = await tools.read_concept!.execute!({ path: "/facts/large.md" }, toolContext);
+
+      expect(page).toMatchObject({ path: "/facts/large.md", offset: 0, total_chars: 12_001 });
+      expect((page as { body: string }).body).toHaveLength(12_000);
+      expect(JSON.stringify(page).length).toBeLessThanOrEqual(DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retains page metadata when frontmatter is too large", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
+    try {
+      const kb = new KnowledgeBase(root);
+      await kb.writeConcept(
+        "/facts/large-frontmatter.md",
+        { type: "Fact", title: "x".repeat(5_000) },
+        "body content",
+        "add"
+      );
+      const state = new AgentRunContext({
+        maxSteps: 8,
+        maxDocumentChars: 1_000,
+        maxToolResultChars: 1_000,
+        maxSystemContextChars: 24_000,
+      });
+      const tools = buildReadTools(kb, undefined, state);
+      const page = await tools.read_concept!.execute!(
+        { path: "/facts/large-frontmatter.md" },
+        toolContext
+      ) as {
+        frontmatter_truncated: boolean;
+        body: string;
+        offset: number;
+        total_chars: number;
+        truncated: boolean;
+        next_offset: number | null;
+      };
+
+      expect(page.frontmatter_truncated).toBe(true);
+      expect(page.body).toBe("bod");
+      expect(page).toMatchObject({ offset: 0, total_chars: 13, truncated: true, next_offset: 3 });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

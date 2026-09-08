@@ -3,6 +3,7 @@ import type { AgentLimits } from "./limits.js";
 
 const EXHAUSTION_NOTICE = "Tool output budget exhausted; start a fresh request or raise the setting.";
 const EXHAUSTION_SERIALISED_LENGTH = JSON.stringify(EXHAUSTION_NOTICE).length;
+const SYSTEM_TREE_MARKER = "\n... [system tree truncated; search and list_directory remain available]";
 
 /** A body page observed by the agent during this run. */
 interface BodyRead {
@@ -20,18 +21,32 @@ interface BodyRead {
  */
 export class AgentRunContext {
   private remainingChars: number;
+  private remainingSystemChars: number;
   private readonly bodyReads = new Map<string, BodyRead>();
 
   constructor(private readonly limits: AgentLimits) {
     this.remainingChars = limits.maxToolResultChars;
+    this.remainingSystemChars = limits.maxSystemContextChars;
   }
 
   get remaining(): number {
     return this.remainingChars;
   }
 
+  get remainingSystemContext(): number {
+    return this.remainingSystemChars;
+  }
+
   fits(value: unknown): boolean {
     return serialisedLength(value) <= this.remainingChars;
+  }
+
+  /** Consume a complete, already structurally bounded tool result. */
+  consume<T>(value: T): T | undefined {
+    const length = serialisedLength(value);
+    if (length > this.remainingChars) return undefined;
+    this.remainingChars -= length;
+    return value;
   }
 
   /** Consume a value as the SDK will serialise it, truncating its structure first. */
@@ -61,20 +76,46 @@ export class AgentRunContext {
     return this.exhausted() as T;
   }
 
-  /** Reserve space for the compact tree embedded in the system prompt. */
+  /** Reserve space for dynamic system context, independently of tool results. */
   systemTree(tree: string): string {
-    const treeBudget =
-      this.remainingChars >= EXHAUSTION_SERIALISED_LENGTH
-        ? this.remainingChars - EXHAUSTION_SERIALISED_LENGTH
-        : this.remainingChars;
-    const source =
-      serialisedLength(tree) <= treeBudget
-        ? tree
-        : `${tree}\n... [system tree truncated; search and list_directory remain available]`;
-    const fitted = fitString(source, treeBudget);
-    if (fitted === undefined) return "";
-    this.remainingChars -= serialisedLength(fitted);
-    return fitted;
+    return this.consumeSystemText(tree, SYSTEM_TREE_MARKER);
+  }
+
+  /** Bound the type map embedded in the system prompt. */
+  systemTypes(types: string[]): string[] {
+    const value = types.join(", ");
+    const bounded = this.consumeSystemText(
+      value,
+      "\n... [system types truncated; search remains available]",
+      serialisedLength(SYSTEM_TREE_MARKER)
+    );
+    return bounded ? [bounded] : [];
+  }
+
+  private consumeSystemText(value: string, marker: string, reserveAfter = 0): string {
+    if (serialisedLength(value) <= this.remainingSystemChars - reserveAfter) {
+      this.remainingSystemChars -= serialisedLength(value);
+      return value;
+    }
+    const markerLength = serialisedLength(marker);
+    if (markerLength + reserveAfter > this.remainingSystemChars) {
+      return "";
+    }
+    let low = 0;
+    let high = value.length;
+    let best = marker;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const candidate = value.slice(0, middle) + marker;
+      if (serialisedLength(candidate) + reserveAfter <= this.remainingSystemChars) {
+        best = candidate;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    this.remainingSystemChars -= serialisedLength(best);
+    return best;
   }
 
   /** Return an explicit, bounded result when no useful payload remains. */
@@ -126,13 +167,19 @@ export class AgentRunContext {
   get maxDocumentChars(): number {
     return this.limits.maxDocumentChars;
   }
+
+  /** Fit a value without consuming the shared tool-result budget. */
+  fit<T>(value: T, budget: number): T | undefined {
+    return fitValue(value, budget) as T | undefined;
+  }
 }
+
 
 export function hashBody(body: string): string {
   return createHash("sha256").update(body).digest("hex");
 }
 
-function serialisedLength(value: unknown): number {
+export function serialisedLength(value: unknown): number {
   const encoded = JSON.stringify(value);
   return encoded === undefined ? 0 : encoded.length;
 }
@@ -156,7 +203,7 @@ function fitString(value: string, budget: number): string | undefined {
   return best;
 }
 
-function fitValue(value: unknown, budget: number): unknown {
+export function fitValue(value: unknown, budget: number): unknown {
   if (serialisedLength(value) <= budget) return value;
   if (budget < 2) return undefined;
   if (typeof value === "string") return fitString(value, budget);

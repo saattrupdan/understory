@@ -2,11 +2,13 @@ export const DEFAULT_AGENT_MAX_STEPS = 8;
 export const MIN_AGENT_MAX_STEPS = 2;
 export const DEFAULT_AGENT_MAX_DOCUMENT_CHARS = 12_000;
 export const DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS = 24_000;
+export const DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS = 24_000;
 
 export interface AgentLimits {
   maxSteps: number;
   maxDocumentChars: number;
   maxToolResultChars: number;
+  maxSystemContextChars: number;
 }
 
 /** Parse a positive integer setting, falling back for missing or invalid input. */
@@ -31,6 +33,10 @@ export function resolveAgentLimits(env: NodeJS.ProcessEnv = process.env): AgentL
     maxToolResultChars: positiveIntegerEnv(
       env.AGENT_MAX_TOOL_RESULT_CHARS,
       DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS
+    ),
+    maxSystemContextChars: positiveIntegerEnv(
+      env.AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+      DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS
     ),
   };
 }

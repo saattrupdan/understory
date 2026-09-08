@@ -46,7 +46,11 @@ async function promptContext(
   state: AgentRunContext
 ) {
   const [types, tree] = await Promise.all([kb.listTypes(), kb.listTree()]);
-  return { existingTypes: types, treeSummary: state.systemTree(formatTree(tree, 0, false)), mode };
+  return {
+    existingTypes: state.systemTypes(types),
+    treeSummary: state.systemTree(formatTree(tree, 0, false)),
+    mode,
+  };
 }
 
 async function resolveAgentModel(

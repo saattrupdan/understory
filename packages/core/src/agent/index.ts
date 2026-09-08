@@ -7,6 +7,7 @@ export {
   DEFAULT_AGENT_MAX_STEPS,
   MIN_AGENT_MAX_STEPS,
   DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
+  DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
   positiveIntegerEnv,
   resolveAgentLimits,
 } from "./limits.js";
