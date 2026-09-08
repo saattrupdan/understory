@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { simpleGit, type SimpleGit } from "simple-git";
 import { Bundle } from "./bundle.js";
 import { pruneEmptyDirs, regenerateIndexChain } from "./indexer.js";
@@ -75,6 +76,23 @@ export class KnowledgeBase {
 
   // ── Mutations (serialized; auto index + log + optional commit) ──────
 
+  createConcept(
+    conceptPath: string,
+    frontmatter: ConceptFrontmatter,
+    body: string,
+    logSummary: string
+  ): Promise<Concept> {
+    return this.enqueue(async () => {
+      const canonical = this.bundle.toBundlePath(conceptPath);
+      if (await this.bundle.exists(canonical)) {
+        throw new Error(`Concept already exists: ${canonical}; use patch_concept`);
+      }
+      const concept = await this.bundle.writeConcept(canonical, frontmatter, body);
+      await this.afterMutation(concept.path, "Creation", logSummary);
+      return concept;
+    });
+  }
+
   writeConcept(
     conceptPath: string,
     frontmatter: ConceptFrontmatter,
@@ -92,9 +110,17 @@ export class KnowledgeBase {
   patchConcept(
     conceptPath: string,
     changes: Parameters<Bundle["patchConcept"]>[1],
-    logSummary: string
+    logSummary: string,
+    expectedBodyHash?: string
   ): Promise<Concept> {
     return this.enqueue(async () => {
+      if (expectedBodyHash) {
+        const current = await this.bundle.readConcept(conceptPath);
+        const actual = hashBody(current.body);
+        if (actual !== expectedBodyHash) {
+          throw new Error(`Concept changed while it was being read: ${current.path}`);
+        }
+      }
       const concept = await this.bundle.patchConcept(conceptPath, changes);
       await this.afterMutation(concept.path, "Update", logSummary);
       return concept;
@@ -137,4 +163,8 @@ export class KnowledgeBase {
       }
     }
   }
+}
+
+function hashBody(body: string): string {
+  return createHash("sha256").update(body).digest("hex");
 }

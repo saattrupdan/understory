@@ -4,11 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { KnowledgeBase } from "../src/okf/index.js";
 import { buildSystemPrompt } from "../src/agent/system-prompt.js";
-import { buildReadTools, formatTree } from "../src/agent/tools.js";
+import { prepareFinalSynthesisStep } from "../src/agent/agent.js";
+import { buildReadTools, buildWriteTools, formatTree } from "../src/agent/tools.js";
+import { AgentRunContext } from "../src/agent/run-context.js";
 import {
   DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
   DEFAULT_AGENT_MAX_STEPS,
   DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
+  MIN_AGENT_MAX_STEPS,
   resolveAgentLimits,
 } from "../src/agent/limits.js";
 import type { TreeNode } from "../src/okf/types.js";
@@ -37,6 +40,7 @@ describe("agent context bounds", () => {
       maxDocumentChars: DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
       maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
     });
+    expect(resolveAgentLimits({ AGENT_MAX_STEPS: "1" }).maxSteps).toBe(MIN_AGENT_MAX_STEPS);
     expect(
       resolveAgentLimits({
         AGENT_MAX_STEPS: "3",
@@ -44,6 +48,12 @@ describe("agent context bounds", () => {
         AGENT_MAX_TOOL_RESULT_CHARS: "900",
       })
     ).toEqual({ maxSteps: 3, maxDocumentChars: 400, maxToolResultChars: 900 });
+  });
+
+  it("reserves the final step for synthesis", () => {
+    const prepare = prepareFinalSynthesisStep(2);
+    expect(prepare({ stepNumber: 0 })).toBeUndefined();
+    expect(prepare({ stepNumber: 1 })).toEqual({ activeTools: [] });
   });
 
   it("pages a concept and reports truncation metadata", async () => {
@@ -79,7 +89,7 @@ describe("agent context bounds", () => {
     }
   });
 
-  it("caps aggregate multi-read output while retaining frontmatter", async () => {
+  it("caps aggregate multi-read output as a serialised payload", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
     try {
       const kb = new KnowledgeBase(root);
@@ -93,10 +103,100 @@ describe("agent context bounds", () => {
         toolContext
       )) as { read: Array<{ frontmatter: { title?: string }; body: string }>; truncated: boolean; returned_body_chars: number };
 
-      expect(out.read).toHaveLength(2);
-      expect(out.read.map((c) => c.frontmatter.title)).toEqual(["A", "B"]);
-      expect(out.read.map((c) => c.body)).toEqual(["abcdefgh", "klmn"]);
-      expect(out).toMatchObject({ truncated: true, returned_body_chars: 12 });
+      expect(JSON.stringify(out).length).toBeLessThanOrEqual(12);
+      expect(out.read).toEqual([]);
+      expect(out.truncated).toBeUndefined();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps concurrent tool payloads within one shared budget", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
+    try {
+      const kb = new KnowledgeBase(root);
+      for (let index = 0; index < 20; index += 1) {
+        await kb.writeConcept(
+          `/facts/${index}.md`,
+          { type: "Fact", title: `A ${index}`, description: "x".repeat(400) },
+          "body " + "y".repeat(400),
+          "add"
+        );
+      }
+      const state = new AgentRunContext({
+        maxSteps: 8,
+        maxDocumentChars: 1_000,
+        maxToolResultChars: 500,
+      });
+      const tools = buildReadTools(kb, undefined, state);
+      const results = await Promise.all([
+        tools.read_concept!.execute!({ path: "/facts/0.md" }, toolContext),
+        tools.search_knowledge!.execute!({ query: "Fact" }, toolContext),
+        tools.list_directory!.execute!({}, toolContext),
+        tools.lint_knowledge!.execute!({}, toolContext),
+      ]);
+      const payloadChars = results.reduce(
+        (total, value) => total + (JSON.stringify(value)?.length ?? 0),
+        0
+      );
+      expect(payloadChars).toBeLessThanOrEqual(500);
+      expect(JSON.stringify(results[0])?.length ?? 0).toBeLessThanOrEqual(500);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires a complete current body for replace_body and rejects overwrite writes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
+    try {
+      const kb = new KnowledgeBase(root);
+      await kb.writeConcept("/facts/a.md", { type: "Fact" }, "abcdefghij", "add");
+      const state = new AgentRunContext({
+        maxSteps: 8,
+        maxDocumentChars: 4,
+        maxToolResultChars: 10_000,
+      });
+      const reads = buildReadTools(kb, undefined, state);
+      const writes = buildWriteTools(kb, new Set(), undefined, state);
+      await expect(
+        writes.patch_concept!.execute!({
+          path: "/facts/a.md",
+          replace_body: "new",
+          log_summary: "Updated [a](/facts/a.md).",
+        }, toolContext)
+      ).rejects.toThrow("complete, unchanged read");
+      const first = await reads.read_concept!.execute!({ path: "/facts/a.md" }, toolContext) as ReadPage;
+      expect(first.truncated).toBe(true);
+      await expect(
+        writes.patch_concept!.execute!({
+          path: "/facts/a.md",
+          replace_body: "new",
+          log_summary: "Updated [a](/facts/a.md).",
+        }, toolContext)
+      ).rejects.toThrow("complete, unchanged read");
+      await reads.read_concept!.execute!({ path: "/facts/a.md", offset: first.next_offset ?? 0 }, toolContext);
+      await reads.read_concept!.execute!({ path: "/facts/a.md", offset: 8 }, toolContext);
+      await writes.patch_concept!.execute!({
+        path: "/facts/a.md",
+        replace_body: "replaced",
+        log_summary: "Updated [a](/facts/a.md).",
+      }, toolContext);
+      await kb.writeConcept("/facts/a.md", { type: "Fact" }, "external", "external update");
+      await expect(
+        writes.patch_concept!.execute!({
+          path: "/facts/a.md",
+          replace_body: "stale",
+          log_summary: "Updated [a](/facts/a.md).",
+        }, toolContext)
+      ).rejects.toThrow("complete, unchanged read");
+      await expect(
+        writes.write_concept!.execute!({
+          path: "/facts/a.md",
+          frontmatter: { type: "Fact" },
+          body: "overwrite",
+          log_summary: "Updated [a](/facts/a.md).",
+        }, toolContext)
+      ).rejects.toThrow("already exists");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

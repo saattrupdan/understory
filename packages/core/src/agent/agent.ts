@@ -10,6 +10,7 @@ import { withFallback } from "../providers/fallback.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { buildReadTools, buildWriteTools, formatTree } from "./tools.js";
 import { resolveAgentLimits } from "./limits.js";
+import { AgentRunContext } from "./run-context.js";
 import { TraceRecorder, TraceStore, type TraceUsage } from "./trace.js";
 
 export interface AgentOptions {
@@ -39,9 +40,13 @@ interface ResolvedAgentModel {
   modelChain: string[];
 }
 
-async function promptContext(kb: KnowledgeBase, mode: "query" | "mutate" | "chat") {
+async function promptContext(
+  kb: KnowledgeBase,
+  mode: "query" | "mutate" | "chat",
+  state: AgentRunContext
+) {
   const [types, tree] = await Promise.all([kb.listTypes(), kb.listTree()]);
-  return { existingTypes: types, treeSummary: formatTree(tree, 0, false), mode };
+  return { existingTypes: types, treeSummary: state.systemTree(formatTree(tree, 0, false)), mode };
 }
 
 async function resolveAgentModel(
@@ -94,6 +99,19 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Disable tools on the final allowed generation so it can only synthesise. */
+export function prepareFinalSynthesisStep(maxSteps: number) {
+  return ({ stepNumber }: { stepNumber: number }) =>
+    stepNumber >= maxSteps - 1 ? { activeTools: [] } : undefined;
+}
+
+function assertSynthesised(steps: ReadonlyArray<{ toolCalls?: unknown[] }>): void {
+  const last = steps.at(-1);
+  if (last?.toolCalls && last.toolCalls.length > 0) {
+    throw new Error("Agent reached the step limit before producing a final answer");
+  }
+}
+
 /** Sum token usage across the run's steps (issue #15). Undefined when the provider reports none. */
 function sumStepsUsage(
   steps: ReadonlyArray<{ usage?: { inputTokens?: number; outputTokens?: number } }>
@@ -117,9 +135,11 @@ export async function runQuery(
   question: string,
   options: AgentOptions = {}
 ): Promise<QueryResult> {
-  const ctx = await promptContext(kb, "query");
+  const limits = resolveAgentLimits();
+  const state = new AgentRunContext(limits);
+  const ctx = await promptContext(kb, "query", state);
   const recorder = new TraceRecorder();
-  const maxSteps = resolveAgentLimits().maxSteps;
+  const maxSteps = limits.maxSteps;
   let modelChain: string[] = [];
   try {
     const resolved = await resolveAgentModel(options, "query");
@@ -128,9 +148,11 @@ export async function runQuery(
       model: resolved.model,
       system: buildSystemPrompt(ctx),
       prompt: question,
-      tools: buildReadTools(kb, recorder),
+      tools: buildReadTools(kb, recorder, state),
       stopWhen: stepCountIs(maxSteps),
+      prepareStep: prepareFinalSynthesisStep(maxSteps),
     });
+    assertSynthesised(result.steps);
     const trace = recorder.finalize("query", question, result.text, "success", modelChain, sumStepsUsage(result.steps));
     await traceStore(kb).save(trace);
     return { answer: result.text, steps: result.steps.length, traceId: trace.id };
@@ -147,9 +169,11 @@ export async function runMutation(
   instruction: string,
   options: AgentOptions = {}
 ): Promise<MutationOutcome> {
-  const ctx = await promptContext(kb, "mutate");
+  const limits = resolveAgentLimits();
+  const state = new AgentRunContext(limits);
+  const ctx = await promptContext(kb, "mutate", state);
   const recorder = new TraceRecorder();
-  const maxSteps = resolveAgentLimits().maxSteps;
+  const maxSteps = limits.maxSteps;
   const filesChanged = new Set<string>();
   let modelChain: string[] = [];
   try {
@@ -159,10 +183,15 @@ export async function runMutation(
       model: resolved.model,
       system: buildSystemPrompt(ctx),
       prompt: instruction,
-      tools: { ...buildReadTools(kb, recorder), ...buildWriteTools(kb, filesChanged, recorder) },
+      tools: {
+        ...buildReadTools(kb, recorder, state),
+        ...buildWriteTools(kb, filesChanged, recorder, state),
+      },
       stopWhen: stepCountIs(maxSteps),
+      prepareStep: prepareFinalSynthesisStep(maxSteps),
       temperature: 0.2,
     });
+    assertSynthesised(result.steps);
     const trace = recorder.finalize("mutation", instruction, result.text, "success", modelChain, sumStepsUsage(result.steps));
     await traceStore(kb).save(trace);
     return {
@@ -195,9 +224,11 @@ export async function streamChat(
   messages: ModelMessage[],
   options: AgentOptions = {}
 ) {
-  const ctx = await promptContext(kb, "chat");
+  const limits = resolveAgentLimits();
+  const state = new AgentRunContext(limits);
+  const ctx = await promptContext(kb, "chat", state);
   const recorder = new TraceRecorder();
-  const maxSteps = resolveAgentLimits().maxSteps;
+  const maxSteps = limits.maxSteps;
   const filesChanged = new Set<string>();
   let modelChain: string[] = [];
   // The user turn that started this run, for the trace record.
@@ -217,9 +248,14 @@ export async function streamChat(
       model: resolved.model,
       system: buildSystemPrompt(ctx),
       messages,
-      tools: { ...buildReadTools(kb, recorder), ...buildWriteTools(kb, filesChanged, recorder) },
+      tools: {
+        ...buildReadTools(kb, recorder, state),
+        ...buildWriteTools(kb, filesChanged, recorder, state),
+      },
       stopWhen: stepCountIs(maxSteps),
-      onFinish: async ({ text, totalUsage }) => {
+      prepareStep: prepareFinalSynthesisStep(maxSteps),
+      onFinish: async ({ text, totalUsage, steps }) => {
+        assertSynthesised(steps);
         // Persist only turns that actually touched the bundle.
         if (recorder.steps.length > 0) {
           const usage =
