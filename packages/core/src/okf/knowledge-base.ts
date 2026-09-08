@@ -1,5 +1,5 @@
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { sha256 } from "../util/hash.js";
 import { simpleGit, type SimpleGit } from "simple-git";
 import { Bundle } from "./bundle.js";
 import { pruneEmptyDirs, regenerateIndexChain } from "./indexer.js";
@@ -131,7 +131,7 @@ export class KnowledgeBase {
     return this.enqueue(async () => {
       if (expectedBodyHash) {
         const current = await this.bundle.readConcept(conceptPath);
-        const actual = hashBody(current.body);
+        const actual = sha256(current.body);
         if (actual !== expectedBodyHash) {
           throw new Error(`Concept changed while it was being read: ${current.path}`);
         }
@@ -189,8 +189,4 @@ export class KnowledgeBase {
       }
     }
   }
-}
-
-function hashBody(body: string): string {
-  return createHash("sha256").update(body).digest("hex");
 }

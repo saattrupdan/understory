@@ -12,6 +12,7 @@ import {
   DEFAULT_AGENT_MAX_STEPS,
   DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
   DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+  EXHAUSTION_SERIALISED_LENGTH,
   MIN_AGENT_MAX_STEPS,
   resolveAgentLimits,
 } from "../src/agent/limits.js";
@@ -102,6 +103,106 @@ describe("agent context bounds", () => {
     }
   });
 
+  it("never returns undefined after exhausting a paged run", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
+    try {
+      const body = "0123456789".repeat(2_600) + "\n";
+      const kb = new KnowledgeBase(root);
+      await kb.writeConcept("/facts/very-long.md", { type: "Fact" }, body, "add");
+      const state = new AgentRunContext({
+        maxSteps: 8,
+        maxDocumentChars: 12_000,
+        maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
+        maxSystemContextChars: DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+      });
+      const tools = buildReadTools(kb, undefined, state);
+      let offset = 0;
+      let exhausted = false;
+      for (let call = 0; call < 5; call += 1) {
+        const page = await tools.read_concept!.execute!({ path: "/facts/very-long.md", offset }, toolContext);
+        expect(page).not.toBeUndefined();
+        if (typeof page === "string") {
+          exhausted = true;
+          break;
+        }
+        expect((page as ReadPage).offset).toBe(offset);
+        if ((page as ReadPage).next_offset === null) break;
+        offset = (page as ReadPage).next_offset!;
+      }
+      expect(exhausted).toBe(true);
+      expect(offset).toBeGreaterThan(0);
+      expect(offset).toBeLessThan(body.length + 1);
+
+      const continuation = buildReadTools(
+        kb,
+        undefined,
+        new AgentRunContext({
+          maxSteps: 8,
+          maxDocumentChars: 12_000,
+          maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
+          maxSystemContextChars: DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+        })
+      );
+      const next = await continuation.read_concept!.execute!({
+        path: "/facts/very-long.md",
+        offset,
+      }, toolContext) as ReadPage;
+      expect(next.body).toBe(body.slice(offset, offset + next.body.length));
+      expect(next.offset).toBe(offset);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns partial search results and visible list truncation markers", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
+    try {
+      const kb = new KnowledgeBase(root);
+      for (let index = 0; index < 30; index += 1) {
+        await kb.writeConcept(
+          `/facts/${index}.md`,
+          { type: "Fact", title: `Fact ${index}` },
+          `shared keyword ${index}`,
+          "add"
+        );
+      }
+      const limits = {
+        maxSteps: 8,
+        maxDocumentChars: 1_000,
+        maxToolResultChars: 500,
+        maxSystemContextChars: 240,
+      };
+      const search = await buildReadTools(kb, undefined, new AgentRunContext(limits))
+        .search_knowledge!.execute!({ query: "shared" }, toolContext) as {
+          truncated: boolean;
+          hits: unknown[];
+        };
+      expect(search.truncated).toBe(true);
+      expect(search.hits.length).toBeGreaterThan(0);
+
+      const listing = await buildReadTools(kb, undefined, new AgentRunContext(limits))
+        .list_directory!.execute!({}, toolContext) as string;
+      expect(listing).toContain("... [truncated; total_chars=");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps populated system context explicit at degenerate configured sizes", () => {
+    const state = new AgentRunContext({
+      maxSteps: 8,
+      maxDocumentChars: 1,
+      maxToolResultChars: 1,
+      maxSystemContextChars: 1,
+    });
+    const types = state.systemTypes(["type-" + "x".repeat(10_000)]);
+    const tree = state.systemTree("node ".repeat(10_000));
+
+    expect(types.join(", ")).toContain("system types truncated");
+    expect(tree).toContain("system tree truncated");
+    expect(types.join(", ").length + tree.length).toBeLessThanOrEqual(240);
+  });
+
   it("caps aggregate multi-read output as a serialised payload", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-bounds-"));
     try {
@@ -156,7 +257,9 @@ describe("agent context bounds", () => {
         (total, value) => total + (JSON.stringify(value)?.length ?? 0),
         0
       );
-      expect(payloadChars).toBeLessThanOrEqual(500);
+      // Exhausted parallel calls each still return the explicit notice; those
+      // repeated control messages are the documented small accounting overrun.
+      expect(payloadChars).toBeLessThanOrEqual(500 + 3 * EXHAUSTION_SERIALISED_LENGTH);
       expect(JSON.stringify(results[0])?.length ?? 0).toBeLessThanOrEqual(500);
     } finally {
       await fs.rm(root, { recursive: true, force: true });

@@ -14,7 +14,7 @@ import {
   searchBundle,
   lintBundle,
 } from "../src/okf/index.js";
-import { hashBody } from "../src/agent/run-context.js";
+import { sha256 } from "../src/util/hash.js";
 
 let root: string;
 let kb: KnowledgeBase;
@@ -277,7 +277,7 @@ describe("mutation serialization", () => {
     const first = new KnowledgeBase(root);
     const second = new KnowledgeBase(root);
     await first.createConcept("/stale.md", { type: "T" }, "original", "initial");
-    const expected = hashBody("original\n");
+    const expected = sha256("original\n");
 
     const results = await Promise.allSettled([
       first.patchConcept("/stale.md", { replaceBody: "first" }, "first", expected),

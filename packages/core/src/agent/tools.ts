@@ -5,7 +5,7 @@ import type { Concept, TreeNode } from "../okf/types.js";
 import type { TraceRecorder } from "./trace.js";
 import { recordHotDelete, recordHotWrite } from "./hot-memory.js";
 import { resolveAgentLimits } from "./limits.js";
-import { AgentRunContext } from "./run-context.js";
+import { AgentRunContext, fitText } from "./run-context.js";
 
 const MAX_CONCEPT_PATH_CHARS = 512;
 const MAX_QUERY_CHARS = 2_048;
@@ -218,10 +218,10 @@ function boundedReadPage(
 function boundText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const marker = `\n... [truncated; total_chars=${text.length}]`;
-  if (marker.length >= maxChars) return text.slice(0, maxChars);
-  const available = maxChars - marker.length;
+  const available = Math.max(0, maxChars - marker.length);
   const lineEnd = text.lastIndexOf("\n", available);
-  return text.slice(0, lineEnd > 0 ? lineEnd : available) + marker;
+  const prefixLength = lineEnd > 0 ? lineEnd : available;
+  return fitText(text.slice(0, prefixLength), maxChars, marker);
 }
 
 function isReadPage(value: unknown): value is ReadPage {
@@ -289,7 +289,7 @@ export function buildReadTools(
         // the model's next step is to read plausible concepts, not give up.
         // Paths and types only: this lands in the transcript at every missed
         // step, and descriptions would triple its cost for no navigation gain.
-        const tree = boundText(formatTree(await kb.listTree(), 0, false), state.remaining);
+        const tree = boundText(formatTree(await kb.listTree(), 0, false), state.payloadBudget);
         return state.result({
           hits: [],
           notice:
@@ -321,7 +321,7 @@ export function buildReadTools(
           if (!isExpectedReadError(error)) throw error;
           return state.result(readError(c.path, error));
         }
-        const bounded = boundedReadPage(page, page.body.length, state.remaining, state);
+        const bounded = boundedReadPage(page, page.body.length, state.payloadBudget, state);
         const result = bounded === undefined ? state.exhausted() : state.consume(bounded);
         if (isReadPage(result)) {
           state.recordBodyPage(c.path, offset, c.body, page.body, result.body);
@@ -377,7 +377,7 @@ export function buildReadTools(
           continuation:
             "Page included bodies with each page's next_offset; retry omitted paths in a fresh request.",
         };
-        if (JSON.stringify(base).length > state.remaining) return state.exhausted();
+        if (JSON.stringify(base).length > state.payloadBudget) return state.exhausted();
 
         for (const requested of paths) {
           const source = sourceConcepts.get(requested);
@@ -388,7 +388,7 @@ export function buildReadTools(
           let best: ReadPage | undefined;
           while (low <= high) {
             const middle = Math.floor((low + high) / 2);
-            const candidate = boundedReadPage(page, middle, state.remaining, state);
+            const candidate = boundedReadPage(page, middle, state.payloadBudget, state);
             if (!candidate) {
               high = middle - 1;
               continue;
@@ -398,7 +398,7 @@ export function buildReadTools(
               read: [...base.read, candidate],
               returned_body_chars: base.returned_body_chars + candidate.body.length,
             };
-            if (JSON.stringify(result).length <= state.remaining) {
+            if (JSON.stringify(result).length <= state.payloadBudget) {
               best = candidate;
               low = middle + 1;
             } else {
@@ -415,7 +415,7 @@ export function buildReadTools(
           base.truncated ||= best.truncated;
         }
         base.truncated ||= base.omitted.length > 0 || base.missing.length > 0;
-        const result = state.consume(base) ?? state.exhausted();
+        const result = state.consume(base);
         if (
           typeof result === "object" &&
           result !== null &&
@@ -440,7 +440,7 @@ export function buildReadTools(
       inputSchema: z.object({}),
       execute: async () => {
         trace?.record("list_directory", "", []);
-        return state.result(boundText(formatTree(await kb.listTree(), 0, false), state.remaining));
+        return state.result(boundText(formatTree(await kb.listTree(), 0, false), state.payloadBudget));
       },
     }),
     lint_knowledge: tool({

@@ -1,9 +1,16 @@
-import { createHash } from "node:crypto";
-import type { AgentLimits } from "./limits.js";
+import { sha256 } from "../util/hash.js";
+import {
+  EXHAUSTION_NOTICE,
+  EXHAUSTION_SERIALISED_LENGTH,
+  MIN_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+  MIN_AGENT_MAX_TOOL_RESULT_CHARS,
+  TOOL_RESULT_CONTROL_OVERHEAD,
+  type AgentLimits,
+} from "./limits.js";
 
-const EXHAUSTION_NOTICE = "Tool output budget exhausted; start a fresh request or raise the setting.";
-const EXHAUSTION_SERIALISED_LENGTH = JSON.stringify(EXHAUSTION_NOTICE).length;
 const SYSTEM_TREE_MARKER = "\n... [system tree truncated; search and list_directory remain available]";
+const SYSTEM_TYPES_MARKER = "\n... [system types truncated; search remains available]";
+const TRUNCATION_MARKER = /\n\.\.\. \[truncated; total_chars=\d+\]$/;
 
 /** A body page observed by the agent during this run. */
 interface BodyRead {
@@ -22,11 +29,21 @@ interface BodyRead {
 export class AgentRunContext {
   private remainingChars: number;
   private remainingSystemChars: number;
+  private systemTreeWritten = false;
+  private systemTypesWritten = false;
   private readonly bodyReads = new Map<string, BodyRead>();
 
   constructor(private readonly limits: AgentLimits) {
-    this.remainingChars = limits.maxToolResultChars;
-    this.remainingSystemChars = limits.maxSystemContextChars;
+    // Keep manually constructed contexts safe too; callers should not be able
+    // to configure a budget in which even the control result cannot fit.
+    this.remainingChars = Math.max(
+      MIN_AGENT_MAX_TOOL_RESULT_CHARS,
+      limits.maxToolResultChars
+    );
+    this.remainingSystemChars = Math.max(
+      MIN_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+      limits.maxSystemContextChars
+    );
   }
 
   get remaining(): number {
@@ -37,59 +54,68 @@ export class AgentRunContext {
     return this.remainingSystemChars;
   }
 
-  fits(value: unknown): boolean {
-    return serialisedLength(value) <= this.remainingChars;
+  /** Budget available for useful payload before the next control notice. */
+  get payloadBudget(): number {
+    return Math.max(
+      0,
+      this.remainingChars - EXHAUSTION_SERIALISED_LENGTH - TOOL_RESULT_CONTROL_OVERHEAD
+    );
   }
 
-  /** Consume a complete, already structurally bounded tool result. */
-  consume<T>(value: T): T | undefined {
+  fits(value: unknown): boolean {
+    return serialisedLength(value) <= this.payloadBudget;
+  }
+
+  /**
+   * Consume a complete, already structurally bounded tool result.
+   *
+   * The notice reserve is applied before consumption. A rejected payload is
+   * replaced with a valid notice rather than returning undefined.
+   */
+  consume<T>(value: T): T {
+    if (value === undefined) return this.exhausted() as T;
     const length = serialisedLength(value);
-    if (length > this.remainingChars) return undefined;
+    if (length > this.payloadBudget) return this.exhausted() as T;
     this.remainingChars -= length;
     return value;
   }
 
-  /** Consume a value as the SDK will serialise it, truncating its structure first. */
+  /** Consume a value, structurally fitting it against the reserved payload budget. */
   result<T>(value: T): T {
-    const length = serialisedLength(value);
-    if (length <= this.remainingChars) {
-      if (
-        this.remainingChars - length >= EXHAUSTION_SERIALISED_LENGTH ||
-        this.remainingChars < EXHAUSTION_SERIALISED_LENGTH
-      ) {
-        this.remainingChars -= length;
-        return value;
-      }
-      return this.exhausted() as T;
-    }
-
-    const fitted = fitValue(value, this.remainingChars);
-    if (
-      fitted !== undefined &&
-      (this.remainingChars - serialisedLength(fitted) >= EXHAUSTION_SERIALISED_LENGTH ||
-        this.remainingChars < EXHAUSTION_SERIALISED_LENGTH)
-    ) {
-      this.remainingChars -= serialisedLength(fitted);
-      return fitted as T;
-    }
-
-    return this.exhausted() as T;
+    const budget = this.payloadBudget;
+    const fitted = fitValue(value, budget);
+    if (fitted === undefined) return this.exhausted() as T;
+    const length = serialisedLength(fitted);
+    if (length > budget) return this.exhausted() as T;
+    this.remainingChars -= length;
+    return fitted as T;
   }
 
   /** Reserve space for dynamic system context, independently of tool results. */
   systemTree(tree: string): string {
-    return this.consumeSystemText(tree, SYSTEM_TREE_MARKER);
+    const result = this.consumeSystemText(
+      tree,
+      SYSTEM_TREE_MARKER,
+      this.systemTypesWritten ? 0 : serialisedLength(SYSTEM_TYPES_MARKER)
+    );
+    this.systemTreeWritten = true;
+    return result;
   }
 
   /** Bound the type map embedded in the system prompt. */
   systemTypes(types: string[]): string[] {
+    if (types.length === 0) {
+      this.systemTypesWritten = true;
+      return [];
+    }
     const value = types.join(", ");
     const bounded = this.consumeSystemText(
       value,
-      "\n... [system types truncated; search remains available]",
-      serialisedLength(SYSTEM_TREE_MARKER)
+      SYSTEM_TYPES_MARKER,
+      this.systemTreeWritten ? 0 : serialisedLength(SYSTEM_TREE_MARKER)
     );
-    return bounded ? [bounded] : [];
+    this.systemTypesWritten = true;
+    return [bounded];
   }
 
   private consumeSystemText(value: string, marker: string, reserveAfter = 0): string {
@@ -118,12 +144,18 @@ export class AgentRunContext {
     return best;
   }
 
-  /** Return an explicit, bounded result when no useful payload remains. */
-  exhausted(): string | undefined {
-    const fitted = fitString(EXHAUSTION_NOTICE, this.remainingChars);
-    if (fitted === undefined) return undefined;
-    this.remainingChars -= serialisedLength(fitted);
-    return fitted;
+  /**
+   * Return an explicit result when no useful payload remains.
+   *
+   * Once the notice itself has been emitted, repeated calls may exceed the
+   * accounting budget by its fixed JSON framing; a tool result must never be
+   * undefined merely because the run is exhausted.
+   */
+  exhausted(): string {
+    if (this.remainingChars >= EXHAUSTION_SERIALISED_LENGTH) {
+      this.remainingChars -= EXHAUSTION_SERIALISED_LENGTH;
+    }
+    return EXHAUSTION_NOTICE;
   }
 
   /** Record a page only when the complete page survived result bounding. */
@@ -136,7 +168,7 @@ export class AgentRunContext {
   ): void {
     if (pageBody !== returnedBody) return;
     const existing = this.bodyReads.get(conceptPath);
-    const hash = hashBody(fullBody);
+    const hash = sha256(fullBody);
     if (existing && existing.hash !== hash) {
       existing.ranges = [];
       return;
@@ -150,7 +182,7 @@ export class AgentRunContext {
   /** Verify that replace_body is based on a complete, unchanged body read. */
   expectedBodyHash(conceptPath: string, body: string): string {
     const read = this.bodyReads.get(conceptPath);
-    const hash = hashBody(body);
+    const hash = sha256(body);
     if (
       !read ||
       read.totalChars !== body.length ||
@@ -174,11 +206,6 @@ export class AgentRunContext {
   }
 }
 
-
-export function hashBody(body: string): string {
-  return createHash("sha256").update(body).digest("hex");
-}
-
 export function serialisedLength(value: unknown): number {
   const encoded = JSON.stringify(value);
   return encoded === undefined ? 0 : encoded.length;
@@ -186,13 +213,22 @@ export function serialisedLength(value: unknown): number {
 
 function fitString(value: string, budget: number): string | undefined {
   if (serialisedLength(value) <= budget) return value;
+  const markerMatch = value.match(TRUNCATION_MARKER);
+  if (markerMatch) return fitText(value.slice(0, -markerMatch[0].length), budget, markerMatch[0]);
   if (budget < 2) return undefined;
+  return fitText(value, budget, "");
+}
+
+/** Fit text while reserving its visible truncation marker in JSON characters. */
+export function fitText(value: string, budget: number, marker: string): string {
+  if (!marker && serialisedLength(value) <= budget) return value;
+  if (serialisedLength(marker) > budget) return marker;
   let low = 0;
   let high = value.length;
-  let best = "";
+  let best = marker;
   while (low <= high) {
     const middle = Math.floor((low + high) / 2);
-    const candidate = value.slice(0, middle);
+    const candidate = value.slice(0, middle) + marker;
     if (serialisedLength(candidate) <= budget) {
       best = candidate;
       low = middle + 1;
