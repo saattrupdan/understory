@@ -1,10 +1,10 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { BundleError, type KnowledgeBase } from "../okf/index.js";
-import type { Concept, TreeNode } from "../okf/types.js";
+import type { Concept, ConceptFrontmatter, TreeNode } from "../okf/types.js";
 import type { TraceRecorder } from "./trace.js";
 import { recordHotDelete, recordHotWrite } from "./hot-memory.js";
-import { resolveAgentLimits } from "./limits.js";
+import { inputLength, resolveAgentLimits } from "./limits.js";
 import { AgentRunContext, fitText } from "./run-context.js";
 
 const MAX_CONCEPT_PATH_CHARS = 512;
@@ -15,29 +15,38 @@ const MAX_TAGS = 32;
 const MAX_LOG_SUMMARY_CHARS = 1_000;
 
 /** Bundle-relative concept path, e.g. "/tables/customers.md". */
-const conceptPath = z
-  .string()
-  .max(MAX_CONCEPT_PATH_CHARS)
-  .regex(/^\/(?!\/).+\.md$/)
-  .refine((value) =>
-    value.split("/").slice(1).every((segment) => segment.length > 0 && segment !== "." && segment !== "..")
-  )
-  .describe('Canonical bundle-relative path starting with exactly one "/", ending in .md');
+function conceptPathSchema(maxChars = MAX_CONCEPT_PATH_CHARS) {
+  return z
+    .string()
+    .max(Math.min(MAX_CONCEPT_PATH_CHARS, maxChars))
+    .regex(/^\/(?!\/).+\.md$/)
+    .refine((value) =>
+      value.split("/").slice(1).every((segment) => segment.length > 0 && segment !== "." && segment !== "..")
+    )
+    .describe('Canonical bundle-relative path starting with exactly one "/", ending in .md');
+}
 
-const frontmatterSchema = z
-  .object({
-    type: z
-      .string()
-      .min(1)
-      .max(MAX_TYPE_CHARS)
-      .describe("Concept kind, e.g. 'API Endpoint'. Required."),
-    title: z.string().max(512).optional(),
-    description: z.string().max(4_000).optional().describe("One-line summary"),
-    resource: z.string().max(2_048).optional().describe("Canonical URI of the underlying asset"),
-    tags: z.array(z.string().max(MAX_TAG_CHARS)).max(MAX_TAGS).optional(),
-  })
-  .passthrough()
-  .describe("YAML frontmatter. Additional producer-defined keys are allowed.");
+function frontmatterSchema(maxInputChars: number) {
+  return z
+    .object({
+      type: z
+        .string()
+        .min(1)
+        .max(MAX_TYPE_CHARS)
+        .describe("Concept kind, e.g. 'API Endpoint'. Required."),
+      title: z.string().max(512).optional(),
+      description: z.string().max(4_000).optional().describe("One-line summary"),
+      resource: z.string().max(2_048).optional().describe("Canonical URI of the underlying asset"),
+      tags: z.array(z.string().max(MAX_TAG_CHARS)).max(MAX_TAGS).optional(),
+    })
+    .passthrough()
+    .superRefine((value, ctx) => {
+      if (inputLength(value) > maxInputChars) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "frontmatter exceeds the input limit" });
+      }
+    })
+    .describe("YAML frontmatter. Additional producer-defined keys are allowed.");
+}
 
 const logSummary = z
   .string()
@@ -302,7 +311,7 @@ export function buildReadTools(
       description:
         "Read one concept's frontmatter and a bounded body page. If truncated, use next_offset to page through the body before replacing it.",
       inputSchema: z.object({
-        path: conceptPath,
+        path: conceptPathSchema(),
         offset: z.number().int().min(0).default(0).describe("Body character offset"),
       }),
       execute: async ({ path, offset = 0 }) => {
@@ -334,7 +343,7 @@ export function buildReadTools(
         "Read several concepts in one call with frontmatter retained and a bounded aggregate body. " +
         "Each body may be paged with read_concept if its metadata says truncated.",
       inputSchema: z.object({
-        paths: z.array(conceptPath).min(1).max(12).describe("Concept paths to read together"),
+        paths: z.array(conceptPathSchema()).min(1).max(12).describe("Concept paths to read together"),
       }),
       execute: async ({ paths }) => {
         trace?.record(
@@ -462,23 +471,51 @@ export function buildReadTools(
   };
 }
 
+type WriteConceptArgs = {
+  path: string;
+  frontmatter: ConceptFrontmatter;
+  body: string;
+  log_summary: string;
+};
+
+type PatchConceptArgs = {
+  path: string;
+  frontmatter?: Record<string, unknown>;
+  replace_section?: { heading: string; content: string };
+  replace_body?: string;
+  log_summary: string;
+};
+
+type DeleteConceptArgs = { path: string; log_summary: string };
+
 export function buildWriteTools(
   kb: KnowledgeBase,
   filesChanged: Set<string>,
   trace?: TraceRecorder,
   state: AgentRunContext = new AgentRunContext(resolveAgentLimits())
 ) {
+  const maxInputChars = state.maxInputChars;
+  const boundedPath = conceptPathSchema(maxInputChars);
+  const boundedLogSummary = logSummary.max(maxInputChars);
+  const boundedFrontmatter = frontmatterSchema(maxInputChars);
+  const boundedPatchFrontmatter = z.record(z.unknown()).superRefine((value, ctx) => {
+    if (inputLength(value) > maxInputChars) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "frontmatter exceeds the input limit" });
+    }
+  });
+
   return {
     write_concept: tool({
       description:
         "Create a new concept only; an existing path is rejected and must be changed with patch_concept. Frontmatter must include a non-empty 'type'. index.md and log.md maintenance is automatic — never write those.",
       inputSchema: z.object({
-        path: conceptPath,
-        frontmatter: frontmatterSchema,
-        body: z.string().describe("Markdown body (no frontmatter block)"),
-        log_summary: logSummary,
+        path: boundedPath,
+        frontmatter: boundedFrontmatter,
+        body: z.string().max(maxInputChars).describe("Markdown body (no frontmatter block)"),
+        log_summary: boundedLogSummary,
       }),
-      execute: async ({ path, frontmatter, body, log_summary }) => {
+      execute: async ({ path, frontmatter, body, log_summary }: WriteConceptArgs) => {
+        state.assertWriteInput({ path, frontmatter, body, log_summary });
         const c = await kb.createConcept(path, frontmatter, body, log_summary);
         filesChanged.add(c.path);
         recordHotWrite(c.path);
@@ -490,9 +527,8 @@ export function buildWriteTools(
       description:
         "Targeted update of an existing concept: merge frontmatter keys (null deletes a key), replace one top-level '# Section' body section, or replace the whole body. replace_body requires that the complete unchanged body was read in this run; otherwise use replace_section. Prefer this over write_concept for all existing paths.",
       inputSchema: z.object({
-        path: conceptPath,
-        frontmatter: z
-          .record(z.unknown())
+        path: boundedPath,
+        frontmatter: boundedPatchFrontmatter
           .optional()
           .describe("Frontmatter keys to merge; set a key to null to remove it"),
         replace_section: z
@@ -501,16 +537,18 @@ export function buildWriteTools(
               .string()
               .min(1)
               .describe("Top-level heading name, e.g. 'Schema'. Must be non-empty — to replace the whole body use replace_body instead."),
-            content: z.string().describe("New content for that section"),
+            content: z.string().max(maxInputChars).describe("New content for that section"),
           })
           .optional(),
         replace_body: z
           .string()
+          .max(maxInputChars)
           .optional()
           .describe("Replace the entire markdown body (frontmatter untouched). Use for restructuring; prefer replace_section for targeted edits."),
-        log_summary: logSummary,
+        log_summary: boundedLogSummary,
       }),
-      execute: async ({ path, frontmatter, replace_section, replace_body, log_summary }) => {
+      execute: async ({ path, frontmatter, replace_section, replace_body, log_summary }: PatchConceptArgs) => {
+        state.assertWriteInput({ path, frontmatter, replace_section, replace_body, log_summary });
         const expectedBodyHash =
           replace_body === undefined
             ? undefined
@@ -537,10 +575,11 @@ export function buildWriteTools(
       description:
         "Permanently delete a concept file. Prefer deprecation (tag 'deprecated' via patch_concept) unless content is wrong/harmful or deletion was explicitly requested.",
       inputSchema: z.object({
-        path: conceptPath,
-        log_summary: logSummary,
+        path: boundedPath,
+        log_summary: boundedLogSummary,
       }),
-      execute: async ({ path, log_summary }) => {
+      execute: async ({ path, log_summary }: DeleteConceptArgs) => {
+        state.assertWriteInput({ path, log_summary });
         await kb.deleteConcept(path, log_summary);
         filesChanged.add(path);
         recordHotDelete(path);

@@ -1,6 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { KnowledgeBase, runMutation, runQueryCached, type MutationOutcome } from "@understory/core";
+import {
+  DEFAULT_AGENT_MAX_INPUT_CHARS,
+  KnowledgeBase,
+  resolveAgentLimits,
+  runMutation,
+  runQueryCached,
+  type MutationOutcome,
+} from "@understory/core";
 import { buildSeedMemory, seedInstructions } from "./seed.js";
 
 /**
@@ -15,6 +22,7 @@ import { buildSeedMemory, seedInstructions } from "./seed.js";
  * client model has no signal that memory might hold an answer.
  */
 export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
+  const maxInputChars = resolveAgentLimits().maxInputChars ?? DEFAULT_AGENT_MAX_INPUT_CHARS;
   // Seed generation must never prevent the server from starting — a missing
   // or empty bundle root degrades to a minimal seed, not a crash.
   const seed = await buildSeedMemory(kb).catch((err: Error) => {
@@ -37,7 +45,7 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
     {
       title: "Query the knowledge base",
       description: queryDescription(seed),
-      inputSchema: { question: z.string().describe("The question to answer") },
+      inputSchema: { question: z.string().max(maxInputChars).describe("The question to answer") },
     },
     async ({ question }) => {
       const { answer, source } = await runQueryCached(kb, question);
@@ -100,9 +108,13 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
       description:
         "Provide free-form knowledge (facts, docs, decisions, runbooks). An internal agent searches for overlap, then creates or extends OKF concepts; indexes and the update log are maintained automatically.",
       inputSchema: {
-        content: z.string().describe("The knowledge to record, in any prose form"),
+        content: z
+          .string()
+          .max(maxInputChars)
+          .describe("The knowledge to record, in any prose form"),
         suggested_path: z
           .string()
+          .max(maxInputChars)
           .optional()
           .describe('Optional bundle path hint, e.g. "/apis/payments.md"'),
       },
@@ -134,7 +146,10 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
       description:
         "Instruct a change to existing knowledge (correct a fact, deprecate a concept, restructure). An internal agent locates the concepts and applies targeted edits.",
       inputSchema: {
-        instruction: z.string().describe("What to change, in natural language"),
+        instruction: z
+          .string()
+          .max(maxInputChars)
+          .describe("What to change, in natural language"),
       },
     },
     async ({ instruction }) => {

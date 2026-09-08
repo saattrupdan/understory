@@ -9,7 +9,10 @@ import {
 import { withFallback } from "../providers/fallback.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { buildReadTools, buildWriteTools, formatTree } from "./tools.js";
-import { resolveAgentLimits } from "./limits.js";
+import {
+  assertInputWithinLimit,
+  resolveAgentLimits,
+} from "./limits.js";
 import { AgentRunContext } from "./run-context.js";
 import { TraceRecorder, TraceStore, type TraceUsage } from "./trace.js";
 
@@ -140,6 +143,11 @@ export async function runQuery(
   options: AgentOptions = {}
 ): Promise<QueryResult> {
   const limits = resolveAgentLimits();
+  assertInputWithinLimit(
+    question,
+    limits.maxInputChars,
+    "Query input"
+  );
   const state = new AgentRunContext(limits);
   const ctx = await promptContext(kb, "query", state);
   const recorder = new TraceRecorder();
@@ -174,6 +182,11 @@ export async function runMutation(
   options: AgentOptions = {}
 ): Promise<MutationOutcome> {
   const limits = resolveAgentLimits();
+  assertInputWithinLimit(
+    instruction,
+    limits.maxInputChars,
+    "Mutation input"
+  );
   const state = new AgentRunContext(limits);
   const ctx = await promptContext(kb, "mutate", state);
   const recorder = new TraceRecorder();
@@ -229,6 +242,11 @@ export async function streamChat(
   options: AgentOptions = {}
 ) {
   const limits = resolveAgentLimits();
+  assertInputWithinLimit(
+    messages,
+    limits.maxInputChars,
+    "Chat history"
+  );
   const state = new AgentRunContext(limits);
   const ctx = await promptContext(kb, "chat", state);
   const recorder = new TraceRecorder();

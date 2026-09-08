@@ -1,10 +1,12 @@
 import { sha256 } from "../util/hash.js";
 import {
+  DEFAULT_AGENT_MAX_INPUT_CHARS,
   EXHAUSTION_NOTICE,
   EXHAUSTION_SERIALISED_LENGTH,
   MIN_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
   MIN_AGENT_MAX_TOOL_RESULT_CHARS,
   TOOL_RESULT_CONTROL_OVERHEAD,
+  inputLength,
   type AgentLimits,
 } from "./limits.js";
 
@@ -26,14 +28,22 @@ interface BodyRead {
  * asynchronous tool operation. JavaScript does not interleave that section,
  * which makes concurrent AI SDK tool calls safe without serialising the reads.
  */
+export type AgentLimitsInput = Omit<AgentLimits, "maxInputChars"> & Partial<Pick<AgentLimits, "maxInputChars">>;
+
 export class AgentRunContext {
+  private readonly limits: AgentLimits;
   private remainingChars: number;
   private remainingSystemChars: number;
   private systemTreeWritten = false;
   private systemTypesWritten = false;
   private readonly bodyReads = new Map<string, BodyRead>();
+  private writeInputChars = 0;
 
-  constructor(private readonly limits: AgentLimits) {
+  constructor(limits: AgentLimitsInput) {
+    this.limits = {
+      ...limits,
+      maxInputChars: limits.maxInputChars ?? DEFAULT_AGENT_MAX_INPUT_CHARS,
+    };
     // Keep manually constructed contexts safe too; callers should not be able
     // to configure a budget in which even the control result cannot fit.
     this.remainingChars = Math.max(
@@ -198,6 +208,19 @@ export class AgentRunContext {
 
   get maxDocumentChars(): number {
     return this.limits.maxDocumentChars;
+  }
+
+  get maxInputChars(): number {
+    return this.limits.maxInputChars;
+  }
+
+  /** Meter model-generated write arguments across all writes in this run. */
+  assertWriteInput(value: unknown): void {
+    const length = inputLength(value);
+    if (length > this.maxInputChars || this.writeInputChars + length > this.maxInputChars) {
+      throw new Error(`Write tool input exceeds AGENT_MAX_INPUT_CHARS (${this.maxInputChars} characters)`);
+    }
+    this.writeInputChars += length;
   }
 
   /** Fit a value without consuming the shared tool-result budget. */
