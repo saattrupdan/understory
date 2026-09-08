@@ -388,11 +388,14 @@ describe("read_concepts", () => {
 
     const tools = buildReadTools(kb);
     const out = await tools.read_concepts!.execute!(
-      { paths: ["/facts/a.md", "/facts/b.md", "/facts/gone.md"] },
+      { paths: ["facts/a.md", "//facts/b.md", "/facts/gone.md"] },
       { toolCallId: "c", messages: [] }
     );
 
-    expect((out as { read: unknown[] }).read).toHaveLength(2);
+    expect((out as { read: Array<{ path: string }> }).read.map((page) => page.path)).toEqual([
+      "/facts/a.md",
+      "/facts/b.md",
+    ]);
     expect((out as { missing: string[] }).missing).toEqual(["/facts/gone.md"]);
   });
 });

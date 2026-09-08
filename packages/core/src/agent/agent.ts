@@ -244,6 +244,27 @@ export async function streamChat(
           ?.map((part) => (part.type === "text" ? part.text : ""))
           .join(" ")
           .trim() ?? "(chat)";
+  let traceFinalised = false;
+  const finaliseChatTrace = async (
+    answer: string,
+    outcome: "success" | "partial" | "failed",
+    usage?: TraceUsage
+  ): Promise<void> => {
+    // AI SDK callbacks can race: onError may arrive while onFinish is still
+    // persisting. Claim the trace before awaiting the filesystem write.
+    if (traceFinalised) return;
+    traceFinalised = true;
+    if (outcome === "success" && recorder.steps.length === 0) return;
+    try {
+      await traceStore(kb).save(
+        recorder.finalize("chat", input, answer, outcome, modelChain, usage)
+      );
+    } catch (traceError) {
+      // A trace must never turn a provider failure into an unobserved promise
+      // rejection or hide the original stream error.
+      console.error(`[understory] chat trace save failed: ${errorMessage(traceError)}`);
+    }
+  };
 
   try {
     const resolved = await resolveAgentModel(options, "chat");
@@ -259,21 +280,35 @@ export async function streamChat(
       stopWhen: stepCountIs(maxSteps),
       prepareStep: prepareFinalSynthesisStep(maxSteps),
       onFinish: async ({ text, totalUsage, steps }) => {
-        assertSynthesised(steps);
-        // Persist only turns that actually touched the bundle.
-        if (recorder.steps.length > 0) {
-          const usage =
-            totalUsage && (totalUsage.inputTokens != null || totalUsage.outputTokens != null)
-              ? { inputTokens: totalUsage.inputTokens ?? 0, outputTokens: totalUsage.outputTokens ?? 0 }
-              : undefined;
-          await traceStore(kb).save(recorder.finalize("chat", input, text, "success", modelChain, usage));
+        const usage =
+          totalUsage && (totalUsage.inputTokens != null || totalUsage.outputTokens != null)
+            ? {
+                inputTokens: totalUsage.inputTokens ?? 0,
+                outputTokens: totalUsage.outputTokens ?? 0,
+              }
+            : undefined;
+        try {
+          assertSynthesised(steps);
+          await finaliseChatTrace(text, "success", usage);
+        } catch (error) {
+          const outcome = filesChanged.size > 0 ? "partial" : "failed";
+          await finaliseChatTrace(errorMessage(error), outcome, usage);
+          throw error;
         }
+      },
+      onError: async ({ error }) => {
+        const outcome = filesChanged.size > 0 ? "partial" : "failed";
+        await finaliseChatTrace(errorMessage(error), outcome);
+      },
+      onAbort: async () => {
+        const outcome = filesChanged.size > 0 ? "partial" : "failed";
+        await finaliseChatTrace("Chat stream aborted", outcome);
       },
     });
     return { result, filesChanged };
   } catch (err) {
     const outcome = filesChanged.size > 0 ? "partial" : "failed";
-    await traceStore(kb).save(recorder.finalize("chat", input, errorMessage(err), outcome, modelChain));
+    await finaliseChatTrace(errorMessage(err), outcome);
     throw err;
   }
 }
