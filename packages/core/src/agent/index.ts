@@ -8,10 +8,16 @@ export {
   MIN_AGENT_MAX_STEPS,
   DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
   DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+  MIN_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
+  MIN_AGENT_MAX_TOOL_RESULT_CHARS,
+  EXHAUSTION_NOTICE,
+  EXHAUSTION_SERIALISED_LENGTH,
+  TOOL_RESULT_CONTROL_OVERHEAD,
+  TOOL_RESULT_TRUNCATION_MARKER_RESERVE,
   positiveIntegerEnv,
   resolveAgentLimits,
 } from "./limits.js";
 export type { AgentLimits } from "./limits.js";
-export { AgentRunContext, hashBody } from "./run-context.js";
+export { AgentRunContext } from "./run-context.js";
 export { TraceRecorder, TraceStore, buildNotation } from "./trace.js";
 export type { QueryTrace, TraceStep, TraceOutcome } from "./trace.js";

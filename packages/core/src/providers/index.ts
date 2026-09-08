@@ -1,6 +1,7 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
+import { positiveIntegerEnv } from "../util/env.js";
 
 type ResolvedLanguageModel = Extract<LanguageModel, { doGenerate: unknown }>;
 
@@ -144,8 +145,8 @@ function envExtras(env: NodeJS.ProcessEnv, prefix = "LLM_"): Pick<ModelConfig, "
   const extra: Record<string, unknown> = {};
   const budget = Number.parseInt(env[`${prefix}THINKING_BUDGET`] ?? "", 10);
   if (Number.isFinite(budget) && budget >= 0) Object.assign(extra, thinkingBudgetBody(budget));
-  const cap = Number.parseInt(env[`${prefix}MAX_OUTPUT_TOKENS`] ?? "", 10);
-  if (Number.isFinite(cap) && cap > 0) extra.max_tokens = cap;
+  const cap = positiveIntegerEnv(env[`${prefix}MAX_OUTPUT_TOKENS`], 0);
+  if (cap > 0) extra.max_tokens = cap;
   return Object.keys(extra).length ? { extraBody: extra } : {};
 }
 
