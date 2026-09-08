@@ -1,4 +1,5 @@
 export const DEFAULT_AGENT_MAX_STEPS = 8;
+export const MIN_AGENT_MAX_STEPS = 2;
 export const DEFAULT_AGENT_MAX_DOCUMENT_CHARS = 12_000;
 export const DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS = 24_000;
 
@@ -19,7 +20,10 @@ export function positiveIntegerEnv(raw: string | undefined, fallback: number): n
 /** Resolve the context and agent-step bounds for one agent run. */
 export function resolveAgentLimits(env: NodeJS.ProcessEnv = process.env): AgentLimits {
   return {
-    maxSteps: positiveIntegerEnv(env.AGENT_MAX_STEPS, DEFAULT_AGENT_MAX_STEPS),
+    maxSteps: Math.max(
+      MIN_AGENT_MAX_STEPS,
+      positiveIntegerEnv(env.AGENT_MAX_STEPS, DEFAULT_AGENT_MAX_STEPS)
+    ),
     maxDocumentChars: positiveIntegerEnv(
       env.AGENT_MAX_DOCUMENT_CHARS,
       DEFAULT_AGENT_MAX_DOCUMENT_CHARS

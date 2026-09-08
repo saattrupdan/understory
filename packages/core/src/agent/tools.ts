@@ -5,6 +5,7 @@ import type { Concept, TreeNode } from "../okf/types.js";
 import type { TraceRecorder } from "./trace.js";
 import { recordHotDelete, recordHotWrite } from "./hot-memory.js";
 import { resolveAgentLimits } from "./limits.js";
+import { AgentRunContext } from "./run-context.js";
 
 /** Bundle-relative concept path, e.g. "/tables/customers.md". */
 const conceptPath = z
@@ -60,15 +61,22 @@ function readPage(concept: Concept, offset: number, maxChars: number): ReadPage 
 
 function boundText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
-  const marker = `\n... [truncated; total_chars=${text.length}; next_offset=${maxChars}]`;
+  const marker = `\n... [truncated; total_chars=${text.length}]`;
   if (marker.length >= maxChars) return text.slice(0, maxChars);
   const available = maxChars - marker.length;
   const lineEnd = text.lastIndexOf("\n", available);
   return text.slice(0, lineEnd > 0 ? lineEnd : available) + marker;
 }
 
-export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
-  const limits = resolveAgentLimits();
+function isReadPage(value: unknown): value is ReadPage {
+  return typeof value === "object" && value !== null && "body" in value && typeof value.body === "string";
+}
+
+export function buildReadTools(
+  kb: KnowledgeBase,
+  trace?: TraceRecorder,
+  state: AgentRunContext = new AgentRunContext(resolveAgentLimits())
+) {
   return {
     search_knowledge: tool({
       description:
@@ -81,21 +89,26 @@ export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
       execute: async ({ query, type, tags }) => {
         const hits = await kb.search(query, { type, tags });
         trace?.record("search_knowledge", query, hits.map((h) => h.path));
-        if (hits.length > 0) return hits;
+        if (hits.length > 0) {
+          return state.fits(hits)
+            ? state.result(hits)
+            : state.result({
+                truncated: true,
+                notice: "Search results were truncated by the per-run output budget; narrow the search or start a fresh request.",
+                hits,
+              });
+        }
         // Keyword miss ≠ knowledge absent. Put the map in the tool result so
         // the model's next step is to read plausible concepts, not give up.
         // Paths and types only: this lands in the transcript at every missed
         // step, and descriptions would triple its cost for no navigation gain.
-        const tree = boundText(
-          formatTree(await kb.listTree(), 0, false),
-          limits.maxToolResultChars
-        );
-        return {
+        const tree = boundText(formatTree(await kb.listTree(), 0, false), state.remaining);
+        return state.result({
           hits: [],
           notice:
-            "No keyword matches — but this search is literal, not semantic. The knowledge may exist under different wording. Before concluding it is absent: (1) retry with 1-2 synonyms or broader terms, (2) review the layout below and read_concepts ANY concepts whose type, name, or description could plausibly relate to the question — in one call, not one per step.",
+            "No keyword matches — but this search is literal, not semantic. Before concluding it is absent, retry with synonyms and review the layout before reading plausible concepts.",
           bundle_layout: tree,
-        };
+        });
       },
     }),
     read_concept: tool({
@@ -108,7 +121,12 @@ export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
       execute: async ({ path, offset = 0 }) => {
         const c = await kb.readConcept(path);
         trace?.record("read_concept", c.path, [c.path]);
-        return readPage(c, offset, limits.maxDocumentChars);
+        const page = readPage(c, offset, state.maxDocumentChars);
+        const result = state.result(page);
+        if (isReadPage(result)) {
+          state.recordBodyPage(c.path, offset, c.body, page.body, result.body);
+        }
+        return result;
       },
     }),
     read_concepts: tool({
@@ -124,26 +142,40 @@ export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
         const missing: string[] = [];
         let returnedChars = 0;
         let totalChars = 0;
+        const sourceConcepts = new Map<string, Concept>();
+        const sourcePages = new Map<string, ReadPage>();
         for (const p of paths) {
           try {
             const c = await kb.readConcept(p);
+            sourceConcepts.set(c.path, c);
             totalChars += c.body.length;
-            const remaining = Math.max(0, limits.maxToolResultChars - returnedChars);
-            const page = readPage(c, 0, Math.min(limits.maxDocumentChars, remaining));
+            const page = readPage(c, 0, state.maxDocumentChars);
+            sourcePages.set(c.path, page);
             returnedChars += page.body.length;
             concepts.push(page);
           } catch {
             missing.push(p); // Reported rather than guessed at.
           }
         }
-        return {
+        const result = state.result({
           read: concepts,
           missing,
           returned_body_chars: returnedChars,
           total_body_chars: totalChars,
           truncated: returnedChars < totalChars,
-          max_body_chars: limits.maxToolResultChars,
-        };
+          max_body_chars: state.maxDocumentChars,
+        });
+        if (typeof result === "object" && result !== null && "read" in result && Array.isArray(result.read)) {
+          for (const page of result.read) {
+            if (!isReadPage(page)) continue;
+            const source = sourceConcepts.get(page.path);
+            const sourcePage = sourcePages.get(page.path);
+            if (source && sourcePage) {
+              state.recordBodyPage(source.path, 0, source.body, sourcePage.body, page.body);
+            }
+          }
+        }
+        return result;
       },
     }),
     list_directory: tool({
@@ -152,7 +184,7 @@ export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
       inputSchema: z.object({}),
       execute: async () => {
         trace?.record("list_directory", "", []);
-        return boundText(formatTree(await kb.listTree(), 0, false), limits.maxToolResultChars);
+        return state.result(boundText(formatTree(await kb.listTree(), 0, false), state.remaining));
       },
     }),
     lint_knowledge: tool({
@@ -161,17 +193,29 @@ export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
       inputSchema: z.object({}),
       execute: async () => {
         trace?.record("lint_knowledge", "", []);
-        return kb.lint();
+        const report = await kb.lint();
+        return state.fits(report)
+          ? state.result(report)
+          : state.result({
+              truncated: true,
+              notice: "Lint output was truncated by the per-run output budget; start a fresh request for the full report.",
+              report,
+            });
       },
     }),
   };
 }
 
-export function buildWriteTools(kb: KnowledgeBase, filesChanged: Set<string>, trace?: TraceRecorder) {
+export function buildWriteTools(
+  kb: KnowledgeBase,
+  filesChanged: Set<string>,
+  trace?: TraceRecorder,
+  state: AgentRunContext = new AgentRunContext(resolveAgentLimits())
+) {
   return {
     write_concept: tool({
       description:
-        "Create a new concept or fully overwrite an existing one. Frontmatter must include a non-empty 'type'. index.md and log.md maintenance is automatic — never write those.",
+        "Create a new concept only; an existing path is rejected and must be changed with patch_concept. Frontmatter must include a non-empty 'type'. index.md and log.md maintenance is automatic — never write those.",
       inputSchema: z.object({
         path: conceptPath,
         frontmatter: frontmatterSchema,
@@ -179,16 +223,16 @@ export function buildWriteTools(kb: KnowledgeBase, filesChanged: Set<string>, tr
         log_summary: logSummary,
       }),
       execute: async ({ path, frontmatter, body, log_summary }) => {
-        const c = await kb.writeConcept(path, frontmatter, body, log_summary);
+        const c = await kb.createConcept(path, frontmatter, body, log_summary);
         filesChanged.add(c.path);
         recordHotWrite(c.path);
         trace?.record("write_concept", c.path, [c.path], true);
-        return { written: c.path };
+        return state.result({ written: c.path });
       },
     }),
     patch_concept: tool({
       description:
-        "Targeted update of an existing concept: merge frontmatter keys (null deletes a key) and/or replace one top-level '# Section' body section. Prefer this over write_concept for small edits.",
+        "Targeted update of an existing concept: merge frontmatter keys (null deletes a key), replace one top-level '# Section' body section, or replace the whole body. replace_body requires that the complete unchanged body was read in this run; otherwise use replace_section. Prefer this over write_concept for all existing paths.",
       inputSchema: z.object({
         path: conceptPath,
         frontmatter: z
@@ -211,6 +255,10 @@ export function buildWriteTools(kb: KnowledgeBase, filesChanged: Set<string>, tr
         log_summary: logSummary,
       }),
       execute: async ({ path, frontmatter, replace_section, replace_body, log_summary }) => {
+        const expectedBodyHash =
+          replace_body === undefined
+            ? undefined
+            : state.expectedBodyHash(path, (await kb.readConcept(path)).body);
         const c = await kb.patchConcept(
           path,
           {
@@ -220,12 +268,13 @@ export function buildWriteTools(kb: KnowledgeBase, filesChanged: Set<string>, tr
               : undefined,
             replaceBody: replace_body,
           },
-          log_summary
+          log_summary,
+          expectedBodyHash
         );
         filesChanged.add(c.path);
         recordHotWrite(c.path);
         trace?.record("patch_concept", c.path, [c.path], true);
-        return { patched: c.path };
+        return state.result({ patched: c.path });
       },
     }),
     delete_concept: tool({
@@ -240,7 +289,7 @@ export function buildWriteTools(kb: KnowledgeBase, filesChanged: Set<string>, tr
         filesChanged.add(path);
         recordHotDelete(path);
         trace?.record("delete_concept", path, [path], true);
-        return { deleted: path };
+        return state.result({ deleted: path });
       },
     }),
   };
