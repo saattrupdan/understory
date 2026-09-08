@@ -9,9 +9,8 @@ import {
 import { withFallback } from "../providers/fallback.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { buildReadTools, buildWriteTools, formatTree } from "./tools.js";
+import { resolveAgentLimits } from "./limits.js";
 import { TraceRecorder, TraceStore, type TraceUsage } from "./trace.js";
-
-const MAX_STEPS = 12;
 
 export interface AgentOptions {
   model?: string;
@@ -42,7 +41,7 @@ interface ResolvedAgentModel {
 
 async function promptContext(kb: KnowledgeBase, mode: "query" | "mutate" | "chat") {
   const [types, tree] = await Promise.all([kb.listTypes(), kb.listTree()]);
-  return { existingTypes: types, treeSummary: formatTree(tree), mode };
+  return { existingTypes: types, treeSummary: formatTree(tree, 0, false), mode };
 }
 
 async function resolveAgentModel(
@@ -120,6 +119,7 @@ export async function runQuery(
 ): Promise<QueryResult> {
   const ctx = await promptContext(kb, "query");
   const recorder = new TraceRecorder();
+  const maxSteps = resolveAgentLimits().maxSteps;
   let modelChain: string[] = [];
   try {
     const resolved = await resolveAgentModel(options, "query");
@@ -129,7 +129,7 @@ export async function runQuery(
       system: buildSystemPrompt(ctx),
       prompt: question,
       tools: buildReadTools(kb, recorder),
-      stopWhen: stepCountIs(MAX_STEPS),
+      stopWhen: stepCountIs(maxSteps),
     });
     const trace = recorder.finalize("query", question, result.text, "success", modelChain, sumStepsUsage(result.steps));
     await traceStore(kb).save(trace);
@@ -149,6 +149,7 @@ export async function runMutation(
 ): Promise<MutationOutcome> {
   const ctx = await promptContext(kb, "mutate");
   const recorder = new TraceRecorder();
+  const maxSteps = resolveAgentLimits().maxSteps;
   const filesChanged = new Set<string>();
   let modelChain: string[] = [];
   try {
@@ -159,7 +160,7 @@ export async function runMutation(
       system: buildSystemPrompt(ctx),
       prompt: instruction,
       tools: { ...buildReadTools(kb, recorder), ...buildWriteTools(kb, filesChanged, recorder) },
-      stopWhen: stepCountIs(MAX_STEPS),
+      stopWhen: stepCountIs(maxSteps),
       temperature: 0.2,
     });
     const trace = recorder.finalize("mutation", instruction, result.text, "success", modelChain, sumStepsUsage(result.steps));
@@ -196,6 +197,7 @@ export async function streamChat(
 ) {
   const ctx = await promptContext(kb, "chat");
   const recorder = new TraceRecorder();
+  const maxSteps = resolveAgentLimits().maxSteps;
   const filesChanged = new Set<string>();
   let modelChain: string[] = [];
   // The user turn that started this run, for the trace record.
@@ -216,7 +218,7 @@ export async function streamChat(
       system: buildSystemPrompt(ctx),
       messages,
       tools: { ...buildReadTools(kb, recorder), ...buildWriteTools(kb, filesChanged, recorder) },
-      stopWhen: stepCountIs(MAX_STEPS),
+      stopWhen: stepCountIs(maxSteps),
       onFinish: async ({ text, totalUsage }) => {
         // Persist only turns that actually touched the bundle.
         if (recorder.steps.length > 0) {

@@ -1,9 +1,10 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { KnowledgeBase } from "../okf/index.js";
-import type { TreeNode } from "../okf/types.js";
+import type { Concept, TreeNode } from "../okf/types.js";
 import type { TraceRecorder } from "./trace.js";
 import { recordHotDelete, recordHotWrite } from "./hot-memory.js";
+import { resolveAgentLimits } from "./limits.js";
 
 /** Bundle-relative concept path, e.g. "/tables/customers.md". */
 const conceptPath = z
@@ -27,7 +28,47 @@ const logSummary = z
     "One past-tense sentence for the update log, with bundle-relative links, e.g. 'Added [Billing API](/apis/billing-api.md).'"
   );
 
+export interface ReadPage {
+  path: string;
+  frontmatter: Concept["frontmatter"];
+  body: string;
+  offset: number;
+  total_chars: number;
+  truncated: boolean;
+  next_offset: number | null;
+}
+
+function readPage(concept: Concept, offset: number, maxChars: number): ReadPage {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > concept.body.length) {
+    throw new Error(
+      `Invalid offset ${offset} for ${concept.path}; expected an integer from 0 to ${concept.body.length}`
+    );
+  }
+  const body = concept.body.slice(offset, offset + maxChars);
+  const nextOffset = offset + body.length;
+  const truncated = nextOffset < concept.body.length;
+  return {
+    path: concept.path,
+    frontmatter: concept.frontmatter,
+    body,
+    offset,
+    total_chars: concept.body.length,
+    truncated,
+    next_offset: truncated ? nextOffset : null,
+  };
+}
+
+function boundText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const marker = `\n... [truncated; total_chars=${text.length}; next_offset=${maxChars}]`;
+  if (marker.length >= maxChars) return text.slice(0, maxChars);
+  const available = maxChars - marker.length;
+  const lineEnd = text.lastIndexOf("\n", available);
+  return text.slice(0, lineEnd > 0 ? lineEnd : available) + marker;
+}
+
 export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
+  const limits = resolveAgentLimits();
   return {
     search_knowledge: tool({
       description:
@@ -45,7 +86,10 @@ export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
         // the model's next step is to read plausible concepts, not give up.
         // Paths and types only: this lands in the transcript at every missed
         // step, and descriptions would triple its cost for no navigation gain.
-        const tree = formatTree(await kb.listTree(), 0, false);
+        const tree = boundText(
+          formatTree(await kb.listTree(), 0, false),
+          limits.maxToolResultChars
+        );
         return {
           hits: [],
           notice:
@@ -55,43 +99,60 @@ export function buildReadTools(kb: KnowledgeBase, trace?: TraceRecorder) {
       },
     }),
     read_concept: tool({
-      description: "Read one concept document in full: frontmatter and markdown body.",
-      inputSchema: z.object({ path: conceptPath }),
-      execute: async ({ path }) => {
+      description:
+        "Read one concept's frontmatter and a bounded body page. If truncated, use next_offset to page through the body before replacing it.",
+      inputSchema: z.object({
+        path: conceptPath,
+        offset: z.number().int().min(0).default(0).describe("Body character offset"),
+      }),
+      execute: async ({ path, offset = 0 }) => {
         const c = await kb.readConcept(path);
         trace?.record("read_concept", c.path, [c.path]);
-        return { path: c.path, frontmatter: c.frontmatter, body: c.body };
+        return readPage(c, offset, limits.maxDocumentChars);
       },
     }),
     read_concepts: tool({
       description:
-        "Read several concepts in one call. Preferred over repeated read_concept calls " +
-        "whenever more than one candidate is known — one step serves them all.",
+        "Read several concepts in one call with frontmatter retained and a bounded aggregate body. " +
+        "Each body may be paged with read_concept if its metadata says truncated.",
       inputSchema: z.object({
         paths: z.array(conceptPath).min(1).max(12).describe("Concept paths to read together"),
       }),
       execute: async ({ paths }) => {
         trace?.record("read_concepts", paths.slice(0, 3).join(", "), paths);
-        const concepts = [];
+        const concepts: ReadPage[] = [];
         const missing: string[] = [];
+        let returnedChars = 0;
+        let totalChars = 0;
         for (const p of paths) {
           try {
             const c = await kb.readConcept(p);
-            concepts.push({ path: c.path, frontmatter: c.frontmatter, body: c.body });
+            totalChars += c.body.length;
+            const remaining = Math.max(0, limits.maxToolResultChars - returnedChars);
+            const page = readPage(c, 0, Math.min(limits.maxDocumentChars, remaining));
+            returnedChars += page.body.length;
+            concepts.push(page);
           } catch {
             missing.push(p); // Reported rather than guessed at.
           }
         }
-        return { read: concepts, missing };
+        return {
+          read: concepts,
+          missing,
+          returned_body_chars: returnedChars,
+          total_body_chars: totalChars,
+          truncated: returnedChars < totalChars,
+          max_body_chars: limits.maxToolResultChars,
+        };
       },
     }),
     list_directory: tool({
       description:
-        "List the bundle's directory tree with concept types/titles/descriptions. Use to understand structure and decide where new concepts belong.",
+        "List the bundle's compact directory tree with concept types (descriptions omitted). Use to understand structure and decide where new concepts belong.",
       inputSchema: z.object({}),
       execute: async () => {
         trace?.record("list_directory", "", []);
-        return formatTree(await kb.listTree());
+        return boundText(formatTree(await kb.listTree(), 0, false), limits.maxToolResultChars);
       },
     }),
     lint_knowledge: tool({
