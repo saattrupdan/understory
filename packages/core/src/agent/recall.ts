@@ -230,6 +230,7 @@ function recallQueryVariants(question: string): RecallVariant[] {
   if (tokens.length === 0) return [];
 
   const anchors = new Map<string, number>();
+  const fallbackAnchors = new Map<string, number>();
   const intentScores = new Map<string, { score: number; order: number }>();
   let nextIntentOrder = 0;
   const rememberIntent = (root: string, score: number): void => {
@@ -240,6 +241,10 @@ function recallQueryVariants(question: string): RecallVariant[] {
     } else if (score > previous.score) {
       previous.score = score;
     }
+  };
+  const rememberAnchor = (anchor: string, score: number): void => {
+    const previous = anchors.get(anchor);
+    if (previous === undefined || score > previous) anchors.set(anchor, score);
   };
 
   for (const token of tokens) {
@@ -255,32 +260,46 @@ function recallQueryVariants(question: string): RecallVariant[] {
         // each of these compounds and applies its normal confidence rules.
         for (const part of parts) {
           if (!INTENT_ROOTS.has(expansionRoot(part))) {
-            anchors.set(part, part.includes("-") ? 3 : 1);
+            rememberAnchor(part, part.includes("-") ? 3 : 1);
           }
         }
         for (let length = parts.length - 1; length > 1; length -= 1) {
           const prefix = parts.slice(0, length).join("/");
           if (parts.slice(0, length).some((part) => !INTENT_ROOTS.has(expansionRoot(part)))) {
-            anchors.set(prefix, 2);
+            rememberAnchor(prefix, 2);
           }
         }
-        anchors.set(token, 2);
+        rememberAnchor(token, 2);
       }
+    } else if (
+      token.length >= 3 &&
+      token.includes("-") &&
+      !EXPANSION_STOPWORDS.has(tokenRoot) &&
+      !INTENT_ROOTS.has(tokenRoot)
+    ) {
+      // A hyphenated project token is useful even without a slash-separated
+      // path, but still outranks a proper-name fallback.
+      rememberAnchor(token, 3);
     } else if (
       token.length >= 3 &&
       /^[\p{Lu}]/u.test(token) &&
       !EXPANSION_STOPWORDS.has(tokenRoot) &&
       !INTENT_ROOTS.has(tokenRoot)
     ) {
-      // A proper-cased token is a useful fallback anchor for questions that
-      // name a project but do not include a path-like repository token.
-      anchors.set(token, 2);
+      // Proper-cased names are deliberately held back until we know there is
+      // no more precise compound or path anchor in this question.
+      const previous = fallbackAnchors.get(token);
+      if (previous === undefined || 2 > previous) fallbackAnchors.set(token, 2);
     }
 
     for (const part of expansionComponents(token)) {
       const root = expansionRoot(part);
       if (INTENT_ROOTS.has(root)) rememberIntent(root, parts.length > 1 ? 2 : 1);
     }
+  }
+
+  if (anchors.size === 0) {
+    for (const [anchor, score] of fallbackAnchors) rememberAnchor(anchor, score);
   }
 
   const hasIntentBoundary = /(?:^|\s)(?:and|or|versus|vs)(?:$|\s)/iu.test(question);
@@ -304,7 +323,9 @@ function recallQueryVariants(question: string): RecallVariant[] {
 
   for (const intent of boundedIntents) {
     for (const anchor of rankedAnchors) {
-      const query = `${anchor} ${intent}`;
+      const query = intent === "branch"
+        ? `${anchor} ${intent} main`
+        : `${anchor} ${intent}`;
       if (!variants.some((variant) => variant.query === query)) {
         variants.push({ query, anchor, intent });
       }
@@ -321,7 +342,7 @@ function trustedVariantHit(
   return (hit.confidence ?? 0) >= minScore && hit.confidenceQualified !== false;
 }
 
-const MAX_RECALL_VARIANT_HITS = 8;
+const MAX_RECALL_VARIANT_HITS = 12;
 
 type IntentEvidence = {
   bestConfidence: number;
@@ -565,7 +586,7 @@ export async function runRecall(
   // than one result per view so aggregation can distinguish repeated evidence.
   const variants = recallQueryVariants(question);
   if (maxCandidates > 0) {
-    const variantLimit = Math.min(MAX_RECALL_VARIANT_HITS, Math.max(maxCandidates, 2));
+    const variantLimit = MAX_RECALL_VARIANT_HITS;
     for (const variant of variants) {
       const variantHits = await kb.search(variant.query, { limit: variantLimit });
       for (const [index, hit] of variantHits.entries()) {
