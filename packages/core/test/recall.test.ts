@@ -197,7 +197,66 @@ describe("runRecall", () => {
     expect(generate).toHaveBeenCalledTimes(1);
   });
 
-  it("diversifies compound intents within the default candidate budget", async () => {
+  it("reserves an anchored candidate when install variants fill the pool", async () => {
+    const installPaths = Array.from({ length: 6 }, (_, index) =>
+      `/notes/ptr-ms-install-${index}.md`
+    );
+    const branchPath = "/decisions/ptr-ms-analysis-work-on-main.md";
+    await Promise.all(
+      [...installPaths, branchPath].map((conceptPath) =>
+        kb.writeConcept(
+          conceptPath,
+          {
+            type: "Note",
+            title: conceptPath.includes("branch") ? "PTR-MS branch policy" : "PTR-MS install",
+          },
+          conceptPath.includes("branch")
+            ? "The project branch policy keeps work on main."
+            : "Install the project with pipx using the current checkout.",
+          "add"
+        )
+      )
+    );
+
+    const installHits = installPaths.map((path, index) => ({
+      path,
+      type: "Note",
+      title: "PTR-MS install",
+      score: 100 - index,
+      confidence: 50 - index,
+      confidenceQualified: true,
+    }));
+    const branchHit = {
+      path: branchPath,
+      type: "Note",
+      title: "PTR-MS branch policy",
+      snippet: "The project branch policy keeps work on main.",
+      score: 80,
+      confidence: 45,
+      confidenceQualified: true,
+    };
+    const searched = vi.spyOn(kb, "search").mockImplementation(async (query) => {
+      if (query.includes(" branch")) return [branchHit];
+      return installHits;
+    });
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nThe workflow is documented.",
+      finishReason: "stop" as const,
+    }));
+
+    const question =
+      "How is the current Sniff desktop application installed locally from the " +
+      "ptr-ms/sniff repository, and what branch/install conventions have been used?";
+    const result = await runRecall(kb, question, {}, generate);
+
+    expect(result.paths).toContain(branchPath);
+    expect(result.paths.filter((path) => installPaths.includes(path))).toHaveLength(5);
+    expect(searched.mock.calls.map(([query]) => query)).toEqual(
+      expect.arrayContaining(["ptr-ms install", "ptr-ms/sniff install", "ptr-ms branch"])
+    );
+  });
+
+  it("keeps both read paths in a realistic large production fixture", async () => {
     await kb.writeConcept(
       "/gotchas/ptr-ms-analysis-pipx-installation.md",
       { type: "Gotcha", title: "PTR-MS/Sniff pipx installation" },
@@ -239,11 +298,14 @@ describe("runRecall", () => {
     );
 
     const question =
-      "How is the current Sniff desktop application installed locally from the " +
-      "ptr-ms/sniff repository so Dan can test changes by opening Sniff, and what " +
+      "How is the current Sniff desktop application installed locally with pipx from " +
+      "the ptr-ms/sniff repository so Dan can test changes by opening Sniff, and what " +
       "branch/install conventions have been used?";
     const searched = vi.spyOn(kb, "search");
-    const generate = vi.fn(async () => ({ text: "SUFFICIENT\nThe workflow is documented.", finishReason: "stop" as const }));
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nThe workflow is documented.",
+      finishReason: "stop" as const,
+    }));
 
     const result = await runRecall(kb, question, {}, generate);
 
@@ -254,6 +316,8 @@ describe("runRecall", () => {
         "/decisions/ptr-ms-analysis-work-on-main.md",
       ])
     );
+    expect(result.paths).toContain("/gotchas/ptr-ms-analysis-pipx-installation.md");
+    expect(result.paths).toContain("/decisions/ptr-ms-analysis-work-on-main.md");
     expect(searched.mock.calls.length).toBeLessThanOrEqual(5);
     expect(searched.mock.calls.map(([query]) => query)).toEqual(
       expect.arrayContaining(["ptr-ms install", "ptr-ms branch"])
