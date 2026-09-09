@@ -94,6 +94,229 @@ function intEnv(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+const MAX_RECALL_VARIANTS = 4;
+const MAX_RECALL_ANCHORS = 2;
+const MAX_RECALL_INTENTS = 3;
+const EXPANSION_TOKEN_PATTERN = /[\p{L}\p{N}\p{M}\p{S}]+(?:[-._/][\p{L}\p{N}\p{M}\p{S}]+)*/gu;
+const EXPANSION_PATH_SEPARATOR = /[/\.]+/u;
+const EXPANSION_COMPONENT_SEPARATOR = /[/._-]+/u;
+
+// These are deliberately generic operational intents, rather than names from
+// the bundle. They let a compound question split into independently useful
+// searches without inventing terms with an LLM.
+const INTENT_ROOTS = new Set([
+  "access",
+  "artwork",
+  "auth",
+  "backup",
+  "branch",
+  "build",
+  "configure",
+  "create",
+  "deploy",
+  "export",
+  "find",
+  "icon",
+  "import",
+  "install",
+  "launch",
+  "logo",
+  "login",
+  "migrate",
+  "open",
+  "package",
+  "remove",
+  "rename",
+  "restore",
+  "run",
+  "search",
+  "setup",
+  "start",
+  "stop",
+  "test",
+  "update",
+  "use",
+  "version",
+  "workflow",
+]);
+const EXPANSION_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "be",
+  "been",
+  "by",
+  "can",
+  "could",
+  "do",
+  "does",
+  "for",
+  "from",
+  "have",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "so",
+  "the",
+  "to",
+  "was",
+  "what",
+  "where",
+  "which",
+  "with",
+]);
+const INTENT_MORPHOLOGY = new Map([
+  ["artworks", "artwork"],
+  ["branches", "branch"],
+  ["branching", "branch"],
+  ["configured", "configure"],
+  ["configuring", "configure"],
+  ["installations", "install"],
+  ["installed", "install"],
+  ["installing", "install"],
+  ["icons", "icon"],
+  ["launching", "launch"],
+  ["logos", "logo"],
+  ["migrating", "migrate"],
+  ["opened", "open"],
+  ["opening", "open"],
+  ["packaging", "package"],
+  ["restoring", "restore"],
+  ["running", "run"],
+  ["searching", "search"],
+  ["setting", "setup"],
+  ["starting", "start"],
+  ["stopping", "stop"],
+  ["testing", "test"],
+  ["tested", "test"],
+  ["tests", "test"],
+  ["using", "use"],
+  ["used", "use"],
+  ["updated", "update"],
+  ["updating", "update"],
+]);
+
+function expansionRoot(token: string): string {
+  const lower = token.toLowerCase();
+  return INTENT_MORPHOLOGY.get(lower) ?? lower;
+}
+
+function expansionParts(token: string): string[] {
+  return token.split(EXPANSION_PATH_SEPARATOR).filter((part) => part.length > 1);
+}
+
+function expansionComponents(token: string): string[] {
+  return token.split(EXPANSION_COMPONENT_SEPARATOR).filter((part) => part.length > 1);
+}
+
+/**
+ * Derive a few deterministic, content-searchable views of a compound query.
+ *
+ * The whole question remains the authoritative first search. These variants
+ * only exist when the question has both a project/entity anchor and at least
+ * two recognisable operational intents, which avoids turning ordinary lookup
+ * queries into a fan-out of generic searches.
+ */
+function recallQueryVariants(question: string): string[] {
+  const tokens = question.slice(0, 4096).match(EXPANSION_TOKEN_PATTERN) ?? [];
+  if (tokens.length === 0) return [];
+
+  const anchors = new Map<string, number>();
+  const intentScores = new Map<string, { score: number; order: number }>();
+  let nextIntentOrder = 0;
+  const rememberIntent = (root: string, score: number): void => {
+    const previous = intentScores.get(root);
+    if (!previous) {
+      intentScores.set(root, { score, order: nextIntentOrder });
+      nextIntentOrder += 1;
+    } else if (score > previous.score) {
+      previous.score = score;
+    }
+  };
+
+  for (const token of tokens) {
+    const parts = expansionParts(token);
+    const tokenRoot = expansionRoot(token);
+    if (INTENT_ROOTS.has(tokenRoot)) rememberIntent(tokenRoot, 1);
+
+    if (parts.length > 1) {
+      const nonIntentParts = parts.filter((part) => !INTENT_ROOTS.has(expansionRoot(part)));
+      if (nonIntentParts.length > 0) {
+        // Prefer useful intermediate path components such as `ptr-ms` over a
+        // full path or a one-word component. Search itself still decomposes
+        // each of these compounds and applies its normal confidence rules.
+        for (const part of parts) {
+          if (!INTENT_ROOTS.has(expansionRoot(part))) {
+            anchors.set(part, part.includes("-") ? 3 : 1);
+          }
+        }
+        for (let length = parts.length - 1; length > 1; length -= 1) {
+          const prefix = parts.slice(0, length).join("/");
+          if (parts.slice(0, length).some((part) => !INTENT_ROOTS.has(expansionRoot(part)))) {
+            anchors.set(prefix, 2);
+          }
+        }
+        anchors.set(token, 2);
+      }
+    } else if (
+      token.length >= 3 &&
+      /^[\p{Lu}]/u.test(token) &&
+      !EXPANSION_STOPWORDS.has(tokenRoot) &&
+      !INTENT_ROOTS.has(tokenRoot)
+    ) {
+      // A proper-cased token is a useful fallback anchor for questions that
+      // name a project but do not include a path-like repository token.
+      anchors.set(token, 2);
+    }
+
+    for (const part of expansionComponents(token)) {
+      const root = expansionRoot(part);
+      if (INTENT_ROOTS.has(root)) rememberIntent(root, parts.length > 1 ? 2 : 1);
+    }
+  }
+
+  const hasIntentBoundary = /(?:^|\s)(?:and|or|versus|vs)(?:$|\s)/iu.test(question);
+  const hasCompoundIntents = tokens.some(
+    (token) =>
+      expansionComponents(token).filter((part) => INTENT_ROOTS.has(expansionRoot(part))).length >= 2
+  );
+  if (anchors.size === 0 || intentScores.size < 2 || (!hasIntentBoundary && !hasCompoundIntents)) {
+    return [];
+  }
+
+  const rankedAnchors = [...anchors.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, MAX_RECALL_ANCHORS)
+    .map(([anchor]) => anchor);
+  const boundedIntents = [...intentScores.entries()]
+    .sort((left, right) => right[1].score - left[1].score || left[1].order - right[1].order)
+    .slice(0, MAX_RECALL_INTENTS)
+    .map(([intent]) => intent);
+  const variants: string[] = [];
+
+  for (const intent of boundedIntents) {
+    for (const anchor of rankedAnchors) {
+      const variant = `${anchor} ${intent}`;
+      if (!variants.includes(variant)) variants.push(variant);
+      if (variants.length >= MAX_RECALL_VARIANTS) return variants;
+    }
+  }
+  return variants;
+}
+
+function trustedVariantHit(
+  hit: { confidence?: number; confidenceQualified?: boolean },
+  minScore: number
+): boolean {
+  return (hit.confidence ?? 0) >= minScore && hit.confidenceQualified !== false;
+}
+
 /** Neighbour sets over the concept link graph (undirected, 1 hop). */
 async function neighboursOf(kb: KnowledgeBase): Promise<Map<string, string[]>> {
   const map = new Map<string, string[]>();
@@ -121,6 +344,9 @@ export async function runRecall(
   const minScore = intEnv(process.env.RECALL_MIN_SCORE, DEFAULT_MIN_SCORE);
   const excerptChars = intEnv(process.env.RECALL_EXCERPT_CHARS, DEFAULT_EXCERPT_CHARS);
 
+  // Keep the original whole-query search first. Its top hit remains the trust
+  // gate for the fast path; expansion must never turn a weak/path-only query
+  // into a generation request.
   const hits = await kb.search(question, { limit: Math.max(seeds, 1) });
   if (hits.length === 0) return { answer: null, paths: [] };
   // Ranking score deliberately rewards useful path decomposition, but is not
@@ -130,8 +356,25 @@ export async function runRecall(
   const topConfidence = hits[0].confidence ?? 0;
   if (topConfidence < minScore) return { answer: null, paths: [] };
 
-  const ordered = hits.slice(0, seeds).map((h) => h.path);
+  const ordered = hits.slice(0, Math.min(seeds, maxCandidates)).map((h) => h.path);
   const chosen = new Set(ordered);
+
+  // A compound question can contain several independent intents. Search each
+  // bounded anchor/intent view, but admit only hits that pass the same
+  // corpus-aware confidence contract as ordinary recall candidates.
+  if (ordered.length < maxCandidates) {
+    const variantLimit = Math.max(seeds, 2);
+    for (const variant of recallQueryVariants(question)) {
+      const variantHits = await kb.search(variant, { limit: variantLimit });
+      for (const hit of variantHits) {
+        if (!trustedVariantHit(hit, minScore) || chosen.has(hit.path)) continue;
+        chosen.add(hit.path);
+        ordered.push(hit.path);
+        break;
+      }
+      if (chosen.size >= maxCandidates) break;
+    }
+  }
 
   // Keyword search is blind to synonyms; linked concepts are the cheapest
   // way to widen the net without another LLM call.

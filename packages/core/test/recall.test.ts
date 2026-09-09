@@ -197,6 +197,129 @@ describe("runRecall", () => {
     expect(generate).toHaveBeenCalledTimes(1);
   });
 
+  it("diversifies compound intents within the default candidate budget", async () => {
+    await kb.writeConcept(
+      "/gotchas/ptr-ms-analysis-pipx-installation.md",
+      { type: "Gotcha", title: "PTR-MS/Sniff pipx installation" },
+      "Install the editable checkout with pipx so the Sniff launcher uses the current package.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/gotchas/ptr-ms-analysis-work-on-main.md",
+      { type: "Gotcha", title: "PTR-MS analysis work on main" },
+      "Work directly on main when testing Sniff changes; the branch convention is documented here.",
+      "add"
+    );
+
+    await Promise.all(
+      Array.from({ length: 120 }, async (_, index) => {
+        const directory = ["repositories", "gotchas", "notes"][index % 3];
+        const filename = `${directory}/distractor-${index}.md`;
+        const absolute = path.join(root, filename);
+        await fs.mkdir(path.dirname(absolute), { recursive: true });
+        await fs.writeFile(
+          absolute,
+          `---\ntype: Note\ntitle: Desktop workflow ${index}\n---\n` +
+            "General application installation, testing, and branch conventions.\n"
+        );
+      })
+    );
+
+    const question =
+      "How is the current Sniff desktop application installed locally from the " +
+      "ptr-ms/sniff repository so Dan can test changes by opening Sniff, and what " +
+      "branch/install conventions have been used?";
+    const searched = vi.spyOn(kb, "search");
+    const generate = vi.fn(async () => ({ text: "SUFFICIENT\nThe workflow is documented.", finishReason: "stop" as const }));
+
+    const result = await runRecall(kb, question, {}, generate);
+
+    expect(result.paths.slice(0, 6)).toEqual(
+      expect.arrayContaining([
+        "/gotchas/ptr-ms-analysis-pipx-installation.md",
+        "/gotchas/ptr-ms-analysis-work-on-main.md",
+      ])
+    );
+    expect(searched.mock.calls.length).toBeLessThanOrEqual(5);
+    expect(searched.mock.calls.map(([query]) => query)).toEqual(
+      expect.arrayContaining(["ptr-ms install", "ptr-ms branch"])
+    );
+  });
+
+  it("does not expand simple or empty queries", async () => {
+    await kb.writeConcept(
+      "/facts/deploy.md",
+      { type: "Fact", title: "Deploy day", description: "weekly deploy cadence" },
+      "We deploy on Fridays.",
+      "add"
+    );
+    const searched = vi.spyOn(kb, "search");
+    const generate = vi.fn(async () => ({ text: "Fridays.", finishReason: "stop" as const }));
+
+    await runRecall(kb, "deploy cadence day?", {}, generate);
+    await runRecall(kb, "", {}, generate);
+
+    expect(searched).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps path-only expansion hits behind the confidence gate", async () => {
+    await kb.writeConcept(
+      "/facts/acme-policy.md",
+      { type: "Fact", title: "Acme installation and branch policy" },
+      "Acme installation and branch policy for the current project.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/projects/acme/release.md",
+      { type: "Note", title: "Acme release" },
+      "Routine release notes.",
+      "add"
+    );
+    vi.stubEnv("RECALL_SEEDS", "1");
+    const searched = vi.spyOn(kb, "search");
+    const generate = vi.fn(async () => ({ text: "UNKNOWN", finishReason: "stop" as const }));
+
+    const result = await runRecall(
+      kb,
+      "How do I install and branch from acme/release?",
+      {},
+      generate
+    );
+
+    expect(result.answer).toBeNull();
+    expect(result.paths).toContain("/facts/acme-policy.md");
+    expect(result.paths).not.toContain("/projects/acme/release.md");
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(searched.mock.calls.length).toBeGreaterThan(1);
+    expect(searched.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+
+  it("keeps the logo concept selected after intent expansion", async () => {
+    await kb.writeConcept(
+      "/notes/euroeval-visual-identity.md",
+      { type: "Note", title: "EuroEval visual identity" },
+      "The official EuroEval logo artwork is gfx/euroeval.png.",
+      "add"
+    );
+    await Promise.all(
+      Array.from({ length: 80 }, async (_, index) => {
+        const filename = `notes/logo-distractor-${index}.md`;
+        const absolute = path.join(root, filename);
+        await fs.mkdir(path.dirname(absolute), { recursive: true });
+        await fs.writeFile(
+          absolute,
+          `---\ntype: Note\ntitle: General project record ${index}\n---\n` +
+            "Generic project release and documentation record.\n"
+        );
+      })
+    );
+    const generate = vi.fn(async () => ({ text: "SUFFICIENT\nThe logo is documented.", finishReason: "stop" as const }));
+
+    const result = await runRecall(kb, "Where is the EuroEval logo artwork?", {}, generate);
+
+    expect(result.paths.slice(0, 6)).toContain("/notes/euroeval-visual-identity.md");
+  });
+
   it("widens to linked concepts the keywords never named", async () => {
     // The answer lives in a concept the question shares no words with; only the
     // link out of the matched concept can reach it.
