@@ -402,6 +402,20 @@ export function isMalformedAnswer(answer: string): boolean {
   return isCallSequence(answer, callsIn(answer));
 }
 
+/**
+ * Return whether a synthesis answer leaks private repair context or reasoning.
+ *
+ * These markers are never valid user-facing content. Rejecting them prevents a
+ * model from turning the bounded repair prompt into the query answer.
+ */
+export function isUnsafeSynthesisAnswer(answer: string): boolean {
+  return (
+    /(?:BEGIN|END) UNTRUSTED READ-ONLY EVIDENCE/i.test(answer) ||
+    /<\/?think(?:ing)?\s*>/i.test(answer) ||
+    /<\|(?:think|thinking|assistant_thinking)[^|]*\|>/i.test(answer)
+  );
+}
+
 /** A stable, concise diagnostic for logs and failed traces. */
 export const MALFORMED_ANSWER_MESSAGE =
   "Malformed model answer: textual tool-call protocol leakage";

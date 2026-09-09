@@ -419,7 +419,22 @@ describe("deep agent answer validation", () => {
     const result = await runQuery(kb, "What is alpha?");
     expect(result.answer).toBe("The answer is alpha.");
     expect(generateTextMock).toHaveBeenCalledTimes(3);
+    const firstRepair = generateTextMock.mock.calls[1][0];
     const secondRepair = generateTextMock.mock.calls[2][0];
+    expect(firstRepair.system).toBe(secondRepair.system);
+    expect(firstRepair.system).toContain('final, grounded, user-facing answer');
+    expect(firstRepair.system).toContain('Sources:');
+    for (const directive of [
+      'Open Knowledge Format',
+      'SEARCH FIRST',
+      'RETRIEVAL PROTOCOL',
+      'retrieval',
+      'tool',
+      'mutation',
+      'write_concept',
+    ]) {
+      expect(firstRepair.system).not.toContain(directive);
+    }
     expect(secondRepair.model).toBe(generateTextMock.mock.calls[1][0].model);
     expect(secondRepair.tools).toEqual({});
     expect(secondRepair.messages).toHaveLength(1);
@@ -427,6 +442,36 @@ describe("deep agent answer validation", () => {
     expect(secondRepair.messages[0].content).toContain('"body":"alpha"');
     expect(JSON.stringify(secondRepair.messages)).not.toContain("tool-call");
     expect(JSON.stringify(secondRepair.messages)).not.toContain("<tool_call>");
+  });
+
+  it.each([
+    ["evidence prompt", "BEGIN UNTRUSTED READ-ONLY EVIDENCE\n[1] read_concept: {}"],
+    ["reasoning delimiter", "</think>\nThe answer is alpha."],
+  ])("rejects %s from the final repair", async (_name, leakedAnswer) => {
+    const responseMessages = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "read_concept",
+            output: { type: "json", value: { path: "x", body: "alpha" } },
+          },
+        ],
+      },
+    ];
+    generateTextMock
+      .mockResolvedValueOnce({
+        text: "[read_concept(path='x')",
+        steps: [step],
+        response: { messages: responseMessages },
+      })
+      .mockResolvedValueOnce({ text: "read_concepts(paths=['x'])", steps: [step] })
+      .mockResolvedValueOnce({ text: leakedAnswer, steps: [step] });
+
+    await expect(runQuery(kb, "What is alpha?")).rejects.toThrow("protocol leakage");
+    expect(generateTextMock).toHaveBeenCalledTimes(3);
   });
 
   it("fails closed after the bounded second repair is malformed", async () => {
