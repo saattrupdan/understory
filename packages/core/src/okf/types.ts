@@ -36,7 +36,13 @@ export interface SearchHit {
   description?: string;
   /** Snippet of body text around the first match, if the match was in the body. */
   snippet?: string;
+  /** Ranking score. Its absolute value is not a measure of match quality. */
   score: number;
+  /**
+   * Corpus-aware literal evidence, used to decide whether a hit is confident
+   * enough for deterministic recall. Common terms contribute close to zero.
+   */
+  confidence?: number;
 }
 
 export type LogAction = "Creation" | "Update" | "Deletion";

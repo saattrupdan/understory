@@ -210,17 +210,15 @@ describe("search", () => {
       kb.bundle,
       "Where is the ptr-ms/sniff installation documentation, and what command should I use?"
     );
-    expect(installation.slice(0, 3).map((hit) => hit.path)).toContain(
-      "/gotchas/ptr-ms-analysis-pipx-installation.md"
-    );
+    expect(installation[0].path).toBe("/gotchas/ptr-ms-analysis-pipx-installation.md");
+    expect(installation[0].confidence).toBeGreaterThanOrEqual(20);
 
     const icons = await searchBundle(
       kb.bundle,
       "Where is the logo documentation for packaging/make_icons.py?"
     );
-    expect(icons.slice(0, 3).map((hit) => hit.path)).toContain(
-      "/notes/ptr-ms-analysis-icons.md"
-    );
+    expect(icons[0].path).toBe("/notes/ptr-ms-analysis-icons.md");
+    expect(icons[0].confidence).toBeGreaterThanOrEqual(20);
   });
 
   it("decomposes punctuation without double-weighting duplicate terms", async () => {
@@ -243,6 +241,57 @@ describe("search", () => {
     // Existing broad substring matching remains available for ordinary prose.
     const broad = await searchBundle(kb.bundle, "customer");
     expect(broad.map((hit) => hit.path)).toContain("/tables/customers.md");
+  });
+
+  it("normalises and searches Unicode text without entering browse mode", async () => {
+    await kb.writeConcept(
+      "/steder/soeen.md",
+      { type: "Sted", title: "Sø og café" },
+      "Crème brûlée ved søen.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/sprog/kyrillisk.md",
+      { type: "Note", title: "Память проекта" },
+      "Сведения хранятся здесь.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/sprog/cjk.md",
+      { type: "Note", title: "记忆系统" },
+      "这里保存知识。",
+      "add"
+    );
+
+    expect((await searchBundle(kb.bundle, "sø")).map((hit) => hit.path)).toEqual([
+      "/steder/soeen.md",
+    ]);
+    expect((await searchBundle(kb.bundle, "cafe\u0301"))[0].path).toBe("/steder/soeen.md");
+    expect((await searchBundle(kb.bundle, "память"))[0].path).toBe("/sprog/kyrillisk.md");
+    expect((await searchBundle(kb.bundle, "记"))[0].path).toBe("/sprog/cjk.md");
+
+    const browse = await searchBundle(kb.bundle, "  ... -- /  ");
+    expect(browse.length).toBe(5);
+    expect(browse.every((hit) => hit.score === 1 && hit.confidence === 0)).toBe(true);
+  });
+
+  it("keeps ubiquitous path fragments below recall confidence", async () => {
+    for (const name of ["alpha", "beta", "gamma", "delta"]) {
+      await kb.writeConcept(
+        `/notes/${name}.md`,
+        { type: "Note", title: `Unrelated ${name}` },
+        "No matching filename is documented here.",
+        "add"
+      );
+    }
+
+    const absent = await searchBundle(kb.bundle, "Where is completely-absent.md?");
+    expect(absent.length).toBeGreaterThan(0); // `md` remains useful for ranking.
+    expect(absent[0].confidence).toBeLessThan(20);
+
+    const common = await searchBundle(kb.bundle, "notes md");
+    expect(common.length).toBeGreaterThan(0);
+    expect(common[0].confidence).toBeLessThan(20);
   });
 });
 

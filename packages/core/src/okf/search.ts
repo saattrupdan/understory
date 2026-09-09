@@ -7,19 +7,30 @@ export interface SearchOptions {
   limit?: number;
 }
 
+const TOKEN_PATTERN = /[\p{L}\p{N}\p{M}]+(?:[-._/][\p{L}\p{N}\p{M}]+)*/gu;
+const COMPOUND_SEPARATOR = /[/.\-_]+/u;
+
+/** Unicode-normalise and apply JavaScript's locale-independent lower-casing. */
+function normalise(value: string): string {
+  // NFKC makes canonically equivalent text and compatibility forms searchable
+  // alike. Lower-casing can itself introduce combining marks, so compose once
+  // more afterwards before both query and document tokenisation.
+  return value.normalize("NFKC").toLowerCase().normalize("NFC");
+}
+
 /**
  * Keep the original query token as well as its useful filename-like pieces.
  * The full token preserves exact path/title matches; the pieces make queries
  * such as `branch/install` useful against prose that names those parts apart.
+ * Unicode properties retain letters, numbers and combining marks in every
+ * script. Even one-code-point tokens are meaningful in scripts such as Han.
  */
 function queryTerms(query: string): string[] {
   const terms = new Set<string>();
-  const tokens = query.toLowerCase().match(/[a-z0-9]+(?:[-._/][a-z0-9]+)*/g) ?? [];
+  const tokens = normalise(query).match(TOKEN_PATTERN) ?? [];
   for (const token of tokens) {
-    if (token.length > 1) terms.add(token);
-    for (const part of token.split(/[\/.\-_]+/)) {
-      if (part.length > 1) terms.add(part);
-    }
+    terms.add(token);
+    for (const part of token.split(COMPOUND_SEPARATOR)) terms.add(part);
   }
   return [...terms];
 }
@@ -27,19 +38,24 @@ function queryTerms(query: string): string[] {
 /** Tokens used for whole-token bonuses, including compound components. */
 function fieldTokens(value: string): Set<string> {
   const tokens = new Set<string>();
-  for (const token of value.toLowerCase().match(/[a-z0-9]+(?:[-._/][a-z0-9]+)*/g) ?? []) {
+  for (const token of value.match(TOKEN_PATTERN) ?? []) {
     tokens.add(token);
-    for (const part of token.split(/[\/.\-_]+/)) {
-      if (part.length > 1) tokens.add(part);
-    }
+    for (const part of token.split(COMPOUND_SEPARATOR)) tokens.add(part);
   }
   return tokens;
 }
 
 function rarity(documentFrequency: number, documentCount: number): number {
-  // Keep the weighting bounded: rare terms should win over generic prose, but
-  // a single unusual token must not make every other matching term irrelevant.
+  // Keep ranking weights bounded: rare terms should win over generic prose,
+  // but a single unusual token must not make every other term irrelevant.
   return Math.min(4, Math.max(1, Math.log((documentCount + 1) / (documentFrequency + 1)) + 1));
+}
+
+function confidenceRarity(documentFrequency: number, documentCount: number): number {
+  if (documentFrequency === 0 || documentCount === 0) return 0;
+  // Unlike the ranking weight, confidence must approach zero when a term is in
+  // the whole corpus. Smoothing retains useful evidence in very small bundles.
+  return 2 * Math.log((documentCount + 1) / (documentFrequency + 0.5));
 }
 
 /**
@@ -70,20 +86,20 @@ export async function searchBundle(
     }
     const fm = concept.frontmatter;
 
-    if (options.type && fm.type?.toLowerCase() !== options.type.toLowerCase()) continue;
+    if (options.type && normalise(fm.type ?? "") !== normalise(options.type)) continue;
     if (options.tags?.length) {
       const conceptTags = (Array.isArray(fm.tags) ? fm.tags : []).map((t) =>
-        String(t).toLowerCase()
+        normalise(String(t))
       );
-      if (!options.tags.every((t) => conceptTags.includes(t.toLowerCase()))) continue;
+      if (!options.tags.every((t) => conceptTags.includes(normalise(t)))) continue;
     }
 
     const fields = {
-      title: (fm.title ?? "").toString().toLowerCase(),
-      description: (fm.description ?? "").toString().toLowerCase(),
-      tags: (Array.isArray(fm.tags) ? fm.tags : []).join(" ").toLowerCase(),
-      body: concept.body.toLowerCase(),
-      path: conceptPath.toLowerCase(),
+      title: normalise((fm.title ?? "").toString()),
+      description: normalise((fm.description ?? "").toString()),
+      tags: normalise((Array.isArray(fm.tags) ? fm.tags : []).join(" ")),
+      body: normalise(concept.body),
+      path: normalise(conceptPath),
     };
     documents.push({
       conceptPath,
@@ -115,25 +131,50 @@ export async function searchBundle(
   for (const document of documents) {
     const { conceptPath, concept, fields, tokens } = document;
     let score = 0;
+    let confidence = 0;
     let firstBodyMatch = -1;
     for (const term of terms) {
-      const weight = rarity(documentFrequency.get(term) ?? 0, documents.length);
-      if (fields.title.includes(term)) score += 10 * weight;
-      if (fields.path.includes(term)) score += 6 * weight;
-      if (fields.description.includes(term)) score += 5 * weight;
-      if (fields.tags.includes(term)) score += 5 * weight;
+      const frequency = documentFrequency.get(term) ?? 0;
+      const weight = rarity(frequency, documents.length);
+      const evidenceWeight = confidenceRarity(frequency, documents.length);
+      if (fields.title.includes(term)) {
+        score += 10 * weight;
+        confidence += 10 * evidenceWeight;
+      }
+      if (fields.path.includes(term)) {
+        score += 6 * weight;
+        // Paths are excellent ranking hints but weak semantic evidence on
+        // their own: directory and extension components repeat everywhere.
+        confidence += 2 * evidenceWeight;
+      }
+      if (fields.description.includes(term)) {
+        score += 5 * weight;
+        confidence += 5 * evidenceWeight;
+      }
+      if (fields.tags.includes(term)) {
+        score += 5 * weight;
+        confidence += 5 * evidenceWeight;
+      }
       const bodyIdx = fields.body.indexOf(term);
       if (bodyIdx !== -1) {
         score += 2 * weight;
+        confidence += 2 * evidenceWeight;
         if (firstBodyMatch === -1) firstBodyMatch = bodyIdx;
       }
 
       // A whole token in a title/path is much more selective than a substring
       // in a long body. Components of `foo-bar.md` count as whole tokens too.
-      if (tokens.title.has(term)) score += 24 * weight;
-      if (tokens.path.has(term)) score += 20 * weight;
+      if (tokens.title.has(term)) {
+        score += 24 * weight;
+        confidence += 24 * evidenceWeight;
+      }
+      if (tokens.path.has(term)) {
+        score += 20 * weight;
+        confidence += 5 * evidenceWeight;
+      }
     }
     // Empty query with type/tag filters = browse mode: include everything that passed filters.
+    // Non-ASCII words are retained above, so they cannot accidentally enter this branch.
     if (terms.length === 0) score = 1;
     if (score === 0) continue;
 
@@ -150,6 +191,7 @@ export async function searchBundle(
               .trim()
           : undefined,
       score,
+      confidence,
     });
   }
 
