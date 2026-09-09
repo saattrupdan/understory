@@ -15,6 +15,7 @@ import {
 } from "./limits.js";
 import { AgentRunContext } from "./run-context.js";
 import { TraceRecorder, TraceStore, type TraceUsage } from "./trace.js";
+import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
 
 export interface AgentOptions {
   model?: string;
@@ -165,9 +166,45 @@ export async function runQuery(
       prepareStep: prepareFinalSynthesisStep(maxSteps),
     });
     assertSynthesised(result.steps);
-    const trace = recorder.finalize("query", question, result.text, "success", modelChain, sumStepsUsage(result.steps));
+
+    let finalText = result.text;
+    const allSteps: Array<{
+      usage?: { inputTokens?: number; outputTokens?: number };
+    }> = [...result.steps];
+    if (isMalformedAnswer(finalText)) {
+      console.error(`[understory] query answer rejected: ${MALFORMED_ANSWER_MESSAGE}`);
+      const repairMessages: ModelMessage[] = [
+        { role: "user", content: question },
+        ...(result.response?.messages ?? []),
+      ];
+      const repair = await generateText({
+        model: resolved.model,
+        system:
+          `${buildSystemPrompt(ctx)}\n\n` +
+          "SYNTHESIS ONLY: Answer the user's question from the supplied conversation " +
+          "and tool results. Do not call tools and never emit tool-call markers or " +
+          "tool syntax; return ordinary user-facing prose only.",
+        messages: repairMessages,
+        tools: {},
+      });
+      assertSynthesised(repair.steps);
+      if (isMalformedAnswer(repair.text)) {
+        throw new Error(MALFORMED_ANSWER_MESSAGE);
+      }
+      finalText = repair.text;
+      allSteps.push(...repair.steps);
+    }
+
+    const trace = recorder.finalize(
+      "query",
+      question,
+      finalText,
+      "success",
+      modelChain,
+      sumStepsUsage(allSteps)
+    );
     await traceStore(kb).save(trace);
-    return { answer: result.text, steps: result.steps.length, traceId: trace.id };
+    return { answer: finalText, steps: allSteps.length, traceId: trace.id };
   } catch (err) {
     const trace = recorder.finalize("query", question, errorMessage(err), "failed", modelChain);
     await traceStore(kb).save(trace);
@@ -209,6 +246,10 @@ export async function runMutation(
       temperature: 0.2,
     });
     assertSynthesised(result.steps);
+    if (isMalformedAnswer(result.text)) {
+      console.error(`[understory] mutation summary rejected: ${MALFORMED_ANSWER_MESSAGE}`);
+      throw new Error(MALFORMED_ANSWER_MESSAGE);
+    }
     const trace = recorder.finalize("mutation", instruction, result.text, "success", modelChain, sumStepsUsage(result.steps));
     await traceStore(kb).save(trace);
     return {
@@ -307,6 +348,10 @@ export async function streamChat(
             : undefined;
         try {
           assertSynthesised(steps);
+          if (isMalformedAnswer(text)) {
+            console.error(`[understory] chat answer rejected: ${MALFORMED_ANSWER_MESSAGE}`);
+            throw new Error(MALFORMED_ANSWER_MESSAGE);
+          }
           await finaliseChatTrace(text, "success", usage);
         } catch (error) {
           const outcome = filesChanged.size > 0 ? "partial" : "failed";

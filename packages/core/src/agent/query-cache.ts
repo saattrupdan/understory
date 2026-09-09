@@ -7,6 +7,7 @@ import { hotLookup, recordHotQuery } from "./hot-memory.js";
 import { runRecall, type RecallOutcome } from "./recall.js";
 import { traceStore } from "./agent.js";
 import { TraceRecorder } from "./trace.js";
+import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
 import {
   assertInputWithinLimit,
   resolveAgentLimits,
@@ -74,7 +75,9 @@ export async function runQueryCached(
     "Query input"
   );
   if (process.env.QUERY_CACHE === "false") {
-    return { ...(await runner(kb, question, options)), cached: false, source: "deep" };
+    const result = await runner(kb, question, options);
+    if (isMalformedAnswer(result.answer)) throw new Error(MALFORMED_ANSWER_MESSAGE);
+    return { ...result, cached: false, source: "deep" };
   }
 
   const fingerprint = await bundleFingerprint(kb);
@@ -85,10 +88,15 @@ export async function runQueryCached(
   // Layer 1: exact cache — same question, unchanged bundle.
   const hit = cache.get(key);
   if (hit && hit.expiresAt > Date.now()) {
-    // Refresh recency (Map preserves insertion order — delete + set = LRU touch).
-    cache.delete(key);
-    cache.set(key, hit);
-    return { ...hit.result, cached: true, source: "cache" };
+    if (isMalformedAnswer(hit.result.answer)) {
+      // Do not let an entry created by an older process survive the validator.
+      cache.delete(key);
+    } else {
+      // Refresh recency (Map preserves insertion order — delete + set = LRU touch).
+      cache.delete(key);
+      cache.set(key, hit);
+      return { ...hit.result, cached: true, source: "cache" };
+    }
   }
 
   const ttl = parseDuration(process.env.QUERY_CACHE_TTL) ?? DEFAULT_TTL_MS;
@@ -112,6 +120,10 @@ export async function runQueryCached(
     console.error(
       `[understory] hot memory failed, falling through to the next layer: ${errorMessage(err)}`
     );
+  }
+  if (hotAnswer !== null && isMalformedAnswer(hotAnswer)) {
+    console.error(`[understory] hot memory declined: ${MALFORMED_ANSWER_MESSAGE}`);
+    hotAnswer = null;
   }
   if (hotAnswer !== null) {
     const result: QueryResult = { answer: hotAnswer, steps: 0, traceId: "" };
@@ -143,6 +155,10 @@ export async function runQueryCached(
       /* a failed trace must not lose an answer */
     });
   }
+  if (recalled.answer !== null && isMalformedAnswer(recalled.answer)) {
+    console.error(`[understory] recall declined: ${MALFORMED_ANSWER_MESSAGE}`);
+    recalled = { answer: null, paths: recalled.paths };
+  }
   if (recalled.answer !== null) {
     // Traced like any other query, with the retrieval it did as its single
     // step — this is how a slow query is attributed to a layer later.
@@ -161,6 +177,7 @@ export async function runQueryCached(
   // Anything recall already found is handed over, so a declined attempt buys
   // the deep run a head start instead of costing an extra round-trip.
   const result = await runner(kb, withCandidateHint(question, recalled.paths), options); // writes its own trace
+  if (isMalformedAnswer(result.answer)) throw new Error(MALFORMED_ANSWER_MESSAGE);
   store(key, result, ttl);
   recordHotQuery(question, result.answer);
   return { ...result, cached: false, source: "deep" };
