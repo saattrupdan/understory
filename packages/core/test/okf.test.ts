@@ -188,7 +188,7 @@ describe("search", () => {
       "add"
     );
     await kb.writeConcept(
-      "/gotchas/ptr-ms-analysis-work-on-main.md",
+      "/decisions/ptr-ms-analysis-work-on-main.md",
       { type: "Gotcha", title: "PTR-MS analysis work on main" },
       "Sniff work on main is documented here, including the installation branch workflow.",
       "add"
@@ -219,7 +219,7 @@ describe("search", () => {
     expect(installation[0].path).toBe("/gotchas/ptr-ms-analysis-pipx-installation.md");
     expect(installation[0].confidence).toBeGreaterThanOrEqual(20);
     expect(installation.slice(0, 6).map((hit) => hit.path)).toContain(
-      "/gotchas/ptr-ms-analysis-work-on-main.md"
+      "/decisions/ptr-ms-analysis-work-on-main.md"
     );
 
     const icons = await searchBundle(
@@ -238,7 +238,7 @@ describe("search", () => {
       "add"
     );
     await kb.writeConcept(
-      "/gotchas/ptr-ms-analysis-work-on-main.md",
+      "/decisions/ptr-ms-analysis-work-on-main.md",
       { type: "Gotcha", title: "PTR-MS Analysis — Work Directly on Main" },
       "Work directly on main when testing Sniff changes; this repository uses no long-lived feature branches. The branch and install conventions are documented here.",
       "add"
@@ -269,7 +269,7 @@ describe("search", () => {
     );
     const topThree = hits.slice(0, 3).map((hit) => hit.path);
     expect(topThree).toContain("/gotchas/ptr-ms-analysis-pipx-installation.md");
-    expect(topThree).toContain("/gotchas/ptr-ms-analysis-work-on-main.md");
+    expect(topThree).toContain("/decisions/ptr-ms-analysis-work-on-main.md");
   });
 
   it("canonicalises morphological query variants as one evidence group", async () => {

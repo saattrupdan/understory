@@ -173,7 +173,7 @@ describe("runRecall", () => {
       "add"
     );
     await kb.writeConcept(
-      "/gotchas/ptr-ms-analysis-work-on-main.md",
+      "/decisions/ptr-ms-analysis-work-on-main.md",
       { type: "Gotcha", title: "PTR-MS analysis work on main" },
       "Sniff installation and work on main are documented here.",
       "add"
@@ -191,7 +191,7 @@ describe("runRecall", () => {
     expect(result.paths.slice(0, 3)).toEqual(
       expect.arrayContaining([
         "/gotchas/ptr-ms-analysis-pipx-installation.md",
-        "/gotchas/ptr-ms-analysis-work-on-main.md",
+        "/decisions/ptr-ms-analysis-work-on-main.md",
       ])
     );
     expect(generate).toHaveBeenCalledTimes(1);
@@ -201,13 +201,26 @@ describe("runRecall", () => {
     await kb.writeConcept(
       "/gotchas/ptr-ms-analysis-pipx-installation.md",
       { type: "Gotcha", title: "PTR-MS/Sniff pipx installation" },
-      "Install the editable checkout with pipx so the Sniff launcher uses the current package.",
+      "Install the editable checkout with pipx so the Sniff launcher uses the current package; the branch/install workflow is documented here.",
       "add"
     );
     await kb.writeConcept(
-      "/gotchas/ptr-ms-analysis-work-on-main.md",
+      "/decisions/ptr-ms-analysis-work-on-main.md",
       { type: "Gotcha", title: "PTR-MS analysis work on main" },
       "Work directly on main when testing Sniff changes; the branch convention is documented here.",
+      "add"
+    );
+
+    await kb.writeConcept(
+      "/notes/generic-installer.md",
+      { type: "Note", title: "Generic application installer" },
+      "General installer documentation explains how to install, open, and test a current desktop application from a repository.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/notes/unrelated-branch.md",
+      { type: "Note", title: "Unrelated branch conventions" },
+      "General branch documentation explains how to test current changes and keep a repository on its active branch.",
       "add"
     );
 
@@ -234,16 +247,20 @@ describe("runRecall", () => {
 
     const result = await runRecall(kb, question, {}, generate);
 
+    expect(result.paths.length).toBeLessThanOrEqual(6);
     expect(result.paths.slice(0, 6)).toEqual(
       expect.arrayContaining([
         "/gotchas/ptr-ms-analysis-pipx-installation.md",
-        "/gotchas/ptr-ms-analysis-work-on-main.md",
+        "/decisions/ptr-ms-analysis-work-on-main.md",
       ])
     );
     expect(searched.mock.calls.length).toBeLessThanOrEqual(5);
     expect(searched.mock.calls.map(([query]) => query)).toEqual(
       expect.arrayContaining(["ptr-ms install", "ptr-ms branch"])
     );
+    const prompt = generate.mock.calls[0][1] as string;
+    expect(prompt).toContain("CONCEPT /gotchas/ptr-ms-analysis-pipx-installation.md");
+    expect(prompt).toContain("CONCEPT /decisions/ptr-ms-analysis-work-on-main.md");
   });
 
   it("does not expand simple or empty queries", async () => {
