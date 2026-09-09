@@ -15,7 +15,11 @@ import {
 } from "./limits.js";
 import { AgentRunContext } from "./run-context.js";
 import { TraceRecorder, TraceStore, type TraceUsage } from "./trace.js";
-import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
+import {
+  createProtocolLeakageGuard,
+  isMalformedAnswer,
+  MALFORMED_ANSWER_MESSAGE,
+} from "./answer-validation.js";
 
 export interface AgentOptions {
   model?: string;
@@ -137,6 +141,116 @@ function sumStepsUsage(
   return reported ? { inputTokens, outputTokens } : undefined;
 }
 
+function recordSafeTranscriptMessage(value: unknown): ModelMessage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const message = value as { role?: unknown; content?: unknown };
+  if (!Array.isArray(message.content)) return undefined;
+
+  if (message.role === "assistant") {
+    const parts = message.content
+      .filter(
+        (part): part is Record<string, unknown> =>
+          !!part && typeof part === "object" && part.type === "tool-call"
+      )
+      .filter(
+        (part) =>
+          typeof part.toolCallId === "string" &&
+          typeof part.toolName === "string" &&
+          Object.prototype.hasOwnProperty.call(part, "input")
+      )
+      .map((part) => ({
+        type: "tool-call" as const,
+        toolCallId: part.toolCallId as string,
+        toolName: part.toolName as string,
+        input: part.input,
+      }));
+    return parts.length > 0 ? ({ role: "assistant", content: parts } as ModelMessage) : undefined;
+  }
+
+  if (message.role === "tool") {
+    const parts = message.content
+      .filter(
+        (part): part is Record<string, unknown> =>
+          !!part && typeof part === "object" && part.type === "tool-result"
+      )
+      .filter(
+        (part) =>
+          typeof part.toolCallId === "string" &&
+          typeof part.toolName === "string" &&
+          Object.prototype.hasOwnProperty.call(part, "output")
+      )
+      .map((part) => ({
+        type: "tool-result" as const,
+        toolCallId: part.toolCallId as string,
+        toolName: part.toolName as string,
+        output: part.output,
+      }));
+    return parts.length > 0 ? ({ role: "tool", content: parts } as ModelMessage) : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Keep only the tool transcript from a completed deep run. AI SDK v5's
+ * `result.response.messages` also contains the final assistant text; feeding
+ * that text back would re-inject the malformed answer into the repair prompt.
+ */
+function safeRepairMessages(
+  question: string,
+  steps: ReadonlyArray<Record<string, unknown>>,
+  responseMessages: unknown[] | undefined
+): ModelMessage[] {
+  const transcript: ModelMessage[] = [];
+  const collect = (messages: unknown[] | undefined): void => {
+    if (!messages) return;
+    for (const message of messages) {
+      const safe = recordSafeTranscriptMessage(message);
+      if (safe) transcript.push(safe);
+    }
+  };
+  // AI SDK v5 exposes the combined response transcript on the result. It is
+  // already ordered and must be preferred: each StepResult.response.messages is
+  // a cumulative clone, so collecting every step would duplicate tool calls.
+  collect(responseMessages);
+  if (transcript.length === 0) {
+    const lastStep = steps.at(-1);
+    const response = lastStep?.response;
+    const lastStepMessages =
+      response && typeof response === "object"
+        ? (response as { messages?: unknown }).messages
+        : undefined;
+    if (Array.isArray(lastStepMessages)) collect(lastStepMessages);
+  }
+
+  // Test seams and older provider adapters may omit response messages.
+  // Reconstruct the same v5 assistant/tool message shape from the successful
+  // tool calls/results, never from step.text.
+  if (transcript.length === 0) {
+    for (const step of steps) {
+      const calls = Array.isArray(step.toolCalls)
+        ? step.toolCalls
+        : Array.isArray(step.staticToolCalls)
+          ? step.staticToolCalls
+          : Array.isArray(step.dynamicToolCalls)
+            ? step.dynamicToolCalls
+            : [];
+      const results = Array.isArray(step.toolResults)
+        ? step.toolResults
+        : Array.isArray(step.staticToolResults)
+          ? step.staticToolResults
+          : Array.isArray(step.dynamicToolResults)
+            ? step.dynamicToolResults
+            : [];
+      const assistant = recordSafeTranscriptMessage({ role: "assistant", content: calls });
+      const tool = recordSafeTranscriptMessage({ role: "tool", content: results });
+      if (assistant) transcript.push(assistant);
+      if (tool) transcript.push(tool);
+    }
+  }
+
+  return [{ role: "user", content: question }, ...transcript];
+}
+
 /** Read-only Q&A over the bundle. */
 export async function runQuery(
   kb: KnowledgeBase,
@@ -173,10 +287,11 @@ export async function runQuery(
     }> = [...result.steps];
     if (isMalformedAnswer(finalText)) {
       console.error(`[understory] query answer rejected: ${MALFORMED_ANSWER_MESSAGE}`);
-      const repairMessages: ModelMessage[] = [
-        { role: "user", content: question },
-        ...(result.response?.messages ?? []),
-      ];
+      const repairMessages = safeRepairMessages(
+        question,
+        result.steps as unknown as ReadonlyArray<Record<string, unknown>>,
+        result.response?.messages
+      );
       const repair = await generateText({
         model: resolved.model,
         system:
@@ -328,6 +443,7 @@ export async function streamChat(
   try {
     const resolved = await resolveAgentModel(options, "chat");
     modelChain = resolved.modelChain;
+    const protocolGuard = createProtocolLeakageGuard();
     const result = streamText({
       model: resolved.model,
       system: buildSystemPrompt(ctx),
@@ -338,6 +454,9 @@ export async function streamChat(
       },
       stopWhen: stepCountIs(maxSteps),
       prepareStep: prepareFinalSynthesisStep(maxSteps),
+      // AI SDK v5 applies this transform before toUIMessageStreamResponse(),
+      // so malformed text is dropped before it can reach the HTTP client.
+      experimental_transform: protocolGuard.transform,
       onFinish: async ({ text, totalUsage, steps }) => {
         const usage =
           totalUsage && (totalUsage.inputTokens != null || totalUsage.outputTokens != null)
@@ -348,7 +467,7 @@ export async function streamChat(
             : undefined;
         try {
           assertSynthesised(steps);
-          if (isMalformedAnswer(text)) {
+          if (protocolGuard.wasMalformed() || isMalformedAnswer(text)) {
             console.error(`[understory] chat answer rejected: ${MALFORMED_ANSWER_MESSAGE}`);
             throw new Error(MALFORMED_ANSWER_MESSAGE);
           }

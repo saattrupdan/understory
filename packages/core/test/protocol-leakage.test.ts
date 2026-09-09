@@ -43,12 +43,23 @@ afterEach(async () => {
 });
 
 describe("textual tool-call answer validation", () => {
-  it("recognises protocol and truncated marker-style calls without flagging prose", () => {
+  it("recognises complete, truncated, and prefaced protocol leakage", () => {
     expect(isMalformedAnswer("<|tool_call_start|>[read_concept(path='x')]<|tool_call_end|>")).toBe(true);
     expect(isMalformedAnswer("<|tool_call_start|>[read_concept(path='x')]")).toBe(true);
+    expect(isMalformedAnswer("Here is the call: [read_concept(path='x')]")).toBe(true);
+    expect(isMalformedAnswer("Here's the call: [read_concept(path='x')]")).toBe(true);
+    expect(isMalformedAnswer("I will use:\n[read_concept(path='x'")).toBe(true);
     expect(isMalformedAnswer("[read_concept(path='x'")).toBe(true);
+  });
+
+  it("allows prose and quoted examples containing tool syntax", () => {
     expect(isMalformedAnswer("The read_concept tool is used to inspect a concept.")).toBe(false);
     expect(isMalformedAnswer("We document write_concept(path='x') in the runbook.")).toBe(false);
+    expect(isMalformedAnswer("Use [read_concept(path='x')] when the answer needs a concept.")).toBe(false);
+    expect(isMalformedAnswer("The literal marker <|tool_call_start|> is described here.")).toBe(false);
+    expect(isMalformedAnswer("`<|tool_call_start|>[read_concept(path='x')]` is a marker example.")).toBe(false);
+    expect(isMalformedAnswer('The example "[read_concept(path=\'x\')]" is quoted.')).toBe(false);
+    expect(isMalformedAnswer("The example '[read_concept(path=\"x\")]' is quoted.")).toBe(false);
   });
 });
 
@@ -95,8 +106,69 @@ describe("deep agent answer validation", () => {
     generateTextMock
       .mockResolvedValueOnce({
         text: "<|tool_call_start|>[read_concept(path='x')]",
-        steps: [step],
-        response: { messages: [{ role: "assistant", content: [] }] },
+        steps: [
+          {
+            ...step,
+            response: {
+              messages: [
+                {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "tool-call",
+                      toolCallId: "call-1",
+                      toolName: "read_concept",
+                      input: { path: "x" },
+                    },
+                  ],
+                },
+                {
+                  role: "tool",
+                  content: [
+                    {
+                      type: "tool-result",
+                      toolCallId: "call-1",
+                      toolName: "read_concept",
+                      output: { path: "x", body: "alpha" },
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        // The combined v5 response has the successful transcript plus the
+        // malformed final assistant message. The latter must be excluded.
+        response: {
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolCallId: "call-1",
+                  toolName: "read_concept",
+                  input: { path: "x" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              content: [
+                {
+                  type: "tool-result",
+                  toolCallId: "call-1",
+                  toolName: "read_concept",
+                  output: { path: "x", body: "alpha" },
+                },
+              ],
+            },
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "<|tool_call_start|>[read_concept(path='x')]" }],
+            },
+          ],
+        },
       })
       .mockResolvedValueOnce({ text: "The answer is alpha.", steps: [step] });
 
@@ -104,7 +176,11 @@ describe("deep agent answer validation", () => {
     expect(result.answer).toBe("The answer is alpha.");
     expect(generateTextMock).toHaveBeenCalledTimes(2);
     expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
-    expect(generateTextMock.mock.calls[1][0].messages).toHaveLength(2);
+    const repairMessages = generateTextMock.mock.calls[1][0].messages;
+    expect(repairMessages).toHaveLength(3);
+    expect(JSON.stringify(repairMessages)).not.toContain("<|tool_call_start|>");
+    expect(repairMessages[1]).toMatchObject({ role: "assistant", content: [{ type: "tool-call" }] });
+    expect(repairMessages[2]).toMatchObject({ role: "tool", content: [{ type: "tool-result" }] });
     expect(await new TraceStore(root).list()).toEqual(
       expect.arrayContaining([expect.objectContaining({ outcome: "success", answer: result.answer })])
     );
