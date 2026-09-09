@@ -101,6 +101,8 @@ const EXPANSION_TOKEN_PATTERN = /[\p{L}\p{N}\p{M}\p{S}]+(?:[-._/][\p{L}\p{N}\p{M
 const EXPANSION_PATH_SEPARATOR = /[/\.]+/u;
 const EXPANSION_COMPONENT_SEPARATOR = /[/._-]+/u;
 
+type RecallVariant = { query: string; anchor: string; intent: string };
+
 // These are deliberately generic operational intents, rather than names from
 // the bundle. They let a compound question split into independently useful
 // searches without inventing terms with an LLM.
@@ -223,7 +225,7 @@ function expansionComponents(token: string): string[] {
  * two recognisable operational intents, which avoids turning ordinary lookup
  * queries into a fan-out of generic searches.
  */
-function recallQueryVariants(question: string): string[] {
+function recallQueryVariants(question: string): RecallVariant[] {
   const tokens = question.slice(0, 4096).match(EXPANSION_TOKEN_PATTERN) ?? [];
   if (tokens.length === 0) return [];
 
@@ -298,12 +300,14 @@ function recallQueryVariants(question: string): string[] {
     .sort((left, right) => right[1].score - left[1].score || left[1].order - right[1].order)
     .slice(0, MAX_RECALL_INTENTS)
     .map(([intent]) => intent);
-  const variants: string[] = [];
+  const variants: RecallVariant[] = [];
 
   for (const intent of boundedIntents) {
     for (const anchor of rankedAnchors) {
-      const variant = `${anchor} ${intent}`;
-      if (!variants.includes(variant)) variants.push(variant);
+      const query = `${anchor} ${intent}`;
+      if (!variants.some((variant) => variant.query === query)) {
+        variants.push({ query, anchor, intent });
+      }
       if (variants.length >= MAX_RECALL_VARIANTS) return variants;
     }
   }
@@ -319,6 +323,13 @@ function trustedVariantHit(
 
 const MAX_RECALL_VARIANT_HITS = 8;
 
+type IntentEvidence = {
+  bestConfidence: number;
+  bestScore: number;
+  bestRank: number;
+  anchorMatches: Set<string>;
+};
+
 type RecallCandidateEvidence = {
   path: string;
   rankContribution: number;
@@ -326,35 +337,114 @@ type RecallCandidateEvidence = {
   bestConfidence: number;
   bestScore: number;
   originalRank: number;
-  variants: Set<string>;
+  variants: Map<string, RecallVariant>;
   intents: Set<string>;
   anchors: Set<string>;
   anchorMatches: Set<string>;
+  intentEvidence: Map<string, IntentEvidence>;
 };
 
-function variantParts(variant: string): { anchor: string; intent: string } {
-  const separator = variant.lastIndexOf(" ");
-  return separator < 0
-    ? { anchor: variant, intent: variant }
-    : { anchor: variant.slice(0, separator), intent: variant.slice(separator + 1) };
-}
-
 function candidatePriority(candidate: RecallCandidateEvidence): number {
-  // Variant coverage is deliberately the strongest signal: a hit returned by
-  // several complementary views should be able to displace a one-off whole
-  // query seed. Anchor matches are checked against the returned metadata rather
-  // than inferred from a project name, so this stays useful across bundles.
+  // Aggregate each requested intent once. Raw variant and anchor matches are
+  // retained as provenance, but overlapping searches for one intent must not
+  // inflate the diversity score and crowd out another intent.
+  const intentRelevance = [...candidate.intentEvidence.values()].reduce(
+    (total, evidence) =>
+      total +
+      (evidence.anchorMatches.size > 0 ? 200 : 0) +
+      evidence.bestConfidence +
+      evidence.bestScore * 0.01 +
+      (evidence.bestRank === Number.POSITIVE_INFINITY ? 0 : 10 / evidence.bestRank),
+    0
+  );
   return (
-    candidate.variants.size * 1000 +
     candidate.intents.size * 100 +
-    candidate.anchors.size * 20 +
-    candidate.anchorMatches.size * 200 +
+    intentRelevance +
     candidate.confidenceTotal +
     candidate.bestConfidence * 0.5 +
     candidate.rankContribution * 10 +
     (candidate.originalRank === Number.POSITIVE_INFINITY ? 0 : 10 / candidate.originalRank) +
     candidate.bestScore * 0.01
   );
+}
+
+function candidateIntentPriority(
+  candidate: RecallCandidateEvidence,
+  intent: string,
+  requireAnchor: boolean
+): number | null {
+  const evidence = candidate.intentEvidence.get(intent);
+  if (!evidence || (requireAnchor && evidence.anchorMatches.size === 0)) return null;
+  return (
+    (evidence.anchorMatches.size > 0 ? 1000 : 0) +
+    evidence.bestConfidence +
+    evidence.bestScore * 0.01 +
+    (evidence.bestRank === Number.POSITIVE_INFINITY ? 0 : 10 / evidence.bestRank) +
+    candidate.bestConfidence * 0.001
+  );
+}
+
+function selectRecallCandidates(
+  pool: Map<string, RecallCandidateEvidence>,
+  variants: RecallVariant[],
+  maxCandidates: number
+): string[] {
+  if (maxCandidates <= 0) return [];
+  const candidates = [...pool.values()];
+  const requestedIntents = [...new Set(variants.map((variant) => variant.intent))];
+  const selected = new Set<string>();
+  const ordered: string[] = [];
+
+  // Reserve one best candidate per intent before ranking the remaining pool.
+  // Prefer an anchor-relevant candidate for an intent; only fall back to a
+  // generic intent hit when no anchored result exists for that intent.
+  for (const intent of requestedIntents) {
+    if (ordered.length >= maxCandidates) break;
+    const anchored = candidates
+      .map((candidate) => ({
+        candidate,
+        priority: candidateIntentPriority(candidate, intent, true),
+      }))
+      .filter((entry): entry is { candidate: RecallCandidateEvidence; priority: number } =>
+        entry.priority !== null
+      )
+      .sort(
+        (left, right) =>
+          right.priority - left.priority || left.candidate.path.localeCompare(right.candidate.path)
+      );
+    const eligible = anchored.length > 0
+      ? anchored
+      : candidates
+          .map((candidate) => ({
+            candidate,
+            priority: candidateIntentPriority(candidate, intent, false),
+          }))
+          .filter((entry): entry is { candidate: RecallCandidateEvidence; priority: number } =>
+            entry.priority !== null
+          )
+          .sort(
+            (left, right) =>
+              right.priority - left.priority || left.candidate.path.localeCompare(right.candidate.path)
+          );
+    const choice = eligible.find((entry) => !selected.has(entry.candidate.path));
+    if (choice) {
+      selected.add(choice.candidate.path);
+      ordered.push(choice.candidate.path);
+    }
+  }
+
+  candidates
+    .sort(
+      (left, right) =>
+        candidatePriority(right) - candidatePriority(left) || left.path.localeCompare(right.path)
+    )
+    .forEach((candidate) => {
+      if (ordered.length < maxCandidates && !selected.has(candidate.path)) {
+        selected.add(candidate.path);
+        ordered.push(candidate.path);
+      }
+    });
+  return ordered;
 }
 
 function addRecallCandidate(
@@ -368,7 +458,7 @@ function addRecallCandidate(
     snippet?: string;
   },
   rank: number,
-  variant?: string
+  variant?: RecallVariant
 ): void {
   const candidate =
     pool.get(hit.path) ??
@@ -379,31 +469,46 @@ function addRecallCandidate(
       bestConfidence: 0,
       bestScore: 0,
       originalRank: Number.POSITIVE_INFINITY,
-      variants: new Set<string>(),
+      variants: new Map<string, RecallVariant>(),
       intents: new Set<string>(),
       anchors: new Set<string>(),
       anchorMatches: new Set<string>(),
+      intentEvidence: new Map<string, IntentEvidence>(),
     } satisfies RecallCandidateEvidence;
   pool.set(hit.path, candidate);
 
-  candidate.rankContribution += 1 / rank;
-  candidate.confidenceTotal += hit.confidence ?? 0;
   candidate.bestConfidence = Math.max(candidate.bestConfidence, hit.confidence ?? 0);
   candidate.bestScore = Math.max(candidate.bestScore, hit.score);
   if (!variant) {
+    candidate.rankContribution += 1 / rank;
+    candidate.confidenceTotal += hit.confidence ?? 0;
     candidate.originalRank = Math.min(candidate.originalRank, rank);
     return;
   }
 
-  candidate.variants.add(variant);
-  const { anchor, intent } = variantParts(variant);
-  candidate.anchors.add(anchor);
-  candidate.intents.add(intent);
+  candidate.variants.set(variant.query, variant);
+  candidate.anchors.add(variant.anchor);
+  candidate.intents.add(variant.intent);
+  const evidence =
+    candidate.intentEvidence.get(variant.intent) ??
+    {
+      bestConfidence: 0,
+      bestScore: 0,
+      bestRank: Number.POSITIVE_INFINITY,
+      anchorMatches: new Set<string>(),
+    } satisfies IntentEvidence;
+  candidate.intentEvidence.set(variant.intent, evidence);
+  evidence.bestConfidence = Math.max(evidence.bestConfidence, hit.confidence ?? 0);
+  evidence.bestScore = Math.max(evidence.bestScore, hit.score);
+  evidence.bestRank = Math.min(evidence.bestRank, rank);
   const searchable = [hit.path, hit.title, hit.description, hit.snippet]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
-  if (searchable.includes(anchor.toLowerCase())) candidate.anchorMatches.add(anchor);
+  if (searchable.includes(variant.anchor.toLowerCase())) {
+    evidence.anchorMatches.add(variant.anchor);
+    candidate.anchorMatches.add(variant.anchor);
+  }
 }
 
 /** Neighbour sets over the concept link graph (undirected, 1 hop). */
@@ -445,10 +550,8 @@ export async function runRecall(
   const topConfidence = hits[0].confidence ?? 0;
   if (topConfidence < minScore) return { answer: null, paths: [] };
 
-  // Keep every bounded search result in a small evidence pool. Selecting the
-  // first new hit for each variant makes generic installer/branch notes consume
-  // the budget before a concept that matches the entity across both intents can
-  // contribute its evidence.
+  // Keep every bounded search result in a small evidence pool. Selection below
+  // reserves intent coverage before using aggregate relevance to fill the budget.
   const pool = new Map<string, RecallCandidateEvidence>();
   for (const [index, hit] of hits
     .slice(0, Math.min(seeds, maxCandidates))
@@ -460,11 +563,11 @@ export async function runRecall(
   // bounded anchor/intent view, but admit only hits that pass the same
   // corpus-aware confidence contract as ordinary recall candidates. Fetch more
   // than one result per view so aggregation can distinguish repeated evidence.
+  const variants = recallQueryVariants(question);
   if (maxCandidates > 0) {
-    const variants = recallQueryVariants(question);
     const variantLimit = Math.min(MAX_RECALL_VARIANT_HITS, Math.max(maxCandidates, 2));
     for (const variant of variants) {
-      const variantHits = await kb.search(variant, { limit: variantLimit });
+      const variantHits = await kb.search(variant.query, { limit: variantLimit });
       for (const [index, hit] of variantHits.entries()) {
         if (trustedVariantHit(hit, minScore)) {
           addRecallCandidate(pool, hit, index + 1, variant);
@@ -473,13 +576,7 @@ export async function runRecall(
     }
   }
 
-  const ordered = [...pool.values()]
-    .sort(
-      (left, right) =>
-        candidatePriority(right) - candidatePriority(left) || left.path.localeCompare(right.path)
-    )
-    .slice(0, maxCandidates)
-    .map((candidate) => candidate.path);
+  const ordered = selectRecallCandidates(pool, variants, maxCandidates);
   const chosen = new Set(ordered);
 
   // Keyword search is blind to synonyms; linked concepts are the cheapest
