@@ -1,7 +1,14 @@
 export { runQuery, runMutation, streamChat, prepareFinalSynthesisStep } from "./agent.js";
 export type { AgentOptions, QueryResult, MutationResult, MutationOutcome } from "./agent.js";
-export { buildSystemPrompt } from "./system-prompt.js";
-export { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
+export {
+  buildQuerySynthesisPrompt,
+  buildSystemPrompt,
+} from "./system-prompt.js";
+export {
+  isMalformedAnswer,
+  isUnsafeSynthesisAnswer,
+  MALFORMED_ANSWER_MESSAGE,
+} from "./answer-validation.js";
 export { buildReadTools, buildWriteTools, formatTree } from "./tools.js";
 export {
   DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
