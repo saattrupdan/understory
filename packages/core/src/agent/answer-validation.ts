@@ -14,6 +14,11 @@ const KNOWN_TOOL_NAMES = [
 const TOOL_NAME_PATTERN = KNOWN_TOOL_NAMES.join("|");
 const KNOWN_TOOL_CALL = new RegExp(`\\b(?:${TOOL_NAME_PATTERN})\\s*\\(`, "gi");
 const TOOL_MARKER = /<\|tool_call_(?:start|end)\|>/gi;
+const XML_TOOL_CALL_OPEN = /<tool_call\s*>/gi;
+const XML_TOOL_CALL_CLOSE = /<\/tool_call\s*>/i;
+const XML_FUNCTION_TAG = /<function\s*=\s*([A-Za-z_$][\w$.-]*)\s*>/i;
+const XML_TOOL_CALL_SHAPE =
+  /<tool_call\s*>[\s\S]*?<function\s*=\s*[A-Za-z_$][\w$.-]*\s*>/i;
 const KNOWN_TOOL_SET = new Set<string>(KNOWN_TOOL_NAMES);
 
 interface Range {
@@ -53,6 +58,7 @@ function protectedRanges(answer: string): Range[] {
       }
       if (
         value.includes("<|tool_call_") ||
+        XML_TOOL_CALL_SHAPE.test(value) ||
         new RegExp(`(?:${TOOL_NAME_PATTERN})\\s*\\(`, "i").test(value)
       ) {
         ranges.push({ start, end: start + value.length });
@@ -121,6 +127,13 @@ function isProtocolPreface(value: string): boolean {
 
 function isProtocolSeparator(value: string): boolean {
   return /^[\s,;:[\]{}()]*$/.test(value);
+}
+
+function isXmlProtocolPreface(value: string): boolean {
+  // Models sometimes describe the dialect explicitly ("the XML tool call").
+  // Reuse the stricter prose preface grammar after removing that qualifier;
+  // arbitrary explanatory sentences must not make an XML tag actionable.
+  return isProtocolPreface(value.replace(/\b(?:an?\s+)?xml\s+/gi, ""));
 }
 
 function lineContaining(answer: string, index: number): string {
@@ -274,6 +287,41 @@ function parseJsonProtocol(answer: string): boolean {
   }
 }
 
+function xmlToolCallEnvelope(answer: string): boolean {
+  const ranges = protectedRanges(answer);
+  for (const match of answer.matchAll(XML_TOOL_CALL_OPEN)) {
+    const start = match.index ?? 0;
+    if (isProtected(start, ranges)) continue;
+
+    const payloadStart = start + match[0].length;
+    const remaining = answer.slice(payloadStart);
+    const close = remaining.match(XML_TOOL_CALL_CLOSE);
+    const payload = close ? remaining.slice(0, close.index) : remaining;
+    // The function tag makes this an invocation rather than a bare XML
+    // documentation tag. Its name is intentionally not restricted to the
+    // current tool set: an unrecognised call is still leaked protocol.
+    if (!XML_FUNCTION_TAG.test(payload)) continue;
+
+    const before = answer.slice(0, start).trim();
+    const after = close
+      ? remaining.slice((close.index ?? 0) + close[0].length).trim()
+      : "";
+    const atAnswerBoundary = !before;
+    const hasProtocolPreface =
+      isProtocolPreface(before) || isXmlProtocolPreface(before);
+    if (!(atAnswerBoundary || hasProtocolPreface || isProtocolSeparator(before))) {
+      continue;
+    }
+
+    // A missing closing envelope is the normal shape of a provider response
+    // truncated during generation. Once the unambiguous function tag exists,
+    // retain the same boundary/preface guard and reject it.
+    if (!close) return true;
+    if (isTerminalProtocolSuffix(after)) return true;
+  }
+  return false;
+}
+
 function markerEnvelope(answer: string): boolean {
   const ranges = protectedRanges(answer);
   const markers = [...answer.matchAll(TOOL_MARKER)].filter(
@@ -327,6 +375,7 @@ function markerEnvelope(answer: string): boolean {
 /** Return whether an answer is model-emitted tool protocol rather than prose. */
 export function isMalformedAnswer(answer: string): boolean {
   if (!answer.trim()) return false;
+  if (xmlToolCallEnvelope(answer)) return true;
   if (markerEnvelope(answer)) return true;
   if (parseJsonProtocol(answer)) return true;
   return isCallSequence(answer, callsIn(answer));
