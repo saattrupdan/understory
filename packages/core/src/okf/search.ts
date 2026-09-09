@@ -12,8 +12,84 @@ export interface SearchOptions {
 const TOKEN_PATTERN = /[\p{L}\p{N}\p{M}\p{S}]+(?:[-._/][\p{L}\p{N}\p{M}\p{S}]+)*/gu;
 const COMPOUND_SEPARATOR = /[/._-]+/u;
 const MAX_QUERY_CHARS = 4096;
-const MAX_QUERY_TERMS = 128;
+const MAX_QUERY_GROUPS = 64;
+const MAX_GROUP_TERMS = 12;
 const MIN_BROAD_TERM_LENGTH = 2;
+const DISTINCTIVE_RARITY = 0.2;
+
+// This is deliberately a small, explicit vocabulary rather than a stemmer. It
+// covers the English forms that commonly occur in installation questions while
+// leaving short words, names, and non-Latin scripts untouched.
+const MORPHOLOGY = new Map([
+  ["installed", "install"],
+  ["installing", "install"],
+  ["installation", "install"],
+]);
+
+// Question scaffolding should help ranking, but should not become confidence
+// merely because a small corpus happens to contain it once.
+const COMMON_CONFIDENCE_TERMS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "can",
+  "do",
+  "does",
+  "for",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "should",
+  "the",
+  "to",
+  "use",
+  "what",
+  "where",
+  "which",
+  "with",
+]);
+
+type FieldName = "title" | "description" | "tags" | "body" | "path";
+type ContentFieldName = Exclude<FieldName, "path">;
+
+interface TokenGroup {
+  /** The original complete token, including filename-like separators. */
+  full: string;
+  /** The complete token plus bounded component/morphological variants. */
+  terms: string[];
+  /** Variants of the complete token only, used for exact compound matches. */
+  fullVariants: string[];
+}
+
+interface FieldData {
+  text: string;
+  groups: TokenGroup[];
+  terms: Set<string>;
+}
+
+interface Document {
+  conceptPath: string;
+  concept: Awaited<ReturnType<Bundle["readConcept"]>>;
+  fields: Record<FieldName, FieldData>;
+}
+
+interface GroupEvidence {
+  matched: boolean;
+  contentTerms: Set<string>;
+  exactPathTerms: Set<string>;
+  exactFullContent: boolean;
+  exactFullPath: boolean;
+  bestContentRarity: number;
+  bestContentFrequency: number;
+  bestRankingRarity: number;
+  bodyIndex: number;
+}
 
 /** Unicode-normalise and apply JavaScript's locale-independent lower-casing. */
 function normalise(value: string): string {
@@ -23,36 +99,56 @@ function normalise(value: string): string {
   return value.normalize("NFKC").toLowerCase().normalize("NFC");
 }
 
-/**
- * Keep the original query token as well as its useful filename-like pieces.
- * The full token preserves exact path/title matches; the pieces make queries
- * such as `branch/install` useful against prose that names those parts apart.
- * Unicode properties retain letters, numbers, marks, and symbols in every
- * script. Punctuation-only input therefore remains the only browse query.
- */
-function queryTerms(query: string): string[] {
-  const terms = new Set<string>();
-  const tokens = normalise(query.slice(0, MAX_QUERY_CHARS)).match(TOKEN_PATTERN) ?? [];
-  for (const token of tokens) {
-    terms.add(token);
-    for (const part of token.split(COMPOUND_SEPARATOR)) {
-      if (part) terms.add(part);
-    }
-    if (terms.size >= MAX_QUERY_TERMS) break;
-  }
-  return [...terms].slice(0, MAX_QUERY_TERMS);
+function morphologicalVariants(token: string): string[] {
+  const variant = MORPHOLOGY.get(token);
+  return variant && variant !== token ? [variant] : [];
 }
 
-/** Tokens used for whole-token bonuses, including compound components. */
-function fieldTokens(value: string): Set<string> {
-  const tokens = new Set<string>();
-  for (const token of value.match(TOKEN_PATTERN) ?? []) {
-    tokens.add(token);
-    for (const part of token.split(COMPOUND_SEPARATOR)) {
-      if (part) tokens.add(part);
-    }
+function tokenGroup(token: string): TokenGroup {
+  const parts = token.split(COMPOUND_SEPARATOR).filter(Boolean);
+  const terms = new Set<string>([token]);
+  const fullVariants = new Set<string>([token, ...morphologicalVariants(token)]);
+
+  for (const part of parts.slice(0, MAX_GROUP_TERMS)) {
+    terms.add(part);
+    for (const variant of morphologicalVariants(part)) terms.add(variant);
   }
-  return tokens;
+  for (const variant of fullVariants) terms.add(variant);
+
+  return {
+    full: token,
+    terms: [...terms].slice(0, MAX_GROUP_TERMS),
+    fullVariants: [...fullVariants],
+  };
+}
+
+/**
+ * Tokenise into provenance-preserving groups. Components aid ranking, but a
+ * compound such as `make_icons.py` remains one piece of user evidence.
+ */
+function tokenGroups(value: string): TokenGroup[] {
+  const groups: TokenGroup[] = [];
+  const seen = new Set<string>();
+  for (const token of value.match(TOKEN_PATTERN) ?? []) {
+    if (seen.has(token)) continue;
+    seen.add(token);
+    groups.push(tokenGroup(token));
+  }
+  return groups;
+}
+
+function fieldData(value: string): FieldData {
+  const text = normalise(value);
+  const groups = tokenGroups(text);
+  const terms = new Set<string>();
+  for (const group of groups) {
+    for (const term of group.terms) terms.add(term);
+  }
+  return { text, groups, terms };
+}
+
+function queryGroups(query: string): TokenGroup[] {
+  return tokenGroups(normalise(query.slice(0, MAX_QUERY_CHARS))).slice(0, MAX_QUERY_GROUPS);
 }
 
 function rarity(documentFrequency: number, documentCount: number): number {
@@ -65,46 +161,147 @@ function rarity(documentFrequency: number, documentCount: number): number {
 function confidenceRarity(documentFrequency: number, documentCount: number): number {
   if (documentFrequency === 0 || documentCount === 0) return 0;
   // Unlike ranking weights, confidence must approach zero when a term is in
-  // the whole corpus. Smoothing retains useful evidence in very small bundles.
+  // the whole corpus. Smoothing retains useful evidence in small bundles.
   return Math.max(0, 2 * Math.log((documentCount + 1) / (documentFrequency + 0.5)));
 }
 
-function matches(field: string, tokens: Set<string>, term: string): boolean {
-  // Exact tokens are the evidence used for confidence. Substrings remain a
-  // lower-grade ranking signal for compatibility with ordinary prose queries,
-  // but one-character Latin terms are not allowed to match every word in a
-  // document ("I" is the common example in a question). A one-character CJK
-  // query is different: it commonly appears inside a longer uninterrupted
-  // token and must retain the broad-match behaviour.
+function matches(field: FieldData, term: string): boolean {
+  // Content matches are evidence for confidence, but corpus frequency still
+  // decides whether they are distinctive. One-character Latin terms are not
+  // allowed to match every word in a document ("I" is the common example in a
+  // question). A one-character CJK query is different: it commonly appears
+  // inside a longer uninterrupted token and must retain broad-match behaviour.
   const canUseSubstring =
     term.length >= MIN_BROAD_TERM_LENGTH || !/^[a-z]$/u.test(term);
-  return tokens.has(term) || (canUseSubstring && field.includes(term));
+  return field.terms.has(term) || (canUseSubstring && field.text.includes(term));
+}
+
+function exactFullMatch(field: FieldData, group: TokenGroup): boolean {
+  return field.groups.some((candidate) =>
+    candidate.fullVariants.some((variant) => group.fullVariants.includes(variant))
+  );
+}
+
+function fieldHasExactTerm(field: FieldData, group: TokenGroup): Set<string> {
+  return new Set(group.terms.filter((term) => field.terms.has(term)));
+}
+
+function groupIsFilenameLike(group: TokenGroup): boolean {
+  return COMPOUND_SEPARATOR.test(group.full) || /\.[a-z0-9]{1,8}$/u.test(group.full);
+}
+
+function evaluateGroup(
+  group: TokenGroup,
+  document: Document,
+  documentFrequency: Map<string, number>,
+  documentCount: number
+): GroupEvidence {
+  const contentTerms = new Set<string>();
+  const exactPathTerms = fieldHasExactTerm(document.fields.path, group);
+  let exactFullContent = false;
+  let exactFullPath = false;
+  let matched = false;
+  let bestContentRarity = 0;
+  let bestContentFrequency = documentCount;
+  let bestRankingRarity = 0;
+  let bodyIndex = -1;
+
+  for (const fieldName of ["title", "description", "tags", "body"] as const) {
+    const field = document.fields[fieldName];
+    const exact = fieldHasExactTerm(field, group);
+    for (const term of exact) {
+      contentTerms.add(term);
+      const frequency = documentFrequency.get(term) ?? documentCount;
+      const termConfidenceRarity = confidenceRarity(frequency, documentCount);
+      if (termConfidenceRarity > bestContentRarity) {
+        bestContentRarity = termConfidenceRarity;
+        bestContentFrequency = frequency;
+      }
+      bestRankingRarity = Math.max(bestRankingRarity, rarity(frequency, documentCount));
+      if (fieldName === "body" && bodyIndex === -1) {
+        bodyIndex = group.terms
+          .map((candidate) => field.text.indexOf(candidate))
+          .find((index) => index >= 0) ?? -1;
+      }
+    }
+    if (matches(field, group.full) || group.terms.some((term) => matches(field, term))) {
+      matched = true;
+      for (const term of group.terms) {
+        if (!matches(field, term)) continue;
+        // Broad substring matches are content evidence too (for example the
+        // query "work" against "works"), but their corpus frequency still
+        // controls whether they can contribute confidence.
+        contentTerms.add(term);
+        const frequency = documentFrequency.get(term) ?? documentCount;
+        const termConfidenceRarity = confidenceRarity(frequency, documentCount);
+        if (termConfidenceRarity > bestContentRarity) {
+          bestContentRarity = termConfidenceRarity;
+          bestContentFrequency = frequency;
+        }
+        bestRankingRarity = Math.max(bestRankingRarity, rarity(frequency, documentCount));
+      }
+    }
+    if (exactFullMatch(field, group)) {
+      exactFullContent = true;
+      matched = true;
+    }
+  }
+
+  if (exactPathTerms.size > 0 || matches(document.fields.path, group.full)) matched = true;
+  exactFullPath = exactFullMatch(document.fields.path, group);
+
+  return {
+    matched,
+    contentTerms,
+    exactPathTerms,
+    exactFullContent,
+    exactFullPath,
+    bestContentRarity,
+    bestContentFrequency,
+    bestRankingRarity,
+    bodyIndex,
+  };
+}
+
+function fieldWeight(fieldName: ContentFieldName): number {
+  switch (fieldName) {
+    case "title":
+      return 24;
+    case "description":
+      return 8;
+    case "tags":
+      return 8;
+    case "body":
+      return 4;
+  }
+}
+
+function exactFieldWeight(fieldName: ContentFieldName): number {
+  switch (fieldName) {
+    case "title":
+      return 18;
+    case "description":
+      return 7;
+    case "tags":
+      return 7;
+    case "body":
+      return 3;
+  }
 }
 
 /**
  * Naive in-memory scan over all concepts — fine into the thousands of files.
- * Scores preserve broad substring matching, while rarity and whole-token
- * matches make compound/path-specific queries useful retrieval signals.
+ * Query groups keep compound provenance: components can improve ranking, but
+ * confidence is accumulated once per corroborated group.
  */
 export async function searchBundle(
   bundle: Bundle,
   query: string,
   options: SearchOptions = {}
 ): Promise<SearchHit[]> {
-  const terms = queryTerms(query);
+  const groups = queryGroups(query);
   const paths = await bundle.listConceptPaths();
-  const documents: Array<{
-    conceptPath: string;
-    concept: Awaited<ReturnType<Bundle["readConcept"]>>;
-    fields: { title: string; description: string; tags: string; body: string; path: string };
-    tokens: {
-      title: Set<string>;
-      description: Set<string>;
-      tags: Set<string>;
-      body: Set<string>;
-      path: Set<string>;
-    };
-  }> = [];
+  const documents: Document[] = [];
 
   for (const conceptPath of paths) {
     let concept;
@@ -123,121 +320,142 @@ export async function searchBundle(
       if (!options.tags.every((t) => conceptTags.includes(normalise(t)))) continue;
     }
 
-    const fields = {
-      title: normalise((fm.title ?? "").toString()),
-      description: normalise((fm.description ?? "").toString()),
-      tags: normalise((Array.isArray(fm.tags) ? fm.tags : []).join(" ")),
-      body: normalise(concept.body),
-      path: normalise(conceptPath),
-    };
     documents.push({
       conceptPath,
       concept,
-      fields,
-      tokens: {
-        title: fieldTokens(fields.title),
-        description: fieldTokens(fields.description),
-        tags: fieldTokens(fields.tags),
-        body: fieldTokens(fields.body),
-        path: fieldTokens(fields.path),
+      fields: {
+        title: fieldData((fm.title ?? "").toString()),
+        description: fieldData((fm.description ?? "").toString()),
+        tags: fieldData(Array.isArray(fm.tags) ? fm.tags.join(" ") : ""),
+        body: fieldData(concept.body),
+        path: fieldData(conceptPath),
       },
     });
   }
 
+  // Frequencies are calculated per term for useful IDF-like ranking. They are
+  // never used as separate confidence evidence: evaluateGroup below folds them
+  // back into their original query group.
   const documentFrequency = new Map<string, number>();
-  for (const term of terms) {
-    let count = 0;
-    for (const document of documents) {
-      const { fields, tokens } = document;
-      if (
-        matches(fields.title, tokens.title, term) ||
-        matches(fields.path, tokens.path, term) ||
-        matches(fields.description, tokens.description, term) ||
-        matches(fields.tags, tokens.tags, term) ||
-        matches(fields.body, tokens.body, term)
-      ) {
-        count += 1;
+  for (const group of groups) {
+    for (const term of group.terms) {
+      let count = 0;
+      for (const document of documents) {
+        if (
+          (["title", "description", "tags", "body", "path"] as const).some((fieldName) =>
+            matches(document.fields[fieldName], term)
+          )
+        ) {
+          count += 1;
+        }
       }
+      documentFrequency.set(term, count);
     }
-    documentFrequency.set(term, count);
   }
 
   const hits: SearchHit[] = [];
   for (const document of documents) {
-    const { conceptPath, concept, fields, tokens } = document;
     let score = 0;
-    let confidence = 0;
     let pathScore = 0;
     let firstBodyMatch = -1;
-    for (const term of terms) {
-      const frequency = documentFrequency.get(term) ?? 0;
-      const weight = rarity(frequency, documents.length);
-      const evidenceWeight = confidenceRarity(frequency, documents.length);
-      const titleExact = tokens.title.has(term);
-      const descriptionExact = tokens.description.has(term);
-      const tagsExact = tokens.tags.has(term);
-      const bodyExact = tokens.body.has(term);
+    let matchedGroups = 0;
+    let contentGroups = 0;
+    let distinctiveGroups = 0;
+    let exactCompoundGroups = 0;
+    let confidence = 0;
 
-      if (matches(fields.title, tokens.title, term)) score += 8 * weight;
-      if (matches(fields.description, tokens.description, term)) score += 5 * weight;
-      if (matches(fields.tags, tokens.tags, term)) score += 5 * weight;
-      if (matches(fields.body, tokens.body, term)) {
-        score += 2 * weight;
-        const bodyIdx = fields.body.indexOf(term);
-        if (bodyIdx !== -1 && firstBodyMatch === -1) firstBodyMatch = bodyIdx;
-      }
+    for (const group of groups) {
+      const evidence = evaluateGroup(group, document, documentFrequency, documents.length);
+      if (!evidence.matched) continue;
+      matchedGroups += 1;
+      if (evidence.bodyIndex >= 0 && firstBodyMatch === -1) firstBodyMatch = evidence.bodyIndex;
 
-      // Exact semantic tokens are the main ranking and confidence evidence.
-      // A title hit is strongest, followed by metadata and then body content.
-      if (titleExact) {
-        score += 20 * weight;
-        confidence += 20 * evidenceWeight;
-      }
-      if (descriptionExact) {
-        score += 8 * weight;
-        confidence += 8 * evidenceWeight;
-      }
-      if (tagsExact) {
-        score += 8 * weight;
-        confidence += 8 * evidenceWeight;
-      }
-      if (bodyExact) {
-        score += 4 * weight;
-        confidence += 4 * evidenceWeight;
+      const groupWeight = Math.max(0.2, evidence.bestRankingRarity);
+      let groupScore = 0;
+      for (const fieldName of ["title", "description", "tags", "body"] as const) {
+        const field = document.fields[fieldName];
+        const broad = matches(field, group.full) || group.terms.some((term) => matches(field, term));
+        if (!broad) continue;
+        const exact = fieldHasExactTerm(field, group).size > 0 || exactFullMatch(field, group);
+        groupScore += fieldWeight(fieldName) * groupWeight;
+        if (exact) groupScore += exactFieldWeight(fieldName) * groupWeight;
       }
 
-      // Paths are bounded ranking hints only. In particular, they contribute
-      // no confidence: a filename or directory name can never independently
-      // make deterministic recall trust a hit.
-      if (matches(fields.path, tokens.path, term)) {
-        pathScore += (tokens.path.has(term) ? 4 : 2) * weight;
+      // A complete compound is much more useful for ranking than a document
+      // that happens to contain just one component. Additional components add
+      // only bounded coverage, not independent user evidence.
+      const componentCount = Math.max(1, group.terms.length - 1);
+      const matchedComponentCount = group.terms.filter((term) =>
+        ["title", "description", "tags", "body"].some((fieldName) =>
+          document.fields[fieldName as ContentFieldName].terms.has(term)
+        )
+      ).length;
+      groupScore += Math.min(8, (matchedComponentCount / componentCount) * 8);
+      if (evidence.exactFullContent) groupScore += 14 * groupWeight;
+      score += groupScore;
+
+      if (evidence.exactPathTerms.size > 0 || evidence.exactFullPath) {
+        pathScore += (evidence.exactFullPath ? 5 : 2) * groupWeight;
+      } else if (matches(document.fields.path, group.full)) {
+        pathScore += 2 * groupWeight;
+      }
+
+      if (evidence.contentTerms.size > 0) contentGroups += 1;
+      const confidenceTerms = [...evidence.contentTerms].filter(
+        (term) => !COMMON_CONFIDENCE_TERMS.has(term)
+      );
+      const distinctive =
+        confidenceTerms.length > 0 &&
+        evidence.bestContentRarity >= DISTINCTIVE_RARITY &&
+        (documents.length <= 3 || evidence.bestContentFrequency * 2 <= documents.length);
+      if (distinctive) {
+        distinctiveGroups += 1;
+        // Ten points per corroborated group makes the public gate explicit:
+        // two distinctive content groups qualify ordinary prose. A complete,
+        // distinctive compound/filename-like group can qualify by itself.
+        confidence += 10 + Math.min(8, evidence.bestContentRarity * 1.5);
+        if (evidence.exactFullContent && groupIsFilenameLike(group)) {
+          exactCompoundGroups += 1;
+          confidence += 10;
+        }
       }
     }
-    score += Math.min(14, pathScore);
 
-    // Empty query with type/tag filters = browse mode: include everything that passed filters.
-    // Non-ASCII words and symbols are retained above, so they cannot accidentally enter this branch.
-    if (terms.length === 0) score = 1;
+    score += Math.min(14, pathScore);
+    const confidenceQualified =
+      distinctiveGroups >= 2 || exactCompoundGroups >= 1;
+
+    // Empty query with type/tag filters = browse mode: include everything that
+    // passed filters. Symbols and non-ASCII words remain real query groups.
+    if (groups.length === 0) {
+      score = 1;
+      confidence = 0;
+    }
     if (score === 0) continue;
 
     hits.push({
-      path: conceptPath,
-      type: concept.frontmatter.type ?? "unknown",
-      title: concept.frontmatter.title as string | undefined,
-      description: concept.frontmatter.description as string | undefined,
+      path: document.conceptPath,
+      type: document.concept.frontmatter.type ?? "unknown",
+      title: document.concept.frontmatter.title as string | undefined,
+      description: document.concept.frontmatter.description as string | undefined,
       snippet:
         firstBodyMatch >= 0
-          ? concept.body
+          ? document.concept.body
               .slice(Math.max(0, firstBodyMatch - 60), firstBodyMatch + 120)
               .replace(/\s+/g, " ")
               .trim()
           : undefined,
       score,
       confidence,
+      matchedGroups,
+      contentGroups,
+      distinctiveGroups,
+      exactCompoundGroups,
+      confidenceQualified,
     });
   }
 
-  hits.sort((a, b) => b.score - a.score);
+  hits.sort((a, b) => b.score - a.score || (b.confidence ?? 0) - (a.confidence ?? 0) || a.path.localeCompare(b.path));
   return hits.slice(0, options.limit ?? 20);
 }
 

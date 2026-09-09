@@ -43,6 +43,16 @@ export interface SearchHit {
    * enough for deterministic recall. Common terms contribute close to zero.
    */
   confidence?: number;
+  /** Number of original query token groups matched anywhere, including paths. */
+  matchedGroups?: number;
+  /** Number of original query groups matched by content text or variants. */
+  contentGroups?: number;
+  /** Distinctive, content-backed groups that contribute to confidence. */
+  distinctiveGroups?: number;
+  /** Distinctive complete compound/filename-like content groups. */
+  exactCompoundGroups?: number;
+  /** Whether this hit satisfies the deterministic recall evidence rule. */
+  confidenceQualified?: boolean;
 }
 
 export type LogAction = "Creation" | "Update" | "Deletion";

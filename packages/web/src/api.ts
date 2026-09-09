@@ -20,6 +20,13 @@ export interface SearchHit {
   title?: string;
   description?: string;
   snippet?: string;
+  score?: number;
+  confidence?: number;
+  matchedGroups?: number;
+  contentGroups?: number;
+  distinctiveGroups?: number;
+  exactCompoundGroups?: number;
+  confidenceQualified?: boolean;
 }
 
 export interface LogEntry {
