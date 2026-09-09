@@ -179,6 +179,71 @@ describe("search", () => {
     const byTag = await searchBundle(kb.bundle, "", { tags: ["crm"] });
     expect(byTag.map((h) => h.path)).toEqual(["/tables/customers.md"]);
   });
+
+  it("ranks compound installation and icon questions above generic distractors", async () => {
+    await kb.writeConcept(
+      "/gotchas/ptr-ms-analysis-pipx-installation.md",
+      { type: "Gotcha", title: "PTR-MS/Sniff installation documentation" },
+      "Use the branch/install command for ptr-ms/sniff. The packaging/make_icons.py tool is unrelated.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/sources/vm-isolation.md",
+      { type: "Source", title: "VM isolation installation notes" },
+      "General installation notes for the VM runner and its source files.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/notes/ptr-ms-analysis-icons.md",
+      { type: "Note", title: "PTR-MS analysis logo — packaging/make_icons.py" },
+      "The icon concept documents the logo assets and make_icons.py packaging helper.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/sources/logo-overview.md",
+      { type: "Source", title: "Logo overview" },
+      "A general overview of installation documentation and packaging.",
+      "add"
+    );
+
+    const installation = await searchBundle(
+      kb.bundle,
+      "Where is the ptr-ms/sniff installation documentation, and what command should I use?"
+    );
+    expect(installation.slice(0, 3).map((hit) => hit.path)).toContain(
+      "/gotchas/ptr-ms-analysis-pipx-installation.md"
+    );
+
+    const icons = await searchBundle(
+      kb.bundle,
+      "Where is the logo documentation for packaging/make_icons.py?"
+    );
+    expect(icons.slice(0, 3).map((hit) => hit.path)).toContain(
+      "/notes/ptr-ms-analysis-icons.md"
+    );
+  });
+
+  it("decomposes punctuation without double-weighting duplicate terms", async () => {
+    await kb.writeConcept(
+      "/docs/branch-install.md",
+      { type: "Guide", title: "Branch install" },
+      "The branch/install guide covers packaging/make_icons.py.",
+      "add"
+    );
+    const once = await searchBundle(kb.bundle, "branch/install packaging/make_icons.py", { limit: 1 });
+    const repeated = await searchBundle(
+      kb.bundle,
+      "branch/install branch/install packaging/make_icons.py packaging/make_icons.py",
+      { limit: 1 }
+    );
+    expect(once[0].path).toBe("/docs/branch-install.md");
+    expect(repeated[0].path).toBe(once[0].path);
+    expect(repeated[0].score).toBe(once[0].score);
+
+    // Existing broad substring matching remains available for ordinary prose.
+    const broad = await searchBundle(kb.bundle, "customer");
+    expect(broad.map((hit) => hit.path)).toContain("/tables/customers.md");
+  });
 });
 
 describe("conformance (spec §9)", () => {

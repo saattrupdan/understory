@@ -222,6 +222,8 @@ describe("deep agent answer validation", () => {
     const result = await runQuery(kb, "What is alpha?");
     expect(result.answer).toBe("The answer is alpha.");
     expect(generateTextMock).toHaveBeenCalledTimes(2);
+    // With no configured fallback, repair stays on the primary model.
+    expect(generateTextMock.mock.calls[1][0].model).toBe(generateTextMock.mock.calls[0][0].model);
     expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
     const repairMessages = generateTextMock.mock.calls[1][0].messages;
     expect(repairMessages).toHaveLength(3);
@@ -231,6 +233,68 @@ describe("deep agent answer validation", () => {
     expect(await new TraceStore(root).list()).toEqual(
       expect.arrayContaining([expect.objectContaining({ outcome: "success", answer: result.answer })])
     );
+  });
+
+  it("repairs on the raw query fallback when transport fallback is allowed", async () => {
+    vi.stubEnv("LLM_FALLBACK_API_BASE_URL", "http://localhost:2/v1");
+    vi.stubEnv("LLM_FALLBACK_API_FORMAT", "openai");
+    vi.stubEnv("LLM_FALLBACK_MODEL", "fallback-model");
+    vi.stubEnv("LLM_FALLBACK_ALLOW_FOR", "query");
+    generateTextMock
+      .mockResolvedValueOnce({
+        text: "I will use read_concept(path='x')",
+        steps: [step],
+        response: {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "tool-call", toolCallId: "call-1", toolName: "read_concept", input: { path: "x" } }],
+            },
+            {
+              role: "tool",
+              content: [{ type: "tool-result", toolCallId: "call-1", toolName: "read_concept", output: { type: "json", value: { body: "alpha" } } }],
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ text: "The answer is alpha.", steps: [step] });
+
+    await runQuery(kb, "What is alpha?");
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect(generateTextMock.mock.calls[1][0].model).not.toBe(generateTextMock.mock.calls[0][0].model);
+    const traces = await new TraceStore(root).list();
+    expect(traces[0].modelChain).toEqual(["openai:test-model", "openai:fallback-model"]);
+  });
+
+  it("does not use a configured fallback for a disallowed query repair", async () => {
+    vi.stubEnv("LLM_FALLBACK_API_BASE_URL", "http://localhost:2/v1");
+    vi.stubEnv("LLM_FALLBACK_API_FORMAT", "openai");
+    vi.stubEnv("LLM_FALLBACK_MODEL", "fallback-model");
+    vi.stubEnv("LLM_FALLBACK_ALLOW_FOR", "mutate");
+    generateTextMock
+      .mockResolvedValueOnce({
+        text: "I will use read_concept(path='x')",
+        steps: [step],
+        response: {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "tool-call", toolCallId: "call-1", toolName: "read_concept", input: { path: "x" } }],
+            },
+            {
+              role: "tool",
+              content: [{ type: "tool-result", toolCallId: "call-1", toolName: "read_concept", output: { type: "json", value: { body: "alpha" } } }],
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ text: "The answer is alpha.", steps: [step] });
+
+    await runQuery(kb, "What is alpha?");
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect(generateTextMock.mock.calls[1][0].model).toBe(generateTextMock.mock.calls[0][0].model);
+    const traces = await new TraceStore(root).list();
+    expect(traces[0].modelChain).toEqual(["openai:test-model"]);
   });
 
   it("cannot succeed through deep repair with an apostrophe preface", async () => {
