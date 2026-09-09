@@ -1,4 +1,11 @@
-import { generateText, streamText, stepCountIs, type LanguageModel, type ModelMessage } from "ai";
+import {
+  generateText,
+  modelMessageSchema,
+  streamText,
+  stepCountIs,
+  type LanguageModel,
+  type ModelMessage,
+} from "ai";
 import type { KnowledgeBase } from "../okf/index.js";
 import {
   createModel,
@@ -164,7 +171,9 @@ function recordSafeTranscriptMessage(value: unknown): ModelMessage | undefined {
         toolName: part.toolName as string,
         input: part.input,
       }));
-    return parts.length > 0 ? ({ role: "assistant", content: parts } as ModelMessage) : undefined;
+    if (parts.length === 0) return undefined;
+    const parsed = modelMessageSchema.safeParse({ role: "assistant", content: parts });
+    return parsed.success ? parsed.data : undefined;
   }
 
   if (message.role === "tool") {
@@ -177,7 +186,7 @@ function recordSafeTranscriptMessage(value: unknown): ModelMessage | undefined {
         (part) =>
           typeof part.toolCallId === "string" &&
           typeof part.toolName === "string" &&
-          Object.prototype.hasOwnProperty.call(part, "output")
+          isToolResultOutput(part.output)
       )
       .map((part) => ({
         type: "tool-result" as const,
@@ -185,9 +194,24 @@ function recordSafeTranscriptMessage(value: unknown): ModelMessage | undefined {
         toolName: part.toolName as string,
         output: part.output,
       }));
-    return parts.length > 0 ? ({ role: "tool", content: parts } as ModelMessage) : undefined;
+    if (parts.length === 0) return undefined;
+    const parsed = modelMessageSchema.safeParse({ role: "tool", content: parts });
+    return parsed.success ? parsed.data : undefined;
   }
   return undefined;
+}
+
+function isToolResultOutput(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const output = value as { type?: unknown; value?: unknown };
+  return (
+    (output.type === "text" ||
+      output.type === "json" ||
+      output.type === "error-text" ||
+      output.type === "error-json" ||
+      output.type === "content") &&
+    Object.prototype.hasOwnProperty.call(output, "value")
+  );
 }
 
 /**
@@ -199,19 +223,30 @@ function safeRepairMessages(
   question: string,
   steps: ReadonlyArray<Record<string, unknown>>,
   responseMessages: unknown[] | undefined
-): ModelMessage[] {
+): ModelMessage[] | undefined {
   const transcript: ModelMessage[] = [];
-  const collect = (messages: unknown[] | undefined): void => {
-    if (!messages) return;
+  const collect = (messages: unknown[] | undefined): boolean => {
+    if (!messages) return true;
     for (const message of messages) {
       const safe = recordSafeTranscriptMessage(message);
-      if (safe) transcript.push(safe);
+      if (safe) {
+        transcript.push(safe);
+      } else if (
+        message &&
+        typeof message === "object" &&
+        (message as { role?: unknown }).role === "tool"
+      ) {
+        // A response tool message is only usable as a whole. Silently dropping
+        // a raw/invalid result would leave a misleading, incomplete transcript.
+        return false;
+      }
     }
+    return true;
   };
   // AI SDK v5 exposes the combined response transcript on the result. It is
   // already ordered and must be preferred: each StepResult.response.messages is
   // a cumulative clone, so collecting every step would duplicate tool calls.
-  collect(responseMessages);
+  if (!collect(responseMessages)) transcript.length = 0;
   if (transcript.length === 0) {
     const lastStep = steps.at(-1);
     const response = lastStep?.response;
@@ -219,7 +254,10 @@ function safeRepairMessages(
       response && typeof response === "object"
         ? (response as { messages?: unknown }).messages
         : undefined;
-    if (Array.isArray(lastStepMessages)) collect(lastStepMessages);
+    if (Array.isArray(lastStepMessages)) {
+      transcript.length = 0;
+      if (!collect(lastStepMessages)) transcript.length = 0;
+    }
   }
 
   // Test seams and older provider adapters may omit response messages.
@@ -242,13 +280,25 @@ function safeRepairMessages(
             ? step.dynamicToolResults
             : [];
       const assistant = recordSafeTranscriptMessage({ role: "assistant", content: calls });
-      const tool = recordSafeTranscriptMessage({ role: "tool", content: results });
+      const tool = recordSafeTranscriptMessage({
+        role: "tool",
+        content: results.map((result) => {
+          if (!result || typeof result !== "object") return result;
+          const part = result as Record<string, unknown>;
+          return {
+            ...part,
+            // StepResult tool results expose the raw tool output. Prompt
+            // messages require the v5 LanguageModelV2ToolResultOutput union.
+            output: { type: "json", value: part.output },
+          };
+        }),
+      });
       if (assistant) transcript.push(assistant);
       if (tool) transcript.push(tool);
     }
   }
 
-  return [{ role: "user", content: question }, ...transcript];
+  return transcript.length > 0 ? [{ role: "user", content: question }, ...transcript] : undefined;
 }
 
 /** Read-only Q&A over the bundle. */
@@ -292,6 +342,9 @@ export async function runQuery(
         result.steps as unknown as ReadonlyArray<Record<string, unknown>>,
         result.response?.messages
       );
+      if (!repairMessages) {
+        throw new Error(MALFORMED_ANSWER_MESSAGE);
+      }
       const repair = await generateText({
         model: resolved.model,
         system:

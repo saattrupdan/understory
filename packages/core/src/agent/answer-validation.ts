@@ -1,9 +1,17 @@
 import type { StreamTextTransform, TextStreamPart } from "ai";
 
-const KNOWN_TOOLS =
-  "read_concept|read_concepts|search_knowledge|list_directory|lint_knowledge|" +
-  "write_concept|patch_concept|delete_concept";
-const TOOL_CALL = new RegExp(`(?:\\[\\s*)?(?:${KNOWN_TOOLS})\\s*\\(`, "gi");
+const KNOWN_TOOL_NAMES = [
+  "read_concept",
+  "read_concepts",
+  "search_knowledge",
+  "list_directory",
+  "lint_knowledge",
+  "write_concept",
+  "patch_concept",
+  "delete_concept",
+] as const;
+const KNOWN_TOOL = new RegExp(`\\b(?:${KNOWN_TOOL_NAMES.join("|")})\\s*\\(`, "gi");
+const KNOWN_TOOL_NAME = new RegExp(`\\b(?:${KNOWN_TOOL_NAMES.join("|")})\\b`, "i");
 const TOOL_MARKER = /<\|tool_call_(?:start|end)\|>/gi;
 
 interface Range {
@@ -11,10 +19,23 @@ interface Range {
   end: number;
 }
 
+interface CallCandidate {
+  start: number;
+  end: number;
+  bracketed: boolean;
+}
+
 function protectedRanges(answer: string): Range[] {
   const ranges: Range[] = [];
-  // Markdown code and quoted examples are documentation, not model protocol.
-  for (const pattern of [/```[\s\S]*?```/g, /`[^`\n]*`/g, /"(?:\\.|[^"\\])*"/g]) {
+  // Code and quoted examples are documentation. A single quote is only treated
+  // as a quote when the quoted text itself contains protocol syntax; this avoids
+  // treating the apostrophe in "Here's" as the start of a protected range.
+  for (const pattern of [
+    /```[\s\S]*?```/g,
+    /`[^`\n]*`/g,
+    /"(?:\\.|[^"\\])*"/g,
+    /'\s*(?:\[|<\|tool_call_|read_concept|read_concepts|search_knowledge|list_directory|lint_knowledge|write_concept|patch_concept|delete_concept)[^'\n]*'/gi,
+  ]) {
     for (const match of answer.matchAll(pattern)) {
       ranges.push({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length });
     }
@@ -22,22 +43,11 @@ function protectedRanges(answer: string): Range[] {
   return ranges;
 }
 
-function isProtected(answer: string, index: number, ranges: Range[]): boolean {
-  if (ranges.some((range) => index >= range.start && index < range.end)) return true;
-
-  // A single-quoted Markdown example can contain single quotes in its tool
-  // arguments, so a regular expression cannot safely find its closing quote.
-  // Require the candidate to begin immediately after the opening quote (apart
-  // from whitespace) and to have a closing quote after the call. This avoids
-  // mistaking the apostrophe in a preface such as "Here's the call" for a quote.
-  const lineStart = answer.lastIndexOf("\n", index - 1) + 1;
-  let beforeIndex = index - 1;
-  while (beforeIndex >= lineStart && /\s/.test(answer[beforeIndex] ?? "")) beforeIndex -= 1;
-  if (answer[beforeIndex] === "'" && /[\])]\s*'/.test(answer.slice(index))) return true;
-  return false;
+function isProtected(index: number, ranges: Range[]): boolean {
+  return ranges.some((range) => index >= range.start && index < range.end);
 }
 
-function callEnd(answer: string, openParen: number): number {
+function matchingParen(answer: string, openParen: number): { end: number } {
   let depth = 0;
   let quote: "'" | '"' | undefined;
   let escaped = false;
@@ -54,70 +64,136 @@ function callEnd(answer: string, openParen: number): number {
       continue;
     }
     if (char === "(") depth += 1;
-    else if (char === ")" && --depth === 0) return index + 1;
+    else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return { end: index + 1 };
+    }
   }
-  // A cut-off call is still protocol-shaped. The caller will use the context
-  // around the candidate to distinguish it from explanatory prose.
-  return answer.length;
+  return { end: answer.length };
 }
 
-function isBareCallLeakage(answer: string, ranges: Range[]): boolean {
-  for (const match of answer.matchAll(TOOL_CALL)) {
+function callsIn(answer: string): CallCandidate[] {
+  const ranges = protectedRanges(answer);
+  const calls: CallCandidate[] = [];
+  for (const match of answer.matchAll(KNOWN_TOOL)) {
     const start = match.index ?? 0;
-    if (isProtected(answer, start, ranges)) continue;
-
+    if (isProtected(start, ranges)) continue;
     const openParen = start + match[0].lastIndexOf("(");
-    let end = callEnd(answer, openParen);
-    const closingBracket = answer.slice(end).match(/^\s*\]/);
-    if (closingBracket) end += closingBracket[0].length;
+    const result = matchingParen(answer, openParen);
+    let end = result.end;
+    let bracketed = false;
+    let before = start - 1;
+    while (before >= 0 && /[ \t]/.test(answer[before] ?? "")) before -= 1;
+    if (answer[before] === "[") {
+      bracketed = true;
+    }
+    const line = answer.slice(answer.lastIndexOf("\n", start - 1) + 1, start);
+    if (line.lastIndexOf("[") > line.lastIndexOf("]")) bracketed = true;
+    let after = end;
+    while (after < answer.length && /[ \t]/.test(answer[after] ?? "")) after += 1;
+    if (answer[after] === "]") end = after + 1;
+    calls.push({ start, end, bracketed });
+  }
+  return calls;
+}
 
-    const prefix = answer.slice(0, start).trim();
-    const suffix = answer.slice(end).trim();
-    const linePrefix = answer.slice(answer.lastIndexOf("\n", start - 1) + 1, start).trim();
-    const prefixBeforeBracket = prefix.replace(/\[\s*$/, "").trim();
-    const prefaced =
-      prefix === "" ||
-      prefix.endsWith(":") ||
-      prefixBeforeBracket.endsWith(":") ||
-      /^SUFFICIENT$/i.test(prefix) ||
-      /^(?:sure|okay|ok|yes|no)[,!?]?\s*$/.test(prefixBeforeBracket) ||
-      /^(?:here(?:'s| is)?|the\s+(?:requested\s+)?tool\s+call(?:\s+is)?|the\s+answer\s+is|result|output|calling|i(?:'ll| will)? use)\s*[:,-]?$/i.test(
-        prefixBeforeBracket
-      ) ||
-      linePrefix === "";
+function hasProtocolPrefix(prefix: string): boolean {
+  const value = prefix.trim();
+  // A colon is the protocol/documentation boundary: prose before it is an
+  // introduction, while prose after a call is classified separately. The
+  // recall path also deliberately emits the single protocol word SUFFICIENT.
+  return !value || value.endsWith(":") || /^SUFFICIENT$/i.test(value);
+}
 
-    // Explanatory prose normally continues after the invocation. A call at
-    // the end of a prefaced answer, or a truncated call, is leakage.
-    if (prefaced && (suffix === "" || /^<\|tool_call_(?:start|end)\|>$/i.test(suffix))) {
+function hasBriefProtocolSuffix(suffix: string): boolean {
+  const value = suffix.trim().replace(/^[\s.,!?;:)}\]]+/, "");
+  if (!value) return true;
+  // Explanatory continuations are not protocol output, even when a call occurs
+  // near the end of the sentence. Short terminal acknowledgements are common in
+  // leaked model output and are deliberately covered here.
+  if (/^(?:when|where|which|that|because|so that|to|for|is used|can be used|is a|is an|is the|returns|takes|expects)\b/i.test(value)) {
+    return false;
+  }
+  return value.split(/\s+/).length <= 8;
+}
+
+function isCallSequence(answer: string, calls: CallCandidate[]): boolean {
+  if (calls.length === 0) return false;
+  const first = calls[0];
+  const last = calls[calls.length - 1];
+  const prefix = answer.slice(0, first.start);
+  const protocolPrefix = prefix.replace(/\[\s*$/, "").trim();
+  const suffix = answer.slice(last.end);
+  const allBracketed = calls.every((call) => call.bracketed);
+  const startsAtAnswerBoundary = !protocolPrefix;
+  const linePrefix = answer.slice(answer.lastIndexOf("\n", first.start - 1) + 1, first.start);
+  const startsAtLineBoundary =
+    !linePrefix.replace(/\[\s*$/, "").trim() && hasProtocolPrefix(protocolPrefix);
+
+  // Bare calls are protocol only at an answer/line boundary or after an
+  // explicit protocol preface. This intentionally leaves documentation such as
+  // "The guide ends with read_concept(path='x')" alone.
+  const boundary =
+    startsAtAnswerBoundary ||
+    startsAtLineBoundary ||
+    hasProtocolPrefix(protocolPrefix) ||
+    (allBracketed && hasProtocolPrefix(protocolPrefix));
+  if (!boundary) return false;
+
+  // Calls in a sequence may be separated by JSON/list punctuation or whitespace.
+  // Reject a candidate embedded in ordinary prose between two calls.
+  for (let index = 1; index < calls.length; index += 1) {
+    const between = answer.slice(calls[index - 1].end, calls[index].start).trim();
+    if (between && !/^(?:[,;]|\]|\[|\{|\}|\n)+$/.test(between)) return false;
+  }
+  return (
+    hasBriefProtocolSuffix(suffix) &&
+    (startsAtAnswerBoundary || hasProtocolPrefix(protocolPrefix) ||
+      (allBracketed && hasProtocolPrefix(protocolPrefix)))
+  );
+}
+
+function jsonLikeToolPayload(answer: string): boolean {
+  const value = answer.trim();
+  if (!value.startsWith("{") && !value.startsWith("[")) return false;
+  if (!KNOWN_TOOL_NAME.test(value)) return false;
+  try {
+    const parsed: unknown = JSON.parse(value.replace(/[\s.,!?]+$/, ""));
+    const encoded = JSON.stringify(parsed);
+    return KNOWN_TOOL_NAME.test(encoded);
+  } catch {
+    // A truncated JSON tool call is still protocol-shaped when it begins the
+    // answer. Do not apply this to an object embedded in explanatory prose.
+    return true;
+  }
+}
+
+function markerEnvelope(answer: string): boolean {
+  const ranges = protectedRanges(answer);
+  const markers = [...answer.matchAll(TOOL_MARKER)].filter((match) => !isProtected(match.index ?? 0, ranges));
+  if (markers.length === 0) return false;
+  for (let index = 0; index < markers.length; index += 1) {
+    const marker = markers[index];
+    const start = marker.index ?? 0;
+    const payloadStart = start + marker[0].length;
+    const nextMarker = markers[index + 1];
+    const payload = answer.slice(payloadStart, nextMarker?.index ?? answer.length);
+    if (KNOWN_TOOL_NAME.test(payload) || jsonLikeToolPayload(payload)) return true;
+    // A marker by itself is an actual protocol boundary only when it is the
+    // complete answer (or a truncated answer beginning at the boundary).
+    if (!answer.slice(0, start).trim() && (!nextMarker || !answer.slice(nextMarker.index! + nextMarker[0].length).trim())) {
       return true;
     }
   }
   return false;
 }
 
-/**
- * Return whether an answer is model-emitted tool protocol rather than prose.
- *
- * Detection is deliberately shape- and context-aware: markers must participate
- * in a marker/call sequence (or be the whole answer), and bare calls must look
- * like an emitted answer. Inline documentation, quoted examples, and backtick
- * examples remain ordinary prose.
- */
+/** Return whether an answer is model-emitted tool protocol rather than prose. */
 export function isMalformedAnswer(answer: string): boolean {
-  const ranges = protectedRanges(answer);
-  if (isBareCallLeakage(answer, ranges)) return true;
-
-  for (const match of answer.matchAll(TOOL_MARKER)) {
-    const start = match.index ?? 0;
-    if (isProtected(answer, start, ranges)) continue;
-    const before = answer.slice(0, start).trim();
-    const after = answer.slice(start + match[0].length).trim();
-    const markerIsWholeAnswer = before === "" && after === "";
-    const markerTail = answer.slice(start + match[0].length);
-    const nearbyCall = isBareCallLeakage(markerTail, protectedRanges(markerTail));
-    if (markerIsWholeAnswer || nearbyCall) return true;
-  }
-  return false;
+  if (!answer.trim()) return false;
+  if (markerEnvelope(answer)) return true;
+  if (jsonLikeToolPayload(answer)) return true;
+  return isCallSequence(answer, callsIn(answer));
 }
 
 /** A stable, concise diagnostic for logs and failed traces. */
@@ -131,62 +207,54 @@ export interface ProtocolLeakageGuard {
 }
 
 /**
- * Gate text parts before AI SDK exposes them to a chat client.
- *
- * A finite prefix cannot tell ordinary prose from a protocol call that appears
- * later in the same answer. The smallest safe trade-off is therefore to buffer
- * one complete text part (normally the final synthesis) and release it only at
- * `text-end`; tool/reasoning parts continue through the SDK normally.
+ * Buffer text for the complete stream step before validating it. Text can be
+ * split over several blocks by AI SDK v5, so validating at text-end would let a
+ * protocol sequence straddling two blocks escape.
  */
 export function createProtocolLeakageGuard(): ProtocolLeakageGuard {
   let malformed = false;
-  let pendingStart: TextStreamPart<any> | undefined;
   let pendingText = "";
+  let pendingTextParts: TextStreamPart<any>[] = [];
 
-  const release = (
-    controller: TransformStreamDefaultController<TextStreamPart<any>>,
-    stopStream: () => void
+  const releaseText = (
+    controller: TransformStreamDefaultController<TextStreamPart<any>>
   ): void => {
-    if (isMalformedAnswer(pendingText)) {
+    const parts = pendingTextParts;
+    const text = pendingText;
+    pendingTextParts = [];
+    pendingText = "";
+    if (malformed || isMalformedAnswer(text)) {
       malformed = true;
-      pendingStart = undefined;
-      pendingText = "";
-      stopStream();
       return;
     }
-    if (pendingStart) controller.enqueue(pendingStart);
-    if (pendingText) {
-      controller.enqueue({
-        type: "text-delta",
-        id: pendingStart && "id" in pendingStart ? pendingStart.id : "guarded-text",
-        text: pendingText,
-      });
-    }
-    pendingStart = undefined;
-    pendingText = "";
+    for (const part of parts) controller.enqueue(part);
   };
 
-  const transform: StreamTextTransform<any> = ({ stopStream }) =>
+  const transform: StreamTextTransform<any> = () =>
     new TransformStream<TextStreamPart<any>, TextStreamPart<any>>({
       transform(part, controller) {
-        if (part.type === "text-start") {
-          // A well-formed stream has one start/end pair. Flush defensively if a
-          // provider starts a second one without ending the first.
-          if (pendingStart || pendingText) release(controller, stopStream);
-          pendingStart = part;
-          pendingText = "";
-        } else if (part.type === "text-delta") {
-          pendingText += part.text;
-        } else if (part.type === "text-end") {
-          pendingText += "";
-          release(controller, stopStream);
-          if (!malformed) controller.enqueue(part);
-        } else {
-          controller.enqueue(part);
+        if (
+          part.type === "text-start" ||
+          part.type === "text-delta" ||
+          part.type === "text-end"
+        ) {
+          pendingTextParts.push(part);
+          if (part.type === "text-delta") pendingText += part.text;
+          return;
         }
+
+        // finish-step is the boundary for one model generation. finish is a
+        // defensive fallback for providers that omit finish-step.
+        if (part.type === "finish-step" || part.type === "finish") {
+          releaseText(controller);
+          controller.enqueue(part);
+          return;
+        }
+
+        controller.enqueue(part);
       },
       flush(controller) {
-        if (pendingStart || pendingText) release(controller, stopStream);
+        releaseText(controller);
       },
     });
 

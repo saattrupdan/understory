@@ -9,6 +9,7 @@ vi.mock("ai", async () => {
   return { ...actual, generateText: generateTextMock };
 });
 
+import { modelMessageSchema } from "ai";
 import { runMutation, runQuery, type QueryResult } from "../src/agent/agent.js";
 import {
   clearHotMemory,
@@ -43,23 +44,27 @@ afterEach(async () => {
 });
 
 describe("textual tool-call answer validation", () => {
-  it("recognises complete, truncated, and prefaced protocol leakage", () => {
-    expect(isMalformedAnswer("<|tool_call_start|>[read_concept(path='x')]<|tool_call_end|>")).toBe(true);
-    expect(isMalformedAnswer("<|tool_call_start|>[read_concept(path='x')]")).toBe(true);
-    expect(isMalformedAnswer("Here is the call: [read_concept(path='x')]")).toBe(true);
-    expect(isMalformedAnswer("Here's the call: [read_concept(path='x')]")).toBe(true);
-    expect(isMalformedAnswer("I will use:\n[read_concept(path='x'")).toBe(true);
-    expect(isMalformedAnswer("[read_concept(path='x'")).toBe(true);
-  });
+  const cases = [
+    ["complete marker envelope", "<|tool_call_start|>[read_concept(path='x')]<|tool_call_end|>", true],
+    ["truncated marker envelope", "<|tool_call_start|>{\"name\":\"read_concept\",\"arguments\":{\"path\":\"x\"}", true],
+    ["marker-wrapped JSON call", "<|tool_call_start|>{\"name\":\"read_concept\",\"arguments\":{\"path\":\"x\"}}<|tool_call_end|>", true],
+    ["multiple bracketed calls", "[read_concept(path='x')][search_knowledge(query='y')]", true],
+    ["call followed by punctuation", "Here is: [read_concept(path='x')].", true],
+    ["call followed by brief prose", "[read_concept(path='x')]. Done.", true],
+    ["bare protocol call at answer boundary", "read_concept(path='x')", true],
+    ["truncated bracketed call", "I will use:\n[read_concept(path='x'", true],
+    ["ordinary explanatory prose", "The read_concept tool is used to inspect a concept.", false],
+    ["documentation beginning with an unquoted example", "read_concept(path='x') is used in this guide.", false],
+    ["documentation ending with unquoted example", "The documentation ends with read_concept(path='x')", false],
+    ["documentation call with explanatory continuation", "Use [read_concept(path='x')] when the answer needs a concept.", false],
+    ["literal marker in prose", "The literal marker <|tool_call_start|> is described here.", false],
+    ["backtick example", "`<|tool_call_start|>[read_concept(path='x')]` is a marker example.", false],
+    ["double-quoted example", 'The example "[read_concept(path=\'x\')]" is quoted.', false],
+    ["single-quoted example", "The example '[read_concept(path=\"x\")]' is quoted.", false],
+  ] as const;
 
-  it("allows prose and quoted examples containing tool syntax", () => {
-    expect(isMalformedAnswer("The read_concept tool is used to inspect a concept.")).toBe(false);
-    expect(isMalformedAnswer("We document write_concept(path='x') in the runbook.")).toBe(false);
-    expect(isMalformedAnswer("Use [read_concept(path='x')] when the answer needs a concept.")).toBe(false);
-    expect(isMalformedAnswer("The literal marker <|tool_call_start|> is described here.")).toBe(false);
-    expect(isMalformedAnswer("`<|tool_call_start|>[read_concept(path='x')]` is a marker example.")).toBe(false);
-    expect(isMalformedAnswer('The example "[read_concept(path=\'x\')]" is quoted.')).toBe(false);
-    expect(isMalformedAnswer("The example '[read_concept(path=\"x\")]' is quoted.")).toBe(false);
+  it.each(cases)("%s", (_name, answer, expected) => {
+    expect(isMalformedAnswer(answer)).toBe(expected);
   });
 });
 
@@ -129,7 +134,7 @@ describe("deep agent answer validation", () => {
                       type: "tool-result",
                       toolCallId: "call-1",
                       toolName: "read_concept",
-                      output: { path: "x", body: "alpha" },
+                      output: { type: "json", value: { path: "x", body: "alpha" } },
                     },
                   ],
                 },
@@ -159,7 +164,7 @@ describe("deep agent answer validation", () => {
                   type: "tool-result",
                   toolCallId: "call-1",
                   toolName: "read_concept",
-                  output: { path: "x", body: "alpha" },
+                  output: { type: "json", value: { path: "x", body: "alpha" } },
                 },
               ],
             },
@@ -184,6 +189,45 @@ describe("deep agent answer validation", () => {
     expect(await new TraceStore(root).list()).toEqual(
       expect.arrayContaining([expect.objectContaining({ outcome: "success", answer: result.answer })])
     );
+  });
+
+  it("converts the step fallback to valid v5 prompt messages", async () => {
+    generateTextMock
+      .mockResolvedValueOnce({
+        text: "[read_concept(path='x')]",
+        steps: [
+          {
+            toolCalls: [
+              {
+                type: "tool-call",
+                toolCallId: "call-1",
+                toolName: "read_concept",
+                input: { path: "x" },
+              },
+            ],
+            toolResults: [
+              {
+                type: "tool-result",
+                toolCallId: "call-1",
+                toolName: "read_concept",
+                output: { path: "x", body: "alpha" },
+              },
+            ],
+          },
+          step,
+        ],
+        response: { messages: [] },
+      })
+      .mockResolvedValueOnce({ text: "The answer is alpha.", steps: [step] });
+
+    await runQuery(kb, "What is alpha?");
+    const repairMessages = generateTextMock.mock.calls[1][0].messages;
+    expect(repairMessages).toHaveLength(3);
+    expect(repairMessages.every((message: unknown) => modelMessageSchema.safeParse(message).success)).toBe(true);
+    expect(repairMessages[2]).toMatchObject({
+      role: "tool",
+      content: [{ output: { type: "json", value: { path: "x", body: "alpha" } } }],
+    });
   });
 
   it("fails and records no successful trace when repair is malformed", async () => {
