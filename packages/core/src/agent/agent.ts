@@ -51,7 +51,10 @@ export type MutationOutcome =
   | { ok: false; status: "failed"; error: string };
 
 interface ResolvedAgentModel {
+  /** Model used by the tool loop; it may transparently fail over on transport errors. */
   model: LanguageModel;
+  /** Tool-free synthesis repair model. Never wrap this in a second fallback chain. */
+  synthesisModel: LanguageModel;
   modelChain: string[];
 }
 
@@ -78,19 +81,31 @@ async function resolveAgentModel(
   const fallbackConfig = resolveFallbackConfig(env);
 
   if (!fallbackConfig) {
-    return { model: primary, modelChain: [modelLabel(primaryConfig)] };
+    return {
+      model: primary,
+      synthesisModel: primary,
+      modelChain: [modelLabel(primaryConfig)],
+    };
   }
 
   const allowFor = resolveAllowFor(env.LLM_FALLBACK_ALLOW_FOR);
   if (allowFor && !allowFor.has(mode)) {
-    return { model: primary, modelChain: [modelLabel(primaryConfig)] };
+    return {
+      model: primary,
+      synthesisModel: primary,
+      modelChain: [modelLabel(primaryConfig)],
+    };
   }
 
   const fallback = await createModel(fallbackConfig);
   return {
+    // The initial loop keeps the existing transport-only fallback behaviour.
     model: withFallback(primary, fallback, {
       retry429: env.LLM_FALLBACK_RETRY_429 === "true",
     }),
+    // A malformed answer is a successful transport response, so the wrapper
+    // cannot help. Repair directly on the configured fallback model instead.
+    synthesisModel: mode === "query" ? fallback : primary,
     modelChain: [modelLabel(primaryConfig), modelLabel(fallbackConfig)],
   };
 }
@@ -352,7 +367,7 @@ export async function runQuery(
         throw new Error(MALFORMED_ANSWER_MESSAGE);
       }
       const repair = await generateText({
-        model: resolved.model,
+        model: resolved.synthesisModel,
         system:
           `${buildSystemPrompt(ctx)}\n\n` +
           "SYNTHESIS ONLY: Answer the user's question from the supplied conversation " +

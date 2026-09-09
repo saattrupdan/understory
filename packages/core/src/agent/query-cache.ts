@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import type { KnowledgeBase } from "../okf/index.js";
 import { parseDuration } from "../util/duration.js";
 import { runQuery, type AgentOptions, type QueryResult } from "./agent.js";
-import { hotLookup, recordHotQuery } from "./hot-memory.js";
+import { hotLookup } from "./hot-memory.js";
 import { runRecall, type RecallOutcome } from "./recall.js";
 import { traceStore } from "./agent.js";
 import { TraceRecorder } from "./trace.js";
@@ -101,9 +101,9 @@ export async function runQueryCached(
 
   const ttl = parseDuration(process.env.QUERY_CACHE_TTL) ?? DEFAULT_TTL_MS;
 
-  // Layer 2: hot working set — recently written concepts + recent answers,
-  // one tool-free LLM call. A confident hot answer also lands in the exact
-  // cache so identical repeats become instant.
+  // Layer 2: hot working set — recently written concepts only, one tool-free
+  // LLM call. A confident hot answer also lands in the exact cache so identical
+  // repeats become instant.
   //
   // A layer that cannot reach its model may only cost the query the attempt.
   // The deep agent is the one layer with a primary-then-fallback model chain
@@ -169,17 +169,16 @@ export async function runQueryCached(
     });
     const result: QueryResult = { answer: recalled.answer, steps: 1, traceId: trace.id };
     store(key, result, ttl);
-    recordHotQuery(question, recalled.answer);
     return { ...result, cached: false, source: "recall" };
   }
 
-  // Layer 4: deep memory — the full agent loop. Its answer feeds the hot set.
-  // Anything recall already found is handed over, so a declined attempt buys
+  // Layer 4: deep memory — the full agent loop. Its answer is stored only in
+  // the exact cache, never as fuzzy hot evidence. Anything recall already found
+  // is handed over, so a declined attempt buys
   // the deep run a head start instead of costing an extra round-trip.
   const result = await runner(kb, withCandidateHint(question, recalled.paths), options); // writes its own trace
   if (isMalformedAnswer(result.answer)) throw new Error(MALFORMED_ANSWER_MESSAGE);
   store(key, result, ttl);
-  recordHotQuery(question, result.answer);
   return { ...result, cached: false, source: "deep" };
 }
 

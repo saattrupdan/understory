@@ -8,7 +8,6 @@ import {
   hotLookup,
   type HotGenerate,
   recordHotDelete,
-  recordHotQuery,
   recordHotWrite,
 } from "../src/agent/hot-memory.js";
 import { clearQueryCache, runQueryCached } from "../src/agent/query-cache.js";
@@ -57,11 +56,10 @@ describe("hotLookup", () => {
     expect(await hotLookup(kb, "what is the capital of France?", {}, unsure)).toBeNull();
   });
 
-  it("purges hot Q&As on writes and drops deleted concepts", async () => {
-    recordHotQuery("q1", "a1");
-    recordHotWrite("/facts/x.md"); // any write invalidates prior answers
+  it("uses only written concepts, not generated Q&A, as hot evidence", async () => {
+    recordHotWrite("/facts/x.md");
     const generate = vi.fn(async () => ({ text: "should not matter", finishReason: "stop" as const }));
-    // /facts/x.md doesn't exist on disk → dropped at read; Q&As purged → empty set → null.
+    // The path does not exist, so there is no hot source and no model call.
     expect(await hotLookup(kb, "q1", {}, generate)).toBeNull();
     expect(generate).not.toHaveBeenCalled();
 
@@ -186,19 +184,20 @@ describe("runQueryCached layering", () => {
     expect(hot).toHaveBeenCalledTimes(1);
   });
 
-  it("deep answers feed the hot working set", async () => {
+  it("does not make a deep answer available as fuzzy hot evidence", async () => {
     const deep = vi.fn(async (): Promise<QueryResult> => ({ answer: "42", steps: 3, traceId: "t" }));
     await runQueryCached(kb, "meaning of life?", {}, deep, async () => null);
 
-    // The recorded Q&A is now available to a real hot lookup.
-    const generate = vi.fn(async () => ({
-      text: "42 (from previous answer)",
-      finishReason: "stop" as const,
-    }));
-    const answer = await hotLookup(kb, "what was the meaning of life again?", {}, generate);
-    expect(answer).toContain("42");
-    const prompt = generate.mock.calls[0][1] as string;
-    expect(prompt).toContain("meaning of life?");
+    const generate = vi.fn();
+    expect(await hotLookup(kb, "what was the meaning of life again?", {}, generate)).toBeNull();
+    expect(generate).not.toHaveBeenCalled();
+
+    // The exact query cache remains the repeat-answer mechanism.
+    const again = await runQueryCached(kb, "meaning of life?", {}, deep, async () => {
+      throw new Error("hot should not run before exact cache");
+    });
+    expect(again.source).toBe("cache");
+    expect(again.answer).toBe("42");
   });
 
   // Hot answers first, so a truncated hot reply used to short-circuit the two

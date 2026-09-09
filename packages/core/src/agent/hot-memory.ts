@@ -6,15 +6,17 @@ import type { RecallFinish, RecallGeneration } from "./recall.js";
 import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
 
 /**
- * Hot memory: a small working set of recently written concepts and recent
- * Q&A pairs. Queries consult it BEFORE the deep agent run — one cheap,
- * tool-free LLM call over a tiny context. Misses fall through to deep
- * memory (the full agent loop). Short-term memory in front of long-term.
+ * Hot memory: a small working set of recently written concepts. Queries consult
+ * it BEFORE the deep agent run — one cheap, tool-free LLM call over a tiny
+ * context. Misses fall through to deep memory (the full agent loop).
  *
  * Staleness rules:
  * - Hot concepts are stored as PATHS and read fresh at lookup — never stale.
- * - Hot Q&A pairs are purged on any write (the write may contradict them).
  * - Everything expires after HOT_MEMORY_TTL (default 1h).
+ *
+ * Generated Q&A is deliberately not retained here: an incorrect deep answer
+ * must not become fuzzy evidence for a later, related question. Exact query
+ * results are kept separately by query-cache.ts.
  *
  * Tunables (all optional):
  * - HOT_MEMORY=false                disable the layer entirely
@@ -32,21 +34,13 @@ import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation
  * is sent explicitly, and a run that hits it declines like any other miss.
  */
 
-interface HotQA {
-  question: string;
-  answer: string;
-  at: number;
-}
-
 const MAX_CONCEPTS = 10;
-const MAX_QAS = 10;
 const DEFAULT_TTL_MS = 3_600_000;
 const MAX_EXCERPT_CHARS = 1500;
 const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
 
 // Module-level: survives per-request McpServer instances (stateless HTTP).
 const hotConcepts = new Map<string, number>(); // path → touchedAt
-let hotQAs: HotQA[] = [];
 
 /** Called by the write tools after any concept write/patch. */
 export function recordHotWrite(path: string): void {
@@ -57,26 +51,16 @@ export function recordHotWrite(path: string): void {
     if (oldest === undefined) break;
     hotConcepts.delete(oldest);
   }
-  // A write may contradict previous answers — drop them.
-  hotQAs = [];
 }
 
-/** Called on deletes: the concept leaves the hot set; answers may be stale. */
+/** Called on deletes: the concept leaves the hot set. */
 export function recordHotDelete(path: string): void {
   hotConcepts.delete(path);
-  hotQAs = [];
-}
-
-/** Called after a deep query completes. */
-export function recordHotQuery(question: string, answer: string): void {
-  hotQAs.push({ question, answer, at: Date.now() });
-  if (hotQAs.length > MAX_QAS) hotQAs = hotQAs.slice(-MAX_QAS);
 }
 
 /** Test hook. */
 export function clearHotMemory(): void {
   hotConcepts.clear();
-  hotQAs = [];
 }
 
 /**
@@ -124,11 +108,6 @@ export async function hotLookup(
       hotConcepts.delete(path); // deleted behind our back
     }
   }
-  for (const qa of hotQAs) {
-    if (qa.at < cutoff) continue;
-    sections.push(`PREVIOUS Q&A\nQ: ${qa.question}\nA: ${qa.answer}`);
-  }
-
   if (sections.length === 0) return null;
 
   const system =
