@@ -125,10 +125,9 @@ export async function runRecall(
   if (hits.length === 0) return { answer: null, paths: [] };
   // Ranking score deliberately rewards useful path decomposition, but is not
   // calibrated as evidence: ubiquitous components can still rank a hit first.
-  // Confidence discounts each term by corpus frequency. Fall back to score for
-  // compatibility with custom KnowledgeBase implementations returning the
-  // pre-confidence SearchHit shape.
-  const topConfidence = hits[0].confidence ?? hits[0].score ?? 0;
+  // Only the corpus-aware confidence field can cross this gate. In particular,
+  // a path-only hit must not fall back to its ranking score and trigger recall.
+  const topConfidence = hits[0].confidence ?? 0;
   if (topConfidence < minScore) return { answer: null, paths: [] };
 
   const ordered = hits.slice(0, seeds).map((h) => h.path);

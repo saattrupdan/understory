@@ -183,8 +183,14 @@ describe("search", () => {
   it("ranks compound installation and icon questions above generic distractors", async () => {
     await kb.writeConcept(
       "/gotchas/ptr-ms-analysis-pipx-installation.md",
-      { type: "Gotcha", title: "PTR-MS/Sniff installation documentation" },
+      { type: "Gotcha", title: "PTR-MS/Sniff pipx installation" },
       "Use the branch/install command for ptr-ms/sniff. The packaging/make_icons.py tool is unrelated.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/gotchas/ptr-ms-analysis-work-on-main.md",
+      { type: "Gotcha", title: "PTR-MS analysis work on main" },
+      "Sniff work on main is documented here, including the installation branch workflow.",
       "add"
     );
     await kb.writeConcept(
@@ -195,8 +201,8 @@ describe("search", () => {
     );
     await kb.writeConcept(
       "/notes/ptr-ms-analysis-icons.md",
-      { type: "Note", title: "PTR-MS analysis logo — packaging/make_icons.py" },
-      "The icon concept documents the logo assets and make_icons.py packaging helper.",
+      { type: "Note", title: "PTR-MS analysis icon and rename artwork — packaging/make_icons.py" },
+      "The icon and rename artwork concept documents the logo assets and make_icons.py packaging helper.",
       "add"
     );
     await kb.writeConcept(
@@ -212,10 +218,13 @@ describe("search", () => {
     );
     expect(installation[0].path).toBe("/gotchas/ptr-ms-analysis-pipx-installation.md");
     expect(installation[0].confidence).toBeGreaterThanOrEqual(20);
+    expect(installation.slice(0, 6).map((hit) => hit.path)).toContain(
+      "/gotchas/ptr-ms-analysis-work-on-main.md"
+    );
 
     const icons = await searchBundle(
       kb.bundle,
-      "Where is the logo documentation for packaging/make_icons.py?"
+      "Where is the icon rename artwork for the project logo?"
     );
     expect(icons[0].path).toBe("/notes/ptr-ms-analysis-icons.md");
     expect(icons[0].confidence).toBeGreaterThanOrEqual(20);
@@ -275,23 +284,40 @@ describe("search", () => {
     expect(browse.every((hit) => hit.score === 1 && hit.confidence === 0)).toBe(true);
   });
 
-  it("keeps ubiquitous path fragments below recall confidence", async () => {
-    for (const name of ["alpha", "beta", "gamma", "delta"]) {
-      await kb.writeConcept(
-        `/notes/${name}.md`,
-        { type: "Note", title: `Unrelated ${name}` },
-        "No matching filename is documented here.",
-        "add"
-      );
+  it("searches symbol-only input instead of treating it as browse", async () => {
+    await kb.writeConcept(
+      "/symbols/gear.md",
+      { type: "Note", title: "⚙️ workflow marker" },
+      "The gear symbol marks an operational workflow.",
+      "add"
+    );
+
+    const hits = await searchBundle(kb.bundle, "⚙️");
+    expect(hits[0].path).toBe("/symbols/gear.md");
+    expect(hits[0].score).toBeGreaterThan(1);
+  });
+
+  it("keeps absent filenames and common path-like queries below recall confidence", async () => {
+    for (const directory of ["repositories", "gotchas", "notes"]) {
+      for (const name of ["alpha", "beta", "gamma", "delta"]) {
+        await kb.writeConcept(
+          `/${directory}/${name}.md`,
+          { type: "Note", title: `Unrelated ${name}` },
+          "No matching filename is documented here.",
+          "add"
+        );
+      }
     }
 
     const absent = await searchBundle(kb.bundle, "Where is completely-absent.md?");
     expect(absent.length).toBeGreaterThan(0); // `md` remains useful for ranking.
     expect(absent[0].confidence).toBeLessThan(20);
 
-    const common = await searchBundle(kb.bundle, "notes md");
-    expect(common.length).toBeGreaterThan(0);
-    expect(common[0].confidence).toBeLessThan(20);
+    for (const query of ["repositories/md", "gotchas/md", "notes md"]) {
+      const common = await searchBundle(kb.bundle, query);
+      expect(common.length).toBeGreaterThan(0);
+      expect(common[0].confidence).toBeLessThan(20);
+    }
   });
 });
 
