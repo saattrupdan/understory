@@ -143,22 +143,58 @@ describe("runRecall", () => {
   });
 
   it("does not trust absent filenames or common path fragments", async () => {
-    for (const name of ["alpha", "beta", "gamma", "delta"]) {
-      await kb.writeConcept(
-        `/notes/${name}.md`,
-        { type: "Note", title: `Unrelated ${name}` },
-        "Routine material.",
-        "add"
-      );
+    for (const directory of ["repositories", "gotchas", "notes"]) {
+      for (const name of ["alpha", "beta", "gamma", "delta"]) {
+        await kb.writeConcept(
+          `/${directory}/${name}.md`,
+          { type: "Note", title: `Unrelated ${name}` },
+          "Routine material.",
+          "add"
+        );
+      }
     }
     const generate = vi.fn(async () => ({ text: "should not run", finishReason: "stop" as const }));
 
     const absent = await runRecall(kb, "Where is completely-absent.md?", {}, generate);
-    const common = await runRecall(kb, "notes md", {}, generate);
+    const common = await runRecall(kb, "repositories/md", {}, generate);
+    const otherCommon = await runRecall(kb, "gotchas/md", {}, generate);
 
     expect(absent).toEqual({ answer: null, paths: [] });
     expect(common).toEqual({ answer: null, paths: [] });
+    expect(otherCommon).toEqual({ answer: null, paths: [] });
     expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("keeps both Sniff installation concepts in recall candidates", async () => {
+    await kb.writeConcept(
+      "/gotchas/ptr-ms-analysis-pipx-installation.md",
+      { type: "Gotcha", title: "PTR-MS/Sniff pipx installation" },
+      "Install Sniff with the documented branch workflow.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/gotchas/ptr-ms-analysis-work-on-main.md",
+      { type: "Gotcha", title: "PTR-MS analysis work on main" },
+      "Sniff installation and work on main are documented here.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/notes/unrelated-install.md",
+      { type: "Note", title: "General installation" },
+      "This does not mention the project.",
+      "add"
+    );
+
+    const generate = vi.fn(async () => ({ text: "SUFFICIENT\nThe workflow is documented.", finishReason: "stop" as const }));
+    const result = await runRecall(kb, "How do I install Sniff?", {}, generate);
+
+    expect(result.paths.slice(0, 3)).toEqual(
+      expect.arrayContaining([
+        "/gotchas/ptr-ms-analysis-pipx-installation.md",
+        "/gotchas/ptr-ms-analysis-work-on-main.md",
+      ])
+    );
+    expect(generate).toHaveBeenCalledTimes(1);
   });
 
   it("widens to linked concepts the keywords never named", async () => {
