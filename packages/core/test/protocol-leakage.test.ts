@@ -71,6 +71,21 @@ describe("textual tool-call answer validation", () => {
       true,
     ],
     [
+      "consecutive complete XML tool-call envelopes",
+      "<tool_call><function=search_knowledge><parameter=query>x</parameter></function></tool_call>\n<tool_call><function=list_directory><parameter=path>/</parameter></function></tool_call>",
+      true,
+    ],
+    [
+      "XML tool-call sequence ending in a truncated envelope",
+      "<tool_call><function=search_knowledge><parameter=query>x</parameter></function></tool_call>\n<tool_call><function=list_directory><parameter=path>/",
+      true,
+    ],
+    [
+      "XML tool-call sequence in a code example",
+      "```xml\n<tool_call><function=search_knowledge><parameter=query>x</parameter></function></tool_call>\n<tool_call><function=list_directory><parameter=path>/</parameter></function></tool_call>\n```",
+      false,
+    ],
+    [
       "XML tool-call documentation",
       "The <tool_call> tag can contain a <function=search_knowledge> element.",
       false,

@@ -289,23 +289,14 @@ function parseJsonProtocol(answer: string): boolean {
 
 function xmlToolCallEnvelope(answer: string): boolean {
   const ranges = protectedRanges(answer);
-  for (const match of answer.matchAll(XML_TOOL_CALL_OPEN)) {
-    const start = match.index ?? 0;
-    if (isProtected(start, ranges)) continue;
+  const opens = [...answer.matchAll(XML_TOOL_CALL_OPEN)].filter(
+    (match) => !isProtected(match.index ?? 0, ranges)
+  );
 
-    const payloadStart = start + match[0].length;
-    const remaining = answer.slice(payloadStart);
-    const close = remaining.match(XML_TOOL_CALL_CLOSE);
-    const payload = close ? remaining.slice(0, close.index) : remaining;
-    // The function tag makes this an invocation rather than a bare XML
-    // documentation tag. Its name is intentionally not restricted to the
-    // current tool set: an unrecognised call is still leaked protocol.
-    if (!XML_FUNCTION_TAG.test(payload)) continue;
-
-    const before = answer.slice(0, start).trim();
-    const after = close
-      ? remaining.slice((close.index ?? 0) + close[0].length).trim()
-      : "";
+  for (let openIndex = 0; openIndex < opens.length; openIndex += 1) {
+    const firstOpen = opens[openIndex];
+    const firstStart = firstOpen.index ?? 0;
+    const before = answer.slice(0, firstStart).trim();
     const atAnswerBoundary = !before;
     const hasProtocolPreface =
       isProtocolPreface(before) || isXmlProtocolPreface(before);
@@ -313,11 +304,41 @@ function xmlToolCallEnvelope(answer: string): boolean {
       continue;
     }
 
-    // A missing closing envelope is the normal shape of a provider response
-    // truncated during generation. Once the unambiguous function tag exists,
-    // retain the same boundary/preface guard and reject it.
-    if (!close) return true;
-    if (isTerminalProtocolSuffix(after)) return true;
+    // Consume adjacent envelopes as one protocol sequence. Looking only at the
+    // text after the first closing tag would mistake the next envelope for
+    // explanatory prose and miss both complete and truncated sequences.
+    let currentIndex = openIndex;
+    while (currentIndex < opens.length) {
+      const open = opens[currentIndex];
+      const start = open.index ?? 0;
+      const payloadStart = start + open[0].length;
+      const remaining = answer.slice(payloadStart);
+      const close = remaining.match(XML_TOOL_CALL_CLOSE);
+      const payload = close ? remaining.slice(0, close.index) : remaining;
+      // The function tag makes this an invocation rather than a bare XML
+      // documentation tag. Its name is intentionally not restricted to the
+      // current tool set: an unrecognised call is still leaked protocol.
+      if (!XML_FUNCTION_TAG.test(payload)) break;
+
+      // A missing closing envelope is the normal shape of a provider response
+      // truncated during generation. Once the unambiguous function tag exists,
+      // retain the same boundary/preface guard and reject it.
+      if (!close) return true;
+
+      const envelopeEnd =
+        payloadStart + (close.index ?? 0) + close[0].length;
+      const nextOpen = opens[currentIndex + 1];
+      if (
+        nextOpen &&
+        isProtocolSeparator(answer.slice(envelopeEnd, nextOpen.index ?? 0))
+      ) {
+        currentIndex += 1;
+        continue;
+      }
+
+      if (isTerminalProtocolSuffix(answer.slice(envelopeEnd))) return true;
+      break;
+    }
   }
   return false;
 }
