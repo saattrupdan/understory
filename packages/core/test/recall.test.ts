@@ -252,7 +252,11 @@ describe("runRecall", () => {
     expect(result.paths).toContain(branchPath);
     expect(result.paths.filter((path) => installPaths.includes(path))).toHaveLength(5);
     expect(searched.mock.calls.map(([query]) => query)).toEqual(
-      expect.arrayContaining(["ptr-ms install", "ptr-ms/sniff install", "ptr-ms branch"])
+      expect.arrayContaining([
+        "ptr-ms install",
+        "ptr-ms/sniff install",
+        "ptr-ms branch main",
+      ])
     );
   });
 
@@ -282,6 +286,16 @@ describe("runRecall", () => {
       "General branch documentation explains how to test current changes and keep a repository on its active branch.",
       "add"
     );
+    await Promise.all(
+      Array.from({ length: 24 }, async (_, index) =>
+        kb.writeConcept(
+          `/notes/ptr-ms-competing-${index}.md`,
+          { type: "Note", title: "PTR-MS branch and install notes" },
+          "PTR-MS installation and branch workflow notes for a neighbouring checkout.",
+          "add"
+        )
+      )
+    );
 
     await Promise.all(
       Array.from({ length: 120 }, async (_, index) => {
@@ -298,8 +312,8 @@ describe("runRecall", () => {
     );
 
     const question =
-      "How is the current Sniff desktop application installed locally with pipx from " +
-      "the ptr-ms/sniff repository so Dan can test changes by opening Sniff, and what " +
+      "How is the current Sniff desktop application installed locally from the " +
+      "ptr-ms/sniff repository so Dan can test changes by opening Sniff, and what " +
       "branch/install conventions have been used?";
     const searched = vi.spyOn(kb, "search");
     const generate = vi.fn(async () => ({
@@ -318,10 +332,11 @@ describe("runRecall", () => {
     );
     expect(result.paths).toContain("/gotchas/ptr-ms-analysis-pipx-installation.md");
     expect(result.paths).toContain("/decisions/ptr-ms-analysis-work-on-main.md");
-    expect(searched.mock.calls.length).toBeLessThanOrEqual(5);
-    expect(searched.mock.calls.map(([query]) => query)).toEqual(
-      expect.arrayContaining(["ptr-ms install", "ptr-ms branch"])
-    );
+    expect(searched.mock.calls).toHaveLength(5);
+    expect(searched.mock.calls.slice(1).every(([, options]) => options?.limit === 12)).toBe(true);
+    const queries = searched.mock.calls.map(([query]) => query);
+    expect(queries).toEqual(expect.arrayContaining(["ptr-ms install", "ptr-ms branch main"]));
+    expect(queries.slice(1).some((query) => query.includes("Dan"))).toBe(false);
     const prompt = generate.mock.calls[0][1] as string;
     expect(prompt).toContain("CONCEPT /gotchas/ptr-ms-analysis-pipx-installation.md");
     expect(prompt).toContain("CONCEPT /decisions/ptr-ms-analysis-work-on-main.md");
