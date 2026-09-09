@@ -50,6 +50,36 @@ describe("textual tool-call answer validation", () => {
     ["truncated marker envelope", "<|tool_call_start|>{\"name\":\"read_concept\",\"arguments\":{\"path\":\"x\"}", true],
     ["unknown truncated marker envelope", "<|tool_call_start|>[log_summary(path='x')", true],
     ["marker-wrapped JSON call", "<|tool_call_start|>{\"name\":\"read_concept\",\"arguments\":{\"path\":\"x\"}}<|tool_call_end|>", true],
+    [
+      "complete XML tool-call envelope",
+      "<tool_call>\n<function=search_knowledge>\n<parameter=query>\nsearxng\n</parameter>\n</function>\n</tool_call>",
+      true,
+    ],
+    [
+      "unknown XML tool-call envelope",
+      "<tool_call><function=future_tool><parameter=value>x</parameter></function></tool_call>",
+      true,
+    ],
+    [
+      "truncated XML tool-call envelope",
+      "<tool_call>\n<function=search_knowledge>\n<parameter=query>\nsearxng",
+      true,
+    ],
+    [
+      "prefaced XML tool-call envelope",
+      "Here is the XML tool call:\n<tool_call><function=search_knowledge><parameter=query>x</parameter></function></tool_call>",
+      true,
+    ],
+    [
+      "XML tool-call documentation",
+      "The <tool_call> tag can contain a <function=search_knowledge> element.",
+      false,
+    ],
+    [
+      "XML tool-call code example",
+      "```xml\n<tool_call><function=search_knowledge><parameter=query>x</parameter></function></tool_call>\n```",
+      false,
+    ],
     ["multiple bracketed calls", "[read_concept(path='x')][search_knowledge(query='y')]", true],
     ["call followed by punctuation", "Here is: [read_concept(path='x')].", true],
     ["apostrophe preface", "Here's the call: read_concept(path='x')", true],
