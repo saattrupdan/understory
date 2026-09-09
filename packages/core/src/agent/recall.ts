@@ -1,6 +1,7 @@
 import type { KnowledgeBase } from "../okf/index.js";
 import { capEnv } from "../util/env.js";
 import type { AgentOptions } from "./agent.js";
+import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
 
 /**
  * Recall fast path: deterministic retrieval (keyword search plus a one-hop walk
@@ -198,6 +199,10 @@ export async function runRecall(
 
   // The verdict leads so that declining costs a couple of tokens, not an answer
   // the caller will throw away.
+  if (isMalformedAnswer(text)) {
+    console.error(`[understory] recall declined: ${MALFORMED_ANSWER_MESSAGE}`);
+    return { answer: null, paths };
+  }
   if (/^\s*UNKNOWN\b/i.test(text)) return { answer: null, paths };
   const answer = text.replace(/^\s*SUFFICIENT\s*\n?/i, "").trim();
   if (!answer) return { answer: null, paths };

@@ -45,6 +45,32 @@ describe("stream chat traces", () => {
     expect(traces[0]).toMatchObject({ outcome: "failed", answer: "provider failed" });
   });
 
+  it("rejects malformed streamed text instead of tracing success", async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-stream-"));
+    vi.stubEnv("LLM_API_FORMAT", "openai");
+    vi.stubEnv("LLM_API_BASE_URL", "http://localhost:1/v1");
+    vi.stubEnv("LLM_MODEL", "test-model");
+    let onFinish: ((event: unknown) => Promise<void>) | undefined;
+    streamTextMock.mockImplementation((options: Record<string, unknown>) => {
+      onFinish = options.onFinish as typeof onFinish;
+      return {};
+    });
+
+    await streamChat(new KnowledgeBase(root), [{ role: "user", content: "hello" }]);
+    await expect(
+      onFinish!({
+        text: "<|tool_call_start|>[read_concept(path='x')]",
+        totalUsage: {},
+        steps: [{ toolCalls: [] }],
+      })
+    ).rejects.toThrow("protocol leakage");
+
+    const traces = await new TraceStore(root).list();
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({ outcome: "failed" });
+    expect(traces[0].answer).not.toContain("<|tool_call");
+  });
+
   it("traces a synthesis assertion failure from onFinish", async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-stream-"));
     vi.stubEnv("LLM_API_FORMAT", "openai");

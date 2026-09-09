@@ -3,6 +3,7 @@ import { parseDuration } from "../util/duration.js";
 import { capEnv } from "../util/env.js";
 import type { AgentOptions } from "./agent.js";
 import type { RecallFinish, RecallGeneration } from "./recall.js";
+import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
 
 /**
  * Hot memory: a small working set of recently written concepts and recent
@@ -159,7 +160,12 @@ export async function hotLookup(
     return null;
   }
 
-  if (!text || /^UNKNOWN\b/i.test(text)) return null;
+  if (!text) return null;
+  if (isMalformedAnswer(text)) {
+    console.error(`[understory] hot memory declined: ${MALFORMED_ANSWER_MESSAGE}`);
+    return null;
+  }
+  if (/^UNKNOWN\b/i.test(text)) return null;
   // An unrecognised finish reason with usable text: answer it, loudly. "other"
   // is also where a provider that never reports a finish reason at all lands,
   // so declining here would switch the layer off for that deployment; a request
