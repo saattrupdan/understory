@@ -46,10 +46,17 @@ afterEach(async () => {
 describe("textual tool-call answer validation", () => {
   const cases = [
     ["complete marker envelope", "<|tool_call_start|>[read_concept(path='x')]<|tool_call_end|>", true],
+    ["unknown complete marker envelope", "<|tool_call_start|>[log_summary(path='x')]<|tool_call_end|>", true],
     ["truncated marker envelope", "<|tool_call_start|>{\"name\":\"read_concept\",\"arguments\":{\"path\":\"x\"}", true],
+    ["unknown truncated marker envelope", "<|tool_call_start|>[log_summary(path='x')", true],
     ["marker-wrapped JSON call", "<|tool_call_start|>{\"name\":\"read_concept\",\"arguments\":{\"path\":\"x\"}}<|tool_call_end|>", true],
     ["multiple bracketed calls", "[read_concept(path='x')][search_knowledge(query='y')]", true],
     ["call followed by punctuation", "Here is: [read_concept(path='x')].", true],
+    ["apostrophe preface", "Here's the call: read_concept(path='x')", true],
+    ["apostrophe preface with brackets", "Here's the call: [read_concept(path='x')]", true],
+    ["here is call preface", "Here is the call: [read_concept(path='x')]", true],
+    ["straight apostrophe preface", "I'll use read_concept(path='x')", true],
+    ["curly apostrophe preface", "I’ll use read_concept(path='x')", true],
     ["call followed by brief prose", "[read_concept(path='x')]. Done.", true],
     ["bare protocol call at answer boundary", "read_concept(path='x')", true],
     ["truncated bracketed call", "I will use:\n[read_concept(path='x'", true],
@@ -59,6 +66,8 @@ describe("textual tool-call answer validation", () => {
     ["standalone call after prose", "I inspected the bundle.\nread_concept(path='x')", true],
     ["standalone bracketed call after prose", "I inspected the bundle.\n[read_concept(path='x')]", true],
     ["root JSON protocol object", '{"name":"read_concept","arguments":{"path":"x"}}', true],
+    ["nested OpenAI function object", '{"type":"function","function":{"name":"read_concept","arguments":"{\\"path\\":\\"x\\"}"}}', true],
+    ["single-quoted function object", "{'name':'read_concept','arguments':{'path':'x'}}", true],
     ["truncated root JSON protocol", '{"name":"read_concept","arguments":{"path":"x"}', true],
     ["ordinary explanatory prose", "The read_concept tool is used to inspect a concept.", false],
     ["JSON documentation with tool name", '{"example":"read_concept","description":"a tool name"}', false],
@@ -80,13 +89,34 @@ describe("textual tool-call answer validation", () => {
   });
 });
 
+describe("retained successful trace marker scan", () => {
+  // These are the marker-bearing answer shapes retained by earlier runs. Keep
+  // the fixture in tests rather than scanning or modifying a deployment bundle.
+  const retainedSuccessfulTraces = [
+    { outcome: "success", answer: "<|tool_call_start|>[log_summary(path='x')]<|tool_call_end|>" },
+    { outcome: "success", answer: "<|tool_call_start|>[historical_tool(path='x')" },
+    {
+      outcome: "success",
+      answer: "<|tool_call_start|>{\"name\":\"future_tool\",\"arguments\":{\"path\":\"x\"}}<|tool_call_end|>",
+    },
+  ];
+
+  it("detects every whole-answer marker leak", () => {
+    expect(
+      retainedSuccessfulTraces
+        .filter((trace) => trace.outcome === "success")
+        .every((trace) => isMalformedAnswer(trace.answer))
+    ).toBe(true);
+  });
+});
+
 describe("fast-path answer validation", () => {
   it("declines malformed hot-memory output", async () => {
     await kb.writeConcept("/facts/a.md", { type: "Fact" }, "alpha", "add");
     recordHotWrite("/facts/a.md");
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const generate = vi.fn(async () => ({
-      text: "Calling read_concept(path='/facts/a.md')",
+      text: "Here's the call: [read_concept(path='/facts/a.md')]",
       finishReason: "stop" as const,
     }));
 
@@ -105,7 +135,7 @@ describe("fast-path answer validation", () => {
     vi.stubEnv("RECALL_MIN_SCORE", "0");
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const generate = vi.fn(async () => ({
-      text: "The answer follows.\nread_concept(path='/facts/a.md')",
+      text: "Here's the call: read_concept(path='/facts/a.md')",
       finishReason: "stop" as const,
     }));
 
@@ -203,6 +233,18 @@ describe("deep agent answer validation", () => {
     );
   });
 
+  it("cannot succeed through deep repair with an apostrophe preface", async () => {
+    generateTextMock
+      .mockResolvedValueOnce({
+        text: "I’ll use read_concept(path='x')",
+        steps: [step],
+        response: { messages: [] },
+      });
+
+    await expect(runQuery(kb, "What is alpha?")).rejects.toThrow("protocol leakage");
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
+  });
+
   it("converts the step fallback to valid v5 prompt messages", async () => {
     generateTextMock
       .mockResolvedValueOnce({
@@ -293,7 +335,7 @@ describe("mutation answer validation", () => {
 describe("query cache validation", () => {
   it("does not cache or return a malformed deep result", async () => {
     const runner = vi.fn(async (): Promise<QueryResult> => ({
-      answer: "Sure, read_concept(path='x')",
+      answer: "Here's the call: [read_concept(path='x')]",
       steps: 1,
       traceId: "t",
     }));

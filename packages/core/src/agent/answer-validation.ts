@@ -40,11 +40,21 @@ function protectedRanges(answer: string): Range[] {
   ]) {
     for (const match of answer.matchAll(pattern)) {
       const value = match[0];
+      const start = match.index ?? 0;
+      // A contraction apostrophe is not a quote delimiter. Without this
+      // guard, the apostrophe in "Here's the call: [read_concept(path='x')]"
+      // opens a range that hides the actual leaked call.
+      if (
+        value.startsWith("'") &&
+        /[\p{L}\p{N}]/u.test(answer[start - 1] ?? "") &&
+        /[\p{L}\p{N}]/u.test(answer[start + 1] ?? "")
+      ) {
+        continue;
+      }
       if (
         value.includes("<|tool_call_") ||
         new RegExp(`(?:${TOOL_NAME_PATTERN})\\s*\\(`, "i").test(value)
       ) {
-        const start = match.index ?? 0;
         ranges.push({ start, end: start + value.length });
       }
     }
@@ -102,7 +112,7 @@ function isProtocolPreface(value: string): boolean {
   if (!prefix) return true;
   if (/^sufficient$/i.test(prefix)) return true;
   const base =
-    "(?:sure|okay|ok|alright|certainly|of course|here(?:'s| is)|calling|call(?:ing)?|using|invoking|running|the tool call(?: is)?|i will (?:use|call|invoke|run)|i(?:'ll| will) (?:use|call|invoke|run)|let me (?:use|call|invoke|run)|i(?:'m| am) going to (?:use|call|invoke|run)|use|call|invoke|run)";
+    "(?:sure|okay|ok|alright|certainly|of course|here(?:['’]s| is)(?:\\s+(?:the\\s+)?(?:tool\\s+)?call(?:\\s+is)?)?|calling|call(?:ing)?|using|invoking|running|the tool call(?: is)?|i will (?:use|call|invoke|run)|i(?:['’]ll| will) (?:use|call|invoke|run)|let me (?:use|call|invoke|run)|i(?:['’]m| am) going to (?:use|call|invoke|run)|use|call|invoke|run)";
   return new RegExp(
     `^${base}(?:\\s+(?:the\\s+)?(?:${TOOL_NAME_PATTERN})(?:\\s+(?:tool|function))?|\\s+the\\s+(?:tool|function))?$`,
     "i"
@@ -184,13 +194,57 @@ function isKnownToolCallObject(value: unknown): boolean {
   const name = [object.name, object.tool, object.toolName].find(
     (candidate): candidate is string => typeof candidate === "string"
   );
-  if (!name || !KNOWN_TOOL_SET.has(name)) return false;
-  return ["arguments", "input", "parameters", "params"].some((key) => key in object);
+  if (name && KNOWN_TOOL_SET.has(name)) {
+    return ["arguments", "input", "parameters", "params"].some((key) => key in object);
+  }
+
+  // OpenAI's function protocol nests the actual call under `function`. Keep
+  // the argument-field requirement so ordinary JSON documentation mentioning a
+  // tool name is still prose.
+  const nested = object.function;
+  if (!nested || typeof nested !== "object" || Array.isArray(nested)) return false;
+  const nestedObject = nested as Record<string, unknown>;
+  return (
+    typeof nestedObject.name === "string" &&
+    KNOWN_TOOL_SET.has(nestedObject.name) &&
+    "arguments" in nestedObject
+  );
 }
 
 function isProtocolJson(value: unknown): boolean {
   if (isKnownToolCallObject(value)) return true;
   return Array.isArray(value) && value.length > 0 && value.every(isKnownToolCallObject);
+}
+
+function normaliseSingleQuotedJson(value: string): string | undefined {
+  let output = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  for (const char of value) {
+    if (quote) {
+      if (escaped) {
+        // JSON has no \\' escape. Treat it as the literal apostrophe while
+        // preserving all normal JSON escapes.
+        output += char === "'" ? "'" : `\\${char}`;
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        output += '"';
+        quote = undefined;
+      } else {
+        output += char === '"' && quote === "'" ? '\\\"' : char;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      output += '"';
+    } else {
+      output += char;
+    }
+  }
+  return quote || escaped ? undefined : output;
 }
 
 function parseJsonProtocol(answer: string): boolean {
@@ -200,11 +254,19 @@ function parseJsonProtocol(answer: string): boolean {
   try {
     return isProtocolJson(JSON.parse(withoutTerminalPunctuation));
   } catch {
+    const normalised = normaliseSingleQuotedJson(withoutTerminalPunctuation);
+    if (normalised) {
+      try {
+        if (isProtocolJson(JSON.parse(normalised))) return true;
+      } catch {
+        // Continue with the truncated-envelope fallback below.
+      }
+    }
     // Providers sometimes stop halfway through a JSON protocol envelope. Keep
     // this anchored to a root object/array and require both the protocol name
     // and an argument field, rather than looking for a tool-name string.
     const name = new RegExp(
-      `^[\\[{\\s]*(?:"(?:name|tool|toolName)"\\s*:\\s*")?(?:${TOOL_NAME_PATTERN})(?:"|\\b)`,
+      `^[\\[{\\s]*(?:["'](?:name|tool|toolName)["']\\s*:\\s*["'])?(?:${TOOL_NAME_PATTERN})(?:["']|\\b)`,
       "i"
     );
     const argument = /["'](?:arguments|input|parameters|params)["']\s*:/i;
@@ -218,7 +280,7 @@ function markerEnvelope(answer: string): boolean {
     (match) => !isProtected(match.index ?? 0, ranges)
   );
   if (markers.length === 0) return false;
-  if (!answer.replace(TOOL_MARKER, "").trim()) return true;
+  if (!answer.replace(TOOL_MARKER, "").trim()) return false;
 
   for (let index = 0; index < markers.length; index += 1) {
     const marker = markers[index];
@@ -227,24 +289,39 @@ function markerEnvelope(answer: string): boolean {
     const nextMarker = markers[index + 1];
     const payload = answer.slice(payloadStart, nextMarker?.index ?? answer.length);
     const payloadWithoutEnd = payload.replace(/<\|tool_call_end\|>/gi, "").trim();
+    const before = answer.slice(0, start).trim();
+    const end = payload.search(/<\|tool_call_end\|>/i);
+    const afterEnd = end < 0 ? "" : payload.slice(end + "<|tool_call_end|>".length).trim();
+
+    // A complete start/end envelope is protocol even when its payload uses a
+    // historical or otherwise unknown tool name. A truncated envelope is
+    // likewise protocol when its payload has call/object structure. Restrict
+    // this broad rule to the answer boundary so marker documentation remains
+    // valid prose.
+    const wholeAnswer = !before && !afterEnd;
+    const isStart = /start/i.test(marker[0]);
+    const hasEnd = end >= 0;
+    const hasProtocolShape =
+      parseJsonProtocol(payloadWithoutEnd) ||
+      /\b[A-Za-z_$][\w$.-]*\s*\(/.test(payloadWithoutEnd) ||
+      /^[\[{]/.test(payloadWithoutEnd);
+    if (wholeAnswer && isStart && payloadWithoutEnd && (hasEnd || hasProtocolShape)) return true;
+
     if (parseJsonProtocol(payloadWithoutEnd) || isCallSequence(payloadWithoutEnd, callsIn(payloadWithoutEnd))) {
-      const before = answer.slice(0, start);
-      if (!before.trim() || isProtocolPreface(before)) return true;
+      if (!before || isProtocolPreface(answer.slice(0, start))) return true;
     }
-    // A marker pair without a payload is still a malformed protocol envelope,
-    // but a marker mentioned in prose is documentation.
-    if (/<\|tool_call_end\|>/i.test(payload)) {
-      const before = beforeText(answer, start);
-      const end = payload.search(/<\|tool_call_end\|>/i);
-      const afterEnd = end < 0 ? "" : payload.slice(end + "<|tool_call_end|>".length).trim();
-      if (!afterEnd && (!before || isProtocolPreface(before))) return true;
+    // A payload-only marker pair at an answer boundary is malformed, while an
+    // empty marker pair mentioned in prose remains documentation.
+    if (
+      hasEnd &&
+      payloadWithoutEnd &&
+      !afterEnd &&
+      (!before || isProtocolPreface(answer.slice(0, start)))
+    ) {
+      return true;
     }
   }
   return false;
-}
-
-function beforeText(answer: string, markerStart: number): string {
-  return answer.slice(0, markerStart).trim();
 }
 
 /** Return whether an answer is model-emitted tool protocol rather than prose. */
