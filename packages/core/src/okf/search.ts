@@ -14,6 +14,7 @@ const COMPOUND_SEPARATOR = /[/._-]+/u;
 const MAX_QUERY_CHARS = 4096;
 const MAX_QUERY_GROUPS = 64;
 const MAX_GROUP_TERMS = 12;
+const MAX_SCORING_GROUPS = 4;
 const MIN_BROAD_TERM_LENGTH = 2;
 const DISTINCTIVE_RARITY = 0.2;
 
@@ -61,6 +62,8 @@ type ContentFieldName = Exclude<FieldName, "path">;
 interface TokenGroup {
   /** The original complete token, including filename-like separators. */
   full: string;
+  /** Morphological root used to identify duplicate query evidence. */
+  root: string;
   /** The complete token plus bounded component/morphological variants. */
   terms: string[];
   /** Variants of the complete token only, used for exact compound matches. */
@@ -106,6 +109,8 @@ function morphologicalVariants(token: string): string[] {
 
 function tokenGroup(token: string): TokenGroup {
   const parts = token.split(COMPOUND_SEPARATOR).filter(Boolean);
+  const roots = parts.map((part) => MORPHOLOGY.get(part) ?? part);
+  const root = roots.join(token.match(COMPOUND_SEPARATOR)?.[0] ?? "");
   const terms = new Set<string>([token]);
   const fullVariants = new Set<string>([token, ...morphologicalVariants(token)]);
 
@@ -117,6 +122,7 @@ function tokenGroup(token: string): TokenGroup {
 
   return {
     full: token,
+    root,
     terms: [...terms].slice(0, MAX_GROUP_TERMS),
     fullVariants: [...fullVariants],
   };
@@ -148,7 +154,27 @@ function fieldData(value: string): FieldData {
 }
 
 function queryGroups(query: string): TokenGroup[] {
-  return tokenGroups(normalise(query.slice(0, MAX_QUERY_CHARS))).slice(0, MAX_QUERY_GROUPS);
+  const groups = tokenGroups(normalise(query.slice(0, MAX_QUERY_CHARS))).slice(0, MAX_QUERY_GROUPS);
+  const canonical = new Map<string, TokenGroup>();
+
+  for (const group of groups) {
+    const existing = canonical.get(group.root);
+    if (!existing) {
+      canonical.set(group.root, group);
+      continue;
+    }
+
+    // Keep all bounded variants from a morphological family so that merging
+    // `installed`, `installing`, and `installation` does not lose stemming or
+    // exact compound matching. The family still contributes only once.
+    existing.terms = [...new Set([...existing.terms, ...group.terms])].slice(
+      0,
+      MAX_GROUP_TERMS
+    );
+    existing.fullVariants = [...new Set([...existing.fullVariants, ...group.fullVariants])];
+  }
+
+  return [...canonical.values()];
 }
 
 function rarity(documentFrequency: number, documentCount: number): number {
@@ -363,6 +389,7 @@ export async function searchBundle(
     let distinctiveGroups = 0;
     let exactCompoundGroups = 0;
     let confidence = 0;
+    const groupScores: number[] = [];
 
     for (const group of groups) {
       const evidence = evaluateGroup(group, document, documentFrequency, documents.length);
@@ -392,7 +419,13 @@ export async function searchBundle(
       ).length;
       groupScore += Math.min(8, (matchedComponentCount / componentCount) * 8);
       if (evidence.exactFullContent) groupScore += 14 * groupWeight;
-      score += groupScore;
+      if (groupIsFilenameLike(group) && matchedComponentCount >= componentCount) {
+        // A compound query is an independent coordination signal: matching
+        // all of its components is stronger than accumulating unrelated words.
+        // Bound the bonus so a long filename cannot dominate by size alone.
+        groupScore += Math.min(80, groupScore);
+      }
+      groupScores.push(groupScore);
 
       if (evidence.exactPathTerms.size > 0 || evidence.exactFullPath) {
         pathScore += (evidence.exactFullPath ? 5 : 2) * groupWeight;
@@ -421,6 +454,14 @@ export async function searchBundle(
       }
     }
 
+    // Long natural-language questions contain many generic words. Summing all
+    // of them lets a distractor win by accumulation, even when it has none of
+    // the query's strongest evidence. Query groups remain independent, but
+    // only the strongest bounded set contributes to ranking.
+    groupScores.sort((a, b) => b - a);
+    for (const contribution of groupScores.slice(0, MAX_SCORING_GROUPS)) {
+      score += contribution;
+    }
     score += Math.min(14, pathScore);
     const confidenceQualified =
       distinctiveGroups >= 2 || exactCompoundGroups >= 1;

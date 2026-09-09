@@ -230,6 +230,72 @@ describe("search", () => {
     expect(icons[0].confidence).toBeGreaterThanOrEqual(20);
   });
 
+  it("bounds generic accumulation for a production installation question", async () => {
+    await kb.writeConcept(
+      "/gotchas/ptr-ms-analysis-pipx-installation.md",
+      { type: "Gotcha", title: "PTR-MS Analysis — pipx Stale Launcher Gotcha" },
+      "The pipx 0.1.0 launcher is stale and still imports the obsolete flat analyze module. Install the editable local checkout so Dan can open Sniff and test changes.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/gotchas/ptr-ms-analysis-work-on-main.md",
+      { type: "Gotcha", title: "PTR-MS Analysis — Work Directly on Main" },
+      "Work directly on main when testing Sniff changes; this repository uses no long-lived feature branches. The branch and install conventions are documented here.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/notes/jottacloud-desktop.md",
+      { type: "Note", title: "Jottacloud desktop application" },
+      "The current desktop application opens local files and tests changes from a repository. Installation and branch conventions are general operational notes.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/notes/dotfiles-install.md",
+      { type: "Note", title: "Dotfiles installation conventions" },
+      "This documents installing a local application, opening it for testing, and keeping changes on the current branch.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/notes/local-desktop-testing.md",
+      { type: "Note", title: "Local desktop testing workflow" },
+      "A desktop application can be installed locally and opened to test current changes from a repository.",
+      "add"
+    );
+
+    const hits = await searchBundle(
+      kb.bundle,
+      "How is the current Sniff desktop application installed locally from the ptr-ms/sniff repository so Dan can test changes by opening Sniff, and what branch/install conventions have been used?",
+      { limit: 10 }
+    );
+    const topThree = hits.slice(0, 3).map((hit) => hit.path);
+    expect(topThree).toContain("/gotchas/ptr-ms-analysis-pipx-installation.md");
+    expect(topThree).toContain("/gotchas/ptr-ms-analysis-work-on-main.md");
+  });
+
+  it("canonicalises morphological query variants as one evidence group", async () => {
+    await kb.writeConcept(
+      "/gotchas/install.md",
+      { type: "Gotcha", title: "Install the local application" },
+      "The editable checkout is installable from the local repository.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/notes/unrelated.md",
+      { type: "Note", title: "Unrelated note" },
+      "This document has no installation instructions.",
+      "add"
+    );
+
+    const hits = await searchBundle(kb.bundle, "installed installing installation");
+    expect(hits[0].path).toBe("/gotchas/install.md");
+    expect(hits[0].matchedGroups).toBe(1);
+    expect(hits[0].confidence).toBeLessThan(20);
+    expect(hits[0].confidenceQualified).toBe(false);
+
+    const stemmed = await searchBundle(kb.bundle, "installation");
+    expect(stemmed[0].path).toBe("/gotchas/install.md");
+  });
+
   it("decomposes punctuation without double-weighting duplicate terms", async () => {
     await kb.writeConcept(
       "/docs/branch-install.md",
