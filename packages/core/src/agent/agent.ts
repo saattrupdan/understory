@@ -118,6 +118,12 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function chatFailureMessage(message: string, filesChanged: Set<string>): string {
+  const files = [...filesChanged].sort();
+  if (files.length === 0) return message;
+  return `${message}\n\n⚠ Partial mutation: ${files.length} file(s) changed before failure.\nFiles changed:\n${files.map((file) => `- ${file}`).join("\n")}`;
+}
+
 /** Disable tools on the final allowed generation so it can only synthesise. */
 export function prepareFinalSynthesisStep(maxSteps: number) {
   return ({ stepNumber }: { stepNumber: number }) =>
@@ -496,7 +502,9 @@ export async function streamChat(
   try {
     const resolved = await resolveAgentModel(options, "chat");
     modelChain = resolved.modelChain;
-    const protocolGuard = createProtocolLeakageGuard();
+    const protocolGuard = createProtocolLeakageGuard({
+      errorMessage: () => chatFailureMessage(MALFORMED_ANSWER_MESSAGE, filesChanged),
+    });
     const result = streamText({
       model: resolved.model,
       system: buildSystemPrompt(ctx),
@@ -521,29 +529,35 @@ export async function streamChat(
         try {
           assertSynthesised(steps);
           if (protocolGuard.wasMalformed() || isMalformedAnswer(text)) {
+            const message = chatFailureMessage(MALFORMED_ANSWER_MESSAGE, filesChanged);
             console.error(`[understory] chat answer rejected: ${MALFORMED_ANSWER_MESSAGE}`);
-            throw new Error(MALFORMED_ANSWER_MESSAGE);
+            // The guard has already placed a client-visible AI SDK error part
+            // before the terminal events. Do not throw here: an onFinish throw
+            // makes AI SDK discard that response stream before the caller sees
+            // the error, while still leaving the failed/partial trace intact.
+            await finaliseChatTrace(message, filesChanged.size > 0 ? "partial" : "failed", usage);
+            return;
           }
           await finaliseChatTrace(text, "success", usage);
         } catch (error) {
           const outcome = filesChanged.size > 0 ? "partial" : "failed";
-          await finaliseChatTrace(errorMessage(error), outcome, usage);
+          await finaliseChatTrace(chatFailureMessage(errorMessage(error), filesChanged), outcome, usage);
           throw error;
         }
       },
       onError: async ({ error }) => {
         const outcome = filesChanged.size > 0 ? "partial" : "failed";
-        await finaliseChatTrace(errorMessage(error), outcome);
+        await finaliseChatTrace(chatFailureMessage(errorMessage(error), filesChanged), outcome);
       },
       onAbort: async () => {
         const outcome = filesChanged.size > 0 ? "partial" : "failed";
-        await finaliseChatTrace("Chat stream aborted", outcome);
+        await finaliseChatTrace(chatFailureMessage("Chat stream aborted", filesChanged), outcome);
       },
     });
     return { result, filesChanged };
   } catch (err) {
     const outcome = filesChanged.size > 0 ? "partial" : "failed";
-    await finaliseChatTrace(errorMessage(err), outcome);
+    await finaliseChatTrace(chatFailureMessage(errorMessage(err), filesChanged), outcome);
     throw err;
   }
 }

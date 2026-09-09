@@ -50,7 +50,7 @@ describe("stream chat traces", () => {
 
     const output = await outputPromise;
     expect(output.filter((part: any) => part.type === "text-delta")).toEqual([]);
-    expect(output.map((part: any) => part.type)).toEqual(["finish-step", "finish"]);
+    expect(output.map((part: any) => part.type)).toEqual(["error", "finish-step", "finish"]);
     expect(guard.wasMalformed()).toBe(true);
     expect(stopStream).not.toHaveBeenCalled();
   });
@@ -147,10 +147,9 @@ describe("stream chat traces", () => {
 
     const { result } = await streamChat(new KnowledgeBase(root), [{ role: "user", content: "hello" }]);
     await result.finalized;
-    expect(finalizationError).toBeInstanceOf(Error);
-    expect(String(finalizationError)).toContain("protocol leakage");
+    expect(finalizationError).toBeUndefined();
     expect(output.filter((part) => part.type === "text-delta")).toEqual([]);
-    expect(output.map((part) => part.type)).toEqual(["finish-step", "finish"]);
+    expect(output.map((part) => part.type)).toEqual(["error", "finish-step", "finish"]);
     expect(stopStream).not.toHaveBeenCalled();
 
     const traces = await new TraceStore(root).list();
