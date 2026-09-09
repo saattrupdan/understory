@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 describe("stream chat traces", () => {
-  it("suppresses malformed text before the client-visible stream", async () => {
+  it("buffers split protocol text without stopping terminal finalization", async () => {
     const guard = createProtocolLeakageGuard();
     const stopStream = vi.fn();
     const transformed = guard.transform({ tools: {}, stopStream });
@@ -40,14 +40,19 @@ describe("stream chat traces", () => {
     })();
     await writer.write({ type: "text-start", id: "text-1" });
     await writer.write({ type: "text-delta", id: "text-1", text: "Here is: [read_concept(" });
-    await writer.write({ type: "text-delta", id: "text-1", text: "path='x')]" });
     await writer.write({ type: "text-end", id: "text-1" });
+    await writer.write({ type: "text-start", id: "text-2" });
+    await writer.write({ type: "text-delta", id: "text-2", text: "path='x')]" });
+    await writer.write({ type: "text-end", id: "text-2" });
+    await writer.write({ type: "finish-step" });
+    await writer.write({ type: "finish" });
     await writer.close();
 
     const output = await outputPromise;
     expect(output.filter((part: any) => part.type === "text-delta")).toEqual([]);
+    expect(output.map((part: any) => part.type)).toEqual(["finish-step", "finish"]);
     expect(guard.wasMalformed()).toBe(true);
-    expect(stopStream).toHaveBeenCalledOnce();
+    expect(stopStream).not.toHaveBeenCalled();
   });
 
   it("releases ordinary text after the bounded text-part gate", async () => {
@@ -96,33 +101,62 @@ describe("stream chat traces", () => {
     expect(traces[0]).toMatchObject({ outcome: "failed", answer: "provider failed" });
   });
 
-  it("rejects malformed streamed text instead of tracing success", async () => {
+  it("reaches onFinish after suppressing malformed stream text", async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-stream-"));
     vi.stubEnv("LLM_API_FORMAT", "openai");
     vi.stubEnv("LLM_API_BASE_URL", "http://localhost:1/v1");
     vi.stubEnv("LLM_MODEL", "test-model");
-    let onFinish: ((event: unknown) => Promise<void>) | undefined;
-    let experimentalTransform: unknown;
-    streamTextMock.mockImplementation((options: Record<string, unknown>) => {
-      onFinish = options.onFinish as typeof onFinish;
-      experimentalTransform = options.experimental_transform;
-      return {};
+    const output: any[] = [];
+    let stopStream: ReturnType<typeof vi.fn> | undefined;
+    let finalizationError: unknown;
+    streamTextMock.mockImplementation((options: Record<string, any>) => {
+      const transformed = options.experimental_transform({
+        tools: {},
+        stopStream: (stopStream = vi.fn()),
+      });
+      const read = (async () => {
+        const reader = transformed.readable.getReader();
+        while (true) {
+          const next = await reader.read();
+          if (next.done) return;
+          output.push(next.value);
+        }
+      })();
+      const finalized = (async () => {
+        const writer = transformed.writable.getWriter();
+        await writer.write({ type: "text-start", id: "text-1" });
+        await writer.write({ type: "text-delta", id: "text-1", text: "[read_concept(" });
+        await writer.write({ type: "text-end", id: "text-1" });
+        await writer.write({ type: "text-start", id: "text-2" });
+        await writer.write({ type: "text-delta", id: "text-2", text: "path='x')]" });
+        await writer.write({ type: "text-end", id: "text-2" });
+        await writer.write({ type: "finish-step" });
+        await writer.write({ type: "finish" });
+        await writer.close();
+        await read;
+        await options.onFinish({
+          text: "[read_concept(path='x')]",
+          totalUsage: {},
+          steps: [{ toolCalls: [] }],
+        });
+      })().catch((error) => {
+        finalizationError = error;
+      });
+      return { finalized };
     });
 
-    await streamChat(new KnowledgeBase(root), [{ role: "user", content: "hello" }]);
-    expect(experimentalTransform).toEqual(expect.any(Function));
-    await expect(
-      onFinish!({
-        text: "<|tool_call_start|>[read_concept(path='x')]",
-        totalUsage: {},
-        steps: [{ toolCalls: [] }],
-      })
-    ).rejects.toThrow("protocol leakage");
+    const { result } = await streamChat(new KnowledgeBase(root), [{ role: "user", content: "hello" }]);
+    await result.finalized;
+    expect(finalizationError).toBeInstanceOf(Error);
+    expect(String(finalizationError)).toContain("protocol leakage");
+    expect(output.filter((part) => part.type === "text-delta")).toEqual([]);
+    expect(output.map((part) => part.type)).toEqual(["finish-step", "finish"]);
+    expect(stopStream).not.toHaveBeenCalled();
 
     const traces = await new TraceStore(root).list();
     expect(traces).toHaveLength(1);
     expect(traces[0]).toMatchObject({ outcome: "failed" });
-    expect(traces[0].answer).not.toContain("<|tool_call");
+    expect(traces[0].answer).not.toContain("read_concept(");
   });
 
   it("traces a synthesis assertion failure from onFinish", async () => {
