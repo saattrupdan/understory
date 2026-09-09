@@ -20,7 +20,7 @@ import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation
  * - RECALL=false                disable the layer entirely
  * - RECALL_SEEDS                search hits to seed graph expansion (default 3)
  * - RECALL_CANDIDATES           concepts to read after expansion (default 6)
- * - RECALL_MIN_SCORE            top-hit score needed to trust literal search (default 20)
+ * - RECALL_MIN_SCORE            top-hit confidence needed to trust literal search (default 20)
  * - RECALL_EXCERPT_CHARS        body characters per concept (default 6000)
  * - RECALL_MAX_OUTPUT_TOKENS    generation cap, REASONING TOKENS INCLUDED (default 2048)
  * - RECALL_THINKING_BUDGET      reasoning budget, honoured only by providers that
@@ -123,8 +123,13 @@ export async function runRecall(
 
   const hits = await kb.search(question, { limit: Math.max(seeds, 1) });
   if (hits.length === 0) return { answer: null, paths: [] };
-  // A thin literal match is exactly the case the deep agent exists for.
-  if ((hits[0].score ?? 0) < minScore) return { answer: null, paths: [] };
+  // Ranking score deliberately rewards useful path decomposition, but is not
+  // calibrated as evidence: ubiquitous components can still rank a hit first.
+  // Confidence discounts each term by corpus frequency. Fall back to score for
+  // compatibility with custom KnowledgeBase implementations returning the
+  // pre-confidence SearchHit shape.
+  const topConfidence = hits[0].confidence ?? hits[0].score ?? 0;
+  if (topConfidence < minScore) return { answer: null, paths: [] };
 
   const ordered = hits.slice(0, seeds).map((h) => h.path);
   const chosen = new Set(ordered);

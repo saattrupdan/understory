@@ -142,6 +142,25 @@ describe("runRecall", () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it("does not trust absent filenames or common path fragments", async () => {
+    for (const name of ["alpha", "beta", "gamma", "delta"]) {
+      await kb.writeConcept(
+        `/notes/${name}.md`,
+        { type: "Note", title: `Unrelated ${name}` },
+        "Routine material.",
+        "add"
+      );
+    }
+    const generate = vi.fn(async () => ({ text: "should not run", finishReason: "stop" as const }));
+
+    const absent = await runRecall(kb, "Where is completely-absent.md?", {}, generate);
+    const common = await runRecall(kb, "notes md", {}, generate);
+
+    expect(absent).toEqual({ answer: null, paths: [] });
+    expect(common).toEqual({ answer: null, paths: [] });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it("widens to linked concepts the keywords never named", async () => {
     // The answer lives in a concept the question shares no words with; only the
     // link out of the matched concept can reach it.
