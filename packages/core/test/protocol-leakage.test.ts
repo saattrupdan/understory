@@ -53,7 +53,19 @@ describe("textual tool-call answer validation", () => {
     ["call followed by brief prose", "[read_concept(path='x')]. Done.", true],
     ["bare protocol call at answer boundary", "read_concept(path='x')", true],
     ["truncated bracketed call", "I will use:\n[read_concept(path='x'", true],
+    ["I will use preface", "I will use read_concept(path='x')", true],
+    ["calling preface", "Calling read_concept(path='x')", true],
+    ["sure preface", "Sure, read_concept(path='x')", true],
+    ["standalone call after prose", "I inspected the bundle.\nread_concept(path='x')", true],
+    ["standalone bracketed call after prose", "I inspected the bundle.\n[read_concept(path='x')]", true],
+    ["root JSON protocol object", '{"name":"read_concept","arguments":{"path":"x"}}', true],
+    ["truncated root JSON protocol", '{"name":"read_concept","arguments":{"path":"x"}', true],
     ["ordinary explanatory prose", "The read_concept tool is used to inspect a concept.", false],
+    ["JSON documentation with tool name", '{"example":"read_concept","description":"a tool name"}', false],
+    ["JSON documentation array with tool name", '["read_concept", "write_concept"]', false],
+    ["marker documentation", "The marker <|tool_call_start|> denotes a protocol boundary.", false],
+    ["empty marker documentation", "The protocol is <|tool_call_start|><|tool_call_end|>.", false],
+    ["call with explanatory continuation", "read_concept(path='x') returns the concept body.", false],
     ["documentation beginning with an unquoted example", "read_concept(path='x') is used in this guide.", false],
     ["documentation ending with unquoted example", "The documentation ends with read_concept(path='x')", false],
     ["documentation call with explanatory continuation", "Use [read_concept(path='x')] when the answer needs a concept.", false],
@@ -74,7 +86,7 @@ describe("fast-path answer validation", () => {
     recordHotWrite("/facts/a.md");
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const generate = vi.fn(async () => ({
-      text: "<|tool_call_start|>[read_concept(path='/facts/a.md')]",
+      text: "Calling read_concept(path='/facts/a.md')",
       finishReason: "stop" as const,
     }));
 
@@ -93,7 +105,7 @@ describe("fast-path answer validation", () => {
     vi.stubEnv("RECALL_MIN_SCORE", "0");
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const generate = vi.fn(async () => ({
-      text: "SUFFICIENT\n[read_concept(path='/facts/a.md')",
+      text: "The answer follows.\nread_concept(path='/facts/a.md')",
       finishReason: "stop" as const,
     }));
 
@@ -110,7 +122,7 @@ describe("deep agent answer validation", () => {
   it("repairs once with the same model and generated context", async () => {
     generateTextMock
       .mockResolvedValueOnce({
-        text: "<|tool_call_start|>[read_concept(path='x')]",
+        text: "I will use read_concept(path='x')",
         steps: [
           {
             ...step,
@@ -281,7 +293,7 @@ describe("mutation answer validation", () => {
 describe("query cache validation", () => {
   it("does not cache or return a malformed deep result", async () => {
     const runner = vi.fn(async (): Promise<QueryResult> => ({
-      answer: "<|tool_call_end|>",
+      answer: "Sure, read_concept(path='x')",
       steps: 1,
       traceId: "t",
     }));

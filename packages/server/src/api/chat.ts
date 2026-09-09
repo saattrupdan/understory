@@ -17,7 +17,12 @@ export function chatRouter(kb: KnowledgeBase): Router {
   router.post("/chat", async (req, res) => {
     const { messages, model } = req.body as ChatBody;
     const { result } = await streamChat(kb, convertToModelMessages(messages), { model });
-    const response = result.toUIMessageStreamResponse();
+    const response = result.toUIMessageStreamResponse({
+      // AI SDK's default deliberately hides server errors. Chat failures carry
+      // the partial-mutation/file list, which is part of this endpoint's safety
+      // contract and must be visible to the caller.
+      onError: (error) => (error instanceof Error ? error.message : String(error)),
+    });
     res.status(response.status);
     response.headers.forEach((value, key) => res.setHeader(key, value));
     if (response.body) {

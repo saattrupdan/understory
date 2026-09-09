@@ -10,9 +10,11 @@ const KNOWN_TOOL_NAMES = [
   "patch_concept",
   "delete_concept",
 ] as const;
-const KNOWN_TOOL = new RegExp(`\\b(?:${KNOWN_TOOL_NAMES.join("|")})\\s*\\(`, "gi");
-const KNOWN_TOOL_NAME = new RegExp(`\\b(?:${KNOWN_TOOL_NAMES.join("|")})\\b`, "i");
+
+const TOOL_NAME_PATTERN = KNOWN_TOOL_NAMES.join("|");
+const KNOWN_TOOL_CALL = new RegExp(`\\b(?:${TOOL_NAME_PATTERN})\\s*\\(`, "gi");
 const TOOL_MARKER = /<\|tool_call_(?:start|end)\|>/gi;
+const KNOWN_TOOL_SET = new Set<string>(KNOWN_TOOL_NAMES);
 
 interface Range {
   start: number;
@@ -22,22 +24,29 @@ interface Range {
 interface CallCandidate {
   start: number;
   end: number;
-  bracketed: boolean;
+  complete: boolean;
 }
 
 function protectedRanges(answer: string): Range[] {
   const ranges: Range[] = [];
-  // Code and quoted examples are documentation. A single quote is only treated
-  // as a quote when the quoted text itself contains protocol syntax; this avoids
-  // treating the apostrophe in "Here's" as the start of a protected range.
+  // Documentation is allowed to quote protocol syntax. Do not hide arbitrary
+  // quoted prose: only protect a quoted span when it contains a marker or a
+  // complete-looking tool call.
   for (const pattern of [
     /```[\s\S]*?```/g,
     /`[^`\n]*`/g,
     /"(?:\\.|[^"\\])*"/g,
-    /'\s*(?:\[|<\|tool_call_|read_concept|read_concepts|search_knowledge|list_directory|lint_knowledge|write_concept|patch_concept|delete_concept)[^'\n]*'/gi,
+    /'[^'\n]*'/g,
   ]) {
     for (const match of answer.matchAll(pattern)) {
-      ranges.push({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length });
+      const value = match[0];
+      if (
+        value.includes("<|tool_call_") ||
+        new RegExp(`(?:${TOOL_NAME_PATTERN})\\s*\\(`, "i").test(value)
+      ) {
+        const start = match.index ?? 0;
+        ranges.push({ start, end: start + value.length });
+      }
     }
   }
   return ranges;
@@ -47,7 +56,7 @@ function isProtected(index: number, ranges: Range[]): boolean {
   return ranges.some((range) => index >= range.start && index < range.end);
 }
 
-function matchingParen(answer: string, openParen: number): { end: number } {
+function matchingParen(answer: string, openParen: number): { end: number; complete: boolean } {
   let depth = 0;
   let quote: "'" | '"' | undefined;
   let escaped = false;
@@ -66,133 +75,183 @@ function matchingParen(answer: string, openParen: number): { end: number } {
     if (char === "(") depth += 1;
     else if (char === ")") {
       depth -= 1;
-      if (depth === 0) return { end: index + 1 };
+      if (depth === 0) return { end: index + 1, complete: true };
     }
   }
-  return { end: answer.length };
+  return { end: answer.length, complete: false };
 }
 
 function callsIn(answer: string): CallCandidate[] {
   const ranges = protectedRanges(answer);
   const calls: CallCandidate[] = [];
-  for (const match of answer.matchAll(KNOWN_TOOL)) {
+  for (const match of answer.matchAll(KNOWN_TOOL_CALL)) {
     const start = match.index ?? 0;
     if (isProtected(start, ranges)) continue;
     const openParen = start + match[0].lastIndexOf("(");
     const result = matchingParen(answer, openParen);
-    let end = result.end;
-    let bracketed = false;
-    let before = start - 1;
-    while (before >= 0 && /[ \t]/.test(answer[before] ?? "")) before -= 1;
-    if (answer[before] === "[") {
-      bracketed = true;
-    }
-    const line = answer.slice(answer.lastIndexOf("\n", start - 1) + 1, start);
-    if (line.lastIndexOf("[") > line.lastIndexOf("]")) bracketed = true;
-    let after = end;
-    while (after < answer.length && /[ \t]/.test(answer[after] ?? "")) after += 1;
-    if (answer[after] === "]") end = after + 1;
-    calls.push({ start, end, bracketed });
+    calls.push({ start, end: result.end, complete: result.complete });
   }
   return calls;
 }
 
-function hasProtocolPrefix(prefix: string): boolean {
-  const value = prefix.trim();
-  // A colon is the protocol/documentation boundary: prose before it is an
-  // introduction, while prose after a call is classified separately. The
-  // recall path also deliberately emits the single protocol word SUFFICIENT.
-  return !value || value.endsWith(":") || /^SUFFICIENT$/i.test(value);
+function isProtocolPreface(value: string): boolean {
+  const prefix = value
+    .replace(/^[\s\[({,;:]+/, "")
+    .replace(/[\s:([{,;]+$/, "")
+    .trim();
+  if (!prefix) return true;
+  if (/^sufficient$/i.test(prefix)) return true;
+  const base =
+    "(?:sure|okay|ok|alright|certainly|of course|here(?:'s| is)|calling|call(?:ing)?|using|invoking|running|the tool call(?: is)?|i will (?:use|call|invoke|run)|i(?:'ll| will) (?:use|call|invoke|run)|let me (?:use|call|invoke|run)|i(?:'m| am) going to (?:use|call|invoke|run)|use|call|invoke|run)";
+  return new RegExp(
+    `^${base}(?:\\s+(?:the\\s+)?(?:${TOOL_NAME_PATTERN})(?:\\s+(?:tool|function))?|\\s+the\\s+(?:tool|function))?$`,
+    "i"
+  ).test(prefix);
 }
 
-function hasBriefProtocolSuffix(suffix: string): boolean {
-  const value = suffix.trim().replace(/^[\s.,!?;:)}\]]+/, "");
-  if (!value) return true;
-  // Explanatory continuations are not protocol output, even when a call occurs
-  // near the end of the sentence. Short terminal acknowledgements are common in
-  // leaked model output and are deliberately covered here.
-  if (/^(?:when|where|which|that|because|so that|to|for|is used|can be used|is a|is an|is the|returns|takes|expects)\b/i.test(value)) {
-    return false;
-  }
-  return value.split(/\s+/).length <= 8;
+function isProtocolSeparator(value: string): boolean {
+  return /^[\s,;:[\]{}()]*$/.test(value);
+}
+
+function lineContaining(answer: string, index: number): string {
+  const start = answer.lastIndexOf("\n", index - 1) + 1;
+  const end = answer.indexOf("\n", index);
+  return answer.slice(start, end < 0 ? answer.length : end);
+}
+
+function stripCallPunctuation(value: string): string {
+  return value.trim().replace(/^(?:\[|\{)+/, "").replace(/(?:\]|\})+$/, "").trim();
+}
+
+function isTerminalProtocolSuffix(value: string): boolean {
+  const suffix = value.trim().replace(/^[\s.,!?;:)}\]]+/, "");
+  if (!suffix) return true;
+  return /^(?:done|complete|completed|finished|success|successful|okay|ok|that's it|that is all)[.!]?$/i.test(
+    suffix
+  );
+}
+
+function isStandaloneCallLine(answer: string, call: CallCandidate): boolean {
+  const line = lineContaining(answer, call.start);
+  const before = line.slice(0, call.start - (answer.lastIndexOf("\n", call.start - 1) + 1));
+  const after = line.slice(call.end - (answer.lastIndexOf("\n", call.end - 1) + 1));
+  return (
+    isProtocolSeparator(stripCallPunctuation(before)) &&
+    isProtocolSeparator(stripCallPunctuation(after)) &&
+    (call.complete || !after.trim())
+  );
 }
 
 function isCallSequence(answer: string, calls: CallCandidate[]): boolean {
   if (calls.length === 0) return false;
+
+  // A call on its own line is an unambiguous leaked protocol item, even when
+  // the model first emitted an ordinary sentence. This catches:
+  //   I will inspect the file.
+  //   read_concept(path="x")
+  if (calls.some((call) => isStandaloneCallLine(answer, call))) return true;
+
   const first = calls[0];
   const last = calls[calls.length - 1];
-  const prefix = answer.slice(0, first.start);
-  const protocolPrefix = prefix.replace(/\[\s*$/, "").trim();
-  const suffix = answer.slice(last.end);
-  const allBracketed = calls.every((call) => call.bracketed);
-  const startsAtAnswerBoundary = !protocolPrefix;
-  const linePrefix = answer.slice(answer.lastIndexOf("\n", first.start - 1) + 1, first.start);
-  const startsAtLineBoundary =
-    !linePrefix.replace(/\[\s*$/, "").trim() && hasProtocolPrefix(protocolPrefix);
-
-  // Bare calls are protocol only at an answer/line boundary or after an
-  // explicit protocol preface. This intentionally leaves documentation such as
-  // "The guide ends with read_concept(path='x')" alone.
-  const boundary =
-    startsAtAnswerBoundary ||
-    startsAtLineBoundary ||
-    hasProtocolPrefix(protocolPrefix) ||
-    (allBracketed && hasProtocolPrefix(protocolPrefix));
-  if (!boundary) return false;
-
-  // Calls in a sequence may be separated by JSON/list punctuation or whitespace.
-  // Reject a candidate embedded in ordinary prose between two calls.
   for (let index = 1; index < calls.length; index += 1) {
-    const between = answer.slice(calls[index - 1].end, calls[index].start).trim();
-    if (between && !/^(?:[,;]|\]|\[|\{|\}|\n)+$/.test(between)) return false;
+    if (!isProtocolSeparator(answer.slice(calls[index - 1].end, calls[index].start))) {
+      return false;
+    }
   }
-  return (
-    hasBriefProtocolSuffix(suffix) &&
-    (startsAtAnswerBoundary || hasProtocolPrefix(protocolPrefix) ||
-      (allBracketed && hasProtocolPrefix(protocolPrefix)))
+
+  const prefix = answer.slice(0, first.start);
+  const prefixWithoutListPunctuation = prefix.replace(/[\s\[]+$/, "");
+  const suffix = answer.slice(last.end);
+  const atAnswerBoundary = !prefixWithoutListPunctuation.trim();
+  const preface = isProtocolPreface(prefixWithoutListPunctuation);
+  const linePrefix = lineContaining(answer, first.start).slice(
+    0,
+    first.start - (answer.lastIndexOf("\n", first.start - 1) + 1)
   );
+  const atLineBoundary = isProtocolSeparator(stripCallPunctuation(linePrefix));
+
+  if (!(atAnswerBoundary || preface || atLineBoundary)) return false;
+  if (!isTerminalProtocolSuffix(suffix)) return false;
+
+  // A truncated call is protocol only when it is at a structural boundary. A
+  // name followed by an unfinished argument in ordinary prose is not enough.
+  return calls.every((call) => call.complete || atAnswerBoundary || preface || atLineBoundary);
 }
 
-function jsonLikeToolPayload(answer: string): boolean {
+function isKnownToolCallObject(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const object = value as Record<string, unknown>;
+  const name = [object.name, object.tool, object.toolName].find(
+    (candidate): candidate is string => typeof candidate === "string"
+  );
+  if (!name || !KNOWN_TOOL_SET.has(name)) return false;
+  return ["arguments", "input", "parameters", "params"].some((key) => key in object);
+}
+
+function isProtocolJson(value: unknown): boolean {
+  if (isKnownToolCallObject(value)) return true;
+  return Array.isArray(value) && value.length > 0 && value.every(isKnownToolCallObject);
+}
+
+function parseJsonProtocol(answer: string): boolean {
   const value = answer.trim();
   if (!value.startsWith("{") && !value.startsWith("[")) return false;
-  if (!KNOWN_TOOL_NAME.test(value)) return false;
+  const withoutTerminalPunctuation = value.replace(/[\s.,!?;:]+$/, "");
   try {
-    const parsed: unknown = JSON.parse(value.replace(/[\s.,!?]+$/, ""));
-    const encoded = JSON.stringify(parsed);
-    return KNOWN_TOOL_NAME.test(encoded);
+    return isProtocolJson(JSON.parse(withoutTerminalPunctuation));
   } catch {
-    // A truncated JSON tool call is still protocol-shaped when it begins the
-    // answer. Do not apply this to an object embedded in explanatory prose.
-    return true;
+    // Providers sometimes stop halfway through a JSON protocol envelope. Keep
+    // this anchored to a root object/array and require both the protocol name
+    // and an argument field, rather than looking for a tool-name string.
+    const name = new RegExp(
+      `^[\\[{\\s]*(?:"(?:name|tool|toolName)"\\s*:\\s*")?(?:${TOOL_NAME_PATTERN})(?:"|\\b)`,
+      "i"
+    );
+    const argument = /["'](?:arguments|input|parameters|params)["']\s*:/i;
+    return name.test(value) && argument.test(value);
   }
 }
 
 function markerEnvelope(answer: string): boolean {
   const ranges = protectedRanges(answer);
-  const markers = [...answer.matchAll(TOOL_MARKER)].filter((match) => !isProtected(match.index ?? 0, ranges));
+  const markers = [...answer.matchAll(TOOL_MARKER)].filter(
+    (match) => !isProtected(match.index ?? 0, ranges)
+  );
   if (markers.length === 0) return false;
+  if (!answer.replace(TOOL_MARKER, "").trim()) return true;
+
   for (let index = 0; index < markers.length; index += 1) {
     const marker = markers[index];
     const start = marker.index ?? 0;
     const payloadStart = start + marker[0].length;
     const nextMarker = markers[index + 1];
     const payload = answer.slice(payloadStart, nextMarker?.index ?? answer.length);
-    if (KNOWN_TOOL_NAME.test(payload) || jsonLikeToolPayload(payload)) return true;
-    // A marker by itself is an actual protocol boundary only when it is the
-    // complete answer (or a truncated answer beginning at the boundary).
-    if (!answer.slice(0, start).trim() && (!nextMarker || !answer.slice(nextMarker.index! + nextMarker[0].length).trim())) {
-      return true;
+    const payloadWithoutEnd = payload.replace(/<\|tool_call_end\|>/gi, "").trim();
+    if (parseJsonProtocol(payloadWithoutEnd) || isCallSequence(payloadWithoutEnd, callsIn(payloadWithoutEnd))) {
+      const before = answer.slice(0, start);
+      if (!before.trim() || isProtocolPreface(before)) return true;
+    }
+    // A marker pair without a payload is still a malformed protocol envelope,
+    // but a marker mentioned in prose is documentation.
+    if (/<\|tool_call_end\|>/i.test(payload)) {
+      const before = beforeText(answer, start);
+      const end = payload.search(/<\|tool_call_end\|>/i);
+      const afterEnd = end < 0 ? "" : payload.slice(end + "<|tool_call_end|>".length).trim();
+      if (!afterEnd && (!before || isProtocolPreface(before))) return true;
     }
   }
   return false;
+}
+
+function beforeText(answer: string, markerStart: number): string {
+  return answer.slice(0, markerStart).trim();
 }
 
 /** Return whether an answer is model-emitted tool protocol rather than prose. */
 export function isMalformedAnswer(answer: string): boolean {
   if (!answer.trim()) return false;
   if (markerEnvelope(answer)) return true;
-  if (jsonLikeToolPayload(answer)) return true;
+  if (parseJsonProtocol(answer)) return true;
   return isCallSequence(answer, callsIn(answer));
 }
 
@@ -206,32 +265,52 @@ export interface ProtocolLeakageGuard {
   wasMalformed(): boolean;
 }
 
+export interface ProtocolLeakageGuardOptions {
+  /** Optional dynamic detail, evaluated only when malformed text is found. */
+  errorMessage?: () => string;
+}
+
 /**
- * Buffer text for the complete stream step before validating it. Text can be
- * split over several blocks by AI SDK v5, so validating at text-end would let a
- * protocol sequence straddling two blocks escape.
+ * Buffer text and terminal events for the complete stream step before
+ * validating it. Text can be split over several blocks by AI SDK v5, so
+ * validating at text-end would let a protocol sequence straddling two blocks
+ * escape. A malformed step produces an AI SDK v5 `error` stream part before
+ * releasing the provider terminal events, so the client can observe failure
+ * before any completion marker.
  */
-export function createProtocolLeakageGuard(): ProtocolLeakageGuard {
+export function createProtocolLeakageGuard(
+  options: ProtocolLeakageGuardOptions = {}
+): ProtocolLeakageGuard {
   let malformed = false;
+  let errorEmitted = false;
   let pendingText = "";
   let pendingTextParts: TextStreamPart<any>[] = [];
+  const errorMessage = options.errorMessage ?? (() => MALFORMED_ANSWER_MESSAGE);
+
+  const emitError = (controller: TransformStreamDefaultController<any>): void => {
+    if (errorEmitted) return;
+    errorEmitted = true;
+    controller.enqueue({ type: "error", error: new Error(errorMessage()) });
+  };
 
   const releaseText = (
-    controller: TransformStreamDefaultController<TextStreamPart<any>>
-  ): void => {
+    controller: TransformStreamDefaultController<any>
+  ): boolean => {
     const parts = pendingTextParts;
     const text = pendingText;
     pendingTextParts = [];
     pendingText = "";
     if (malformed || isMalformedAnswer(text)) {
       malformed = true;
-      return;
+      emitError(controller);
+      return false;
     }
     for (const part of parts) controller.enqueue(part);
+    return true;
   };
 
   const transform: StreamTextTransform<any> = () =>
-    new TransformStream<TextStreamPart<any>, TextStreamPart<any>>({
+    new TransformStream<TextStreamPart<any>, any>({
       transform(part, controller) {
         if (
           part.type === "text-start" ||
@@ -243,9 +322,12 @@ export function createProtocolLeakageGuard(): ProtocolLeakageGuard {
           return;
         }
 
-        // finish-step is the boundary for one model generation. finish is a
-        // defensive fallback for providers that omit finish-step.
+        // Terminal events are deliberately held behind validation. In the
+        // malformed case the client receives `error` first and no success
+        // finish marker can claim that the answer completed successfully.
         if (part.type === "finish-step" || part.type === "finish") {
+          // Preserve the provider's terminal shape so AI SDK can close its
+          // stream, but only after the error part has been placed first.
           releaseText(controller);
           controller.enqueue(part);
           return;
