@@ -319,6 +319,73 @@ describe("search", () => {
       expect(common[0].confidence).toBeLessThan(20);
     }
   });
+
+  it("uses corroborated groups against a large distractor corpus", async () => {
+    await kb.writeConcept(
+      "/gotchas/ptr-ms-analysis-pipx-installation.md",
+      { type: "Gotcha", title: "PTR-MS Analysis pipx stale launcher" },
+      "The installed pipx launcher still imports the obsolete flat analyze module. Reinstalling the checkout fixes the launcher.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/notes/euroeval-visual-identity.md",
+      { type: "Note", title: "EuroEval visual identity" },
+      "The official EuroEval logo artwork is gfx/euroeval.png.",
+      "add"
+    );
+
+    await Promise.all(
+      Array.from({ length: 90 }, async (_, index) => {
+        const directory = ["repositories", "gotchas", "notes"][index % 3];
+        const filename = `${directory}/archive-entry-${index}.md`;
+        const absolute = path.join(root, filename);
+        await fs.mkdir(path.dirname(absolute), { recursive: true });
+        await fs.writeFile(
+          absolute,
+          `---\ntype: Note\ntitle: Archive entry ${index}\n---\nRoutine documentation and project records for archive entry ${index}.\n`
+        );
+      })
+    );
+
+    const installation = await searchBundle(
+      kb.bundle,
+      "What is the PTR-MS pipx installation fix?"
+    );
+    expect(installation.slice(0, 3).map((hit) => hit.path)).toContain(
+      "/gotchas/ptr-ms-analysis-pipx-installation.md"
+    );
+    expect(installation[0].confidence).toBeGreaterThanOrEqual(20);
+    expect(installation[0].confidenceQualified).toBe(true);
+
+    const logo = await searchBundle(kb.bundle, "Where is the EuroEval logo artwork?");
+    expect(logo.slice(0, 3).map((hit) => hit.path)).toContain(
+      "/notes/euroeval-visual-identity.md"
+    );
+    expect(logo[0].confidence).toBeGreaterThanOrEqual(20);
+    expect(logo[0].confidenceQualified).toBe(true);
+
+    const absent = await searchBundle(kb.bundle, "completely-absent.md");
+    expect(absent[0].confidenceQualified).toBe(false);
+    expect(absent[0].confidence).toBeLessThan(20);
+
+    for (const query of ["repositories/md", "gotchas/md", "notes md"]) {
+      const lowCoverage = await searchBundle(kb.bundle, query);
+      expect(lowCoverage.length).toBeGreaterThan(0);
+      expect(lowCoverage[0].confidenceQualified).toBe(false);
+      expect(lowCoverage[0].confidence).toBeLessThan(20);
+    }
+
+    const broad = await searchBundle(kb.bundle, "documentation");
+    expect(broad.length).toBeGreaterThan(0);
+    expect(broad[0].confidence).toBeLessThan(20);
+
+    const once = await searchBundle(kb.bundle, "PTR-MS pipx installation", { limit: 1 });
+    const repeated = await searchBundle(kb.bundle, "PTR-MS pipx installation PTR-MS pipx installation", {
+      limit: 1,
+    });
+    expect(repeated[0].path).toBe(once[0].path);
+    expect(repeated[0].score).toBe(once[0].score);
+  });
 });
 
 describe("conformance (spec §9)", () => {
