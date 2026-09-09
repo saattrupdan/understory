@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const providerState = vi.hoisted(() => {
   let calls = 0;
+  let finalAnswer = 'Calling write_concept(path="/facts/new.md")';
   const model = {
     specificationVersion: "v2" as const,
     provider: "test",
@@ -39,7 +40,7 @@ const providerState = vi.hoisted(() => {
               {
                 type: "text-delta",
                 id: "text-1",
-                delta: 'Calling write_concept(path="/facts/new.md")',
+                delta: finalAnswer,
               },
               { type: "text-end", id: "text-1" },
               {
@@ -58,7 +59,15 @@ const providerState = vi.hoisted(() => {
       };
     },
   };
-  return { model, get calls() { return calls; } };
+  return {
+    model,
+    get calls() { return calls; },
+    setFinalAnswer(answer: string) { finalAnswer = answer; },
+    reset() {
+      calls = 0;
+      finalAnswer = 'Calling write_concept(path="/facts/new.md")';
+    },
+  };
 });
 
 vi.mock("../src/providers/index.js", async () => {
@@ -85,12 +94,37 @@ import { KnowledgeBase } from "../src/okf/index.js";
 let root: string | undefined;
 
 afterEach(async () => {
+  providerState.reset();
   vi.unstubAllEnvs();
   if (root) await fs.rm(root, { recursive: true, force: true });
   root = undefined;
 });
 
 describe("chat protocol guard through AI SDK UI stream", () => {
+  it.each([
+    ["apostrophe preface", "Here's the call: [read_concept(path='x')]"],
+    ["unknown marker envelope", "<|tool_call_start|>[log_summary(path='x')]<|tool_call_end|>"],
+    ["nested function object", '{"type":"function","function":{"name":"read_concept","arguments":"{\\"path\\":\\"x\\"}"}}'],
+  ])("contains %s through the actual UI stream", async (_name, answer) => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-chat-api-"));
+    providerState.setFinalAnswer(answer);
+    const kb = new KnowledgeBase(root);
+    const { result } = await streamChat(kb, [{ role: "user", content: "create a fact" }]);
+
+    const response = result.toUIMessageStreamResponse({
+      onError: (error) => (error instanceof Error ? error.message : String(error)),
+    });
+    const body = await response.text();
+    const errorIndex = body.indexOf('"type":"error"');
+    const finishStepIndex = body.lastIndexOf('"type":"finish-step"');
+    const finishIndex = body.lastIndexOf('"type":"finish"');
+
+    expect(body).not.toContain(answer);
+    expect(errorIndex).toBeGreaterThanOrEqual(0);
+    expect(errorIndex).toBeLessThan(finishStepIndex);
+    expect(errorIndex).toBeLessThan(finishIndex);
+  });
+
   it("reports a partial mutation before any successful completion marker", async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "ustory-chat-api-"));
     const kb = new KnowledgeBase(root);
