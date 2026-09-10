@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type RefObject,
 } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
@@ -41,11 +42,13 @@ export function ChatPanel({
   onMutation,
   onOpenConcept,
   onCollapse,
+  collapseButtonRef,
 }: {
   config: AppConfig | null;
   onMutation: () => void;
   onOpenConcept: (path: string) => void;
   onCollapse: () => void;
+  collapseButtonRef: RefObject<HTMLButtonElement>;
 }) {
   const [input, setInput] = useState("");
   const [model, setModel] = useState("");
@@ -112,6 +115,7 @@ export function ChatPanel({
         <span className="text-sm font-semibold text-zinc-300">Agent chat</span>
         <div className="ml-auto flex items-center gap-1.5">
           <button
+            ref={collapseButtonRef}
             type="button"
             onClick={onCollapse}
             aria-label="Collapse chat sidebar"

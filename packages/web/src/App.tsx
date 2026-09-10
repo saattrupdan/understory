@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, setAuthToken, type AppConfig, type Concept, type ConformanceReport, type LogEntry, type SearchHit, type TreeNode } from "./api";
 import { Tree } from "./components/Tree";
 import { ConceptView } from "./components/ConceptView";
@@ -22,6 +22,9 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const chatExpandRef = useRef<HTMLButtonElement>(null);
+  const chatCollapseRef = useRef<HTMLButtonElement>(null);
+  const pendingChatFocusRef = useRef<"expand" | "collapse" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
@@ -51,6 +54,24 @@ export default function App() {
       api.concept(view.path).then(setConcept).catch((e) => setError(String(e)));
     }
   }, [view]);
+
+  useEffect(() => {
+    const focusTarget = pendingChatFocusRef.current;
+    if (!focusTarget) return;
+    pendingChatFocusRef.current = null;
+    if (focusTarget === "collapse") chatCollapseRef.current?.focus();
+    else chatExpandRef.current?.focus();
+  }, [chatOpen]);
+
+  const openChat = () => {
+    pendingChatFocusRef.current = "collapse";
+    setChatOpen(true);
+  };
+
+  const collapseChat = () => {
+    pendingChatFocusRef.current = "expand";
+    setChatOpen(false);
+  };
 
   // Re-load the open concept (and graph) after chat mutations.
   const [graphRefreshKey, setGraphRefreshKey] = useState(0);
@@ -184,7 +205,10 @@ export default function App() {
           </button>
           <button
             type="button"
-            onClick={() => setChatOpen(!chatOpen)}
+            onClick={() => {
+              if (chatOpen) setChatOpen(false);
+              else openChat();
+            }}
             aria-expanded={chatOpen}
             aria-controls="chat-sidebar"
             className="flex-1 border-l border-zinc-800 px-3 py-2 text-zinc-400 hover:bg-zinc-800"
@@ -212,12 +236,13 @@ export default function App() {
         {!chatOpen && (
           <button
             type="button"
-            onClick={() => setChatOpen(true)}
+            ref={chatExpandRef}
+            onClick={openChat}
             aria-label="Expand chat sidebar"
             aria-expanded={false}
             aria-controls="chat-sidebar"
             title="Expand chat sidebar"
-            className={`absolute right-3 z-20 rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 ${
+            className={`fixed right-3 z-20 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute ${
               view.kind === "graph" ? "top-14" : "top-3"
             }`}
           >
@@ -227,20 +252,25 @@ export default function App() {
       </main>
 
       {/* Chat */}
-      {chatOpen && (
-        <aside
-          id="chat-sidebar"
-          aria-label="Chat sidebar"
-          className="w-full shrink-0 border-l border-zinc-800 sm:w-96 sm:max-w-[35vw]"
-        >
-          <ChatPanel
-            config={config}
-            onMutation={onMutation}
-            onOpenConcept={openConcept}
-            onCollapse={() => setChatOpen(false)}
-          />
-        </aside>
-      )}
+      <aside
+        id="chat-sidebar"
+        aria-label="Chat sidebar"
+        aria-hidden={!chatOpen}
+        hidden={!chatOpen}
+        className={
+          chatOpen
+            ? "fixed inset-0 z-40 w-full border-l border-zinc-800 bg-zinc-950 lg:static lg:z-auto lg:w-96 lg:max-w-[35vw] lg:shrink-0"
+            : undefined
+        }
+      >
+        <ChatPanel
+          config={config}
+          onMutation={onMutation}
+          onOpenConcept={openConcept}
+          onCollapse={collapseChat}
+          collapseButtonRef={chatCollapseRef}
+        />
+      </aside>
     </div>
   );
 }

@@ -8,6 +8,10 @@ import {
   type Simulation,
 } from "d3-force";
 import { api, type GraphData, type QueryTrace, type TraceSummary } from "../api";
+import {
+  recenterGraphAfterResize,
+  type GraphViewportSize,
+} from "./graphViewport";
 
 interface SimNode {
   path: string;
@@ -74,6 +78,7 @@ export function GraphView({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
+  const graphSizeRef = useRef<GraphViewportSize | null>(null);
   const [nodes, setNodes] = useState<SimNode[]>([]);
   const [links, setLinks] = useState<SimLink[]>([]);
   const [tick, setTick] = useState(0);
@@ -140,16 +145,20 @@ export function GraphView({
     };
   }, [refreshKey]);
 
-  // Re-center the simulation when the graph sidebar changes the canvas width.
+  // Move the camera with the viewport instead of reheating a settled layout.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || typeof ResizeObserver === "undefined") return;
 
     const observer = new ResizeObserver(() => {
-      const simulation = simRef.current;
-      if (!simulation) return;
-      simulation.force("center", forceCenter(container.clientWidth / 2, container.clientHeight / 2));
-      simulation.alpha(0.15).restart();
+      const next = {
+        width: container.clientWidth,
+        height: container.clientHeight,
+      };
+      const previous = graphSizeRef.current;
+      graphSizeRef.current = next;
+      if (!previous) return;
+      setView((current) => recenterGraphAfterResize(current, previous, next));
     });
     observer.observe(container);
     return () => observer.disconnect();
@@ -531,71 +540,66 @@ export function GraphView({
       </svg>
       </div>
 
-      {pathsOpen ? (
-        <aside
-          aria-label="Query paths sidebar"
-          className="flex w-72 max-w-[36%] shrink-0 flex-col border-l border-zinc-800 bg-zinc-900/90 text-xs"
-        >
-          <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
-            <span className="font-semibold text-zinc-300">Query paths</span>
+      <aside
+        id="query-paths-sidebar"
+        aria-label="Query paths sidebar"
+        aria-hidden={!pathsOpen}
+        hidden={!pathsOpen}
+        className={
+          pathsOpen
+            ? "fixed inset-y-0 right-0 z-30 flex w-72 max-w-[calc(100vw-2rem)] flex-col border-l border-zinc-800 bg-zinc-900 text-xs shadow-2xl lg:static lg:z-auto lg:w-72 lg:max-w-[36%] lg:shrink-0 lg:bg-zinc-900/90 lg:shadow-none"
+            : undefined
+        }
+      >
+        <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 pr-14">
+          <span className="font-semibold text-zinc-300">Query paths</span>
+        </div>
+        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+          {traces.length === 0 && (
+            <p className="p-2 text-zinc-500">
+              No recorded runs yet — ask the agent something and its traversal will appear here.
+            </p>
+          )}
+          {traces.map((t) => (
             <button
               type="button"
-              onClick={() => setPathsOpen(false)}
-              aria-label="Collapse query paths sidebar"
-              aria-expanded={true}
-              aria-controls="query-paths-list"
-              title="Collapse query paths sidebar"
-              className="ml-auto rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              key={t.id}
+              onClick={() => (activeTrace?.id === t.id ? closeTrace() : selectTrace(t.id))}
+              className={`block w-full rounded px-2 py-1.5 text-left hover:bg-zinc-800 ${
+                activeTrace?.id === t.id ? "bg-zinc-800 ring-1 ring-zinc-700" : ""
+              }`}
             >
-              <span aria-hidden="true">→</span>
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ background: KIND_COLOR[t.kind] }}
+                  title={t.kind}
+                />
+                <span className="truncate text-zinc-200">{t.input}</span>
+              </div>
+              <div className="mt-0.5 flex items-baseline gap-2">
+                <span className="truncate font-mono text-[10px] text-zinc-500">{t.notation}</span>
+                {usageLabel(t.usage) && (
+                  <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{usageLabel(t.usage)}</span>
+                )}
+              </div>
             </button>
-          </div>
-          <div id="query-paths-list" className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-            {traces.length === 0 && (
-              <p className="p-2 text-zinc-500">
-                No recorded runs yet — ask the agent something and its traversal will appear here.
-              </p>
-            )}
-            {traces.map((t) => (
-              <button
-                type="button"
-                key={t.id}
-                onClick={() => (activeTrace?.id === t.id ? closeTrace() : selectTrace(t.id))}
-                className={`block w-full rounded px-2 py-1.5 text-left hover:bg-zinc-800 ${
-                  activeTrace?.id === t.id ? "bg-zinc-800 ring-1 ring-zinc-700" : ""
-                }`}
-              >
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ background: KIND_COLOR[t.kind] }}
-                    title={t.kind}
-                  />
-                  <span className="truncate text-zinc-200">{t.input}</span>
-                </div>
-                <div className="mt-0.5 flex items-baseline gap-2">
-                  <span className="truncate font-mono text-[10px] text-zinc-500">{t.notation}</span>
-                  {usageLabel(t.usage) && (
-                    <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{usageLabel(t.usage)}</span>
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
-        </aside>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setPathsOpen(true)}
-          aria-label="Expand query paths sidebar"
-          aria-expanded={false}
-          aria-controls="query-paths-list"
-          title="Expand query paths sidebar"
-          className="absolute right-3 top-3 z-10 rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-        >
-          <span aria-hidden="true">←</span> Query paths
-        </button>
-      )}
+          ))}
+        </div>
+      </aside>
+
+      <button
+        type="button"
+        onClick={() => setPathsOpen((open) => !open)}
+        aria-label={`${pathsOpen ? "Collapse" : "Expand"} query paths sidebar`}
+        aria-expanded={pathsOpen}
+        aria-controls="query-paths-sidebar"
+        title={`${pathsOpen ? "Collapse" : "Expand"} query paths sidebar`}
+        className="fixed right-3 top-3 z-40 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute"
+      >
+        <span aria-hidden="true">{pathsOpen ? "→" : "←"}</span>{" "}
+        <span className="hidden lg:inline">Query paths</span>
+      </button>
     </div>
   );
 }
