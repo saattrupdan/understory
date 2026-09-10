@@ -40,10 +40,12 @@ export function ChatPanel({
   config,
   onMutation,
   onOpenConcept,
+  onCollapse,
 }: {
   config: AppConfig | null;
   onMutation: () => void;
   onOpenConcept: (path: string) => void;
+  onCollapse: () => void;
 }) {
   const [input, setInput] = useState("");
   const [model, setModel] = useState("");
@@ -109,6 +111,17 @@ export function ChatPanel({
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
         <span className="text-sm font-semibold text-zinc-300">Agent chat</span>
         <div className="ml-auto flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onCollapse}
+            aria-label="Collapse chat sidebar"
+            aria-expanded={true}
+            aria-controls="chat-sidebar"
+            title="Collapse chat sidebar"
+            className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+          >
+            <span aria-hidden="true">→</span>
+          </button>
           {config && (
             <>
               {config.fallbackConfigured && (

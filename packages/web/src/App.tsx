@@ -21,7 +21,7 @@ export default function App() {
   const [concept, setConcept] = useState<Concept | null>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
@@ -183,7 +183,10 @@ export default function App() {
             Graph
           </button>
           <button
+            type="button"
             onClick={() => setChatOpen(!chatOpen)}
+            aria-expanded={chatOpen}
+            aria-controls="chat-sidebar"
             className="flex-1 border-l border-zinc-800 px-3 py-2 text-zinc-400 hover:bg-zinc-800"
           >
             {chatOpen ? "Hide chat" : "Chat"}
@@ -192,7 +195,7 @@ export default function App() {
       </aside>
 
       {/* Main */}
-      <main className={`min-w-0 flex-1 ${view.kind === "graph" ? "overflow-hidden" : "overflow-y-auto"}`}>
+      <main className={`relative min-w-0 flex-1 ${view.kind === "graph" ? "overflow-hidden" : "overflow-y-auto"}`}>
         {error && <p className="p-6 text-sm text-red-400">{error}</p>}
         {!error && view.kind === "empty" && (
           <div className="flex h-full items-center justify-center text-zinc-600">
@@ -206,12 +209,36 @@ export default function App() {
         {!error && view.kind === "graph" && (
           <GraphView refreshKey={graphRefreshKey} onNavigate={openConcept} />
         )}
+        {!chatOpen && (
+          <button
+            type="button"
+            onClick={() => setChatOpen(true)}
+            aria-label="Expand chat sidebar"
+            aria-expanded={false}
+            aria-controls="chat-sidebar"
+            title="Expand chat sidebar"
+            className={`absolute right-3 z-20 rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 ${
+              view.kind === "graph" ? "top-14" : "top-3"
+            }`}
+          >
+            <span aria-hidden="true">←</span> Chat
+          </button>
+        )}
       </main>
 
       {/* Chat */}
       {chatOpen && (
-        <aside className="w-96 shrink-0 border-l border-zinc-800">
-          <ChatPanel config={config} onMutation={onMutation} onOpenConcept={openConcept} />
+        <aside
+          id="chat-sidebar"
+          aria-label="Chat sidebar"
+          className="w-full shrink-0 border-l border-zinc-800 sm:w-96 sm:max-w-[35vw]"
+        >
+          <ChatPanel
+            config={config}
+            onMutation={onMutation}
+            onOpenConcept={openConcept}
+            onCollapse={() => setChatOpen(false)}
+          />
         </aside>
       )}
     </div>
