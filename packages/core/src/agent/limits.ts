@@ -10,9 +10,6 @@ export const DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS = 24_000;
 export const DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS = 24_000;
 export const DEFAULT_AGENT_MAX_INPUT_CHARS = 32_000;
 export const MIN_AGENT_MAX_INPUT_CHARS = 1;
-/** A chat follow-up includes the completed tool transcript from earlier turns. */
-export const DEFAULT_AGENT_CHAT_MAX_INPUT_CHARS = 128_000;
-export const MIN_AGENT_CHAT_MAX_INPUT_CHARS = 1;
 /** JSON characters reserved for SDK tool-result framing, beyond the notice. */
 export const TOOL_RESULT_CONTROL_OVERHEAD = 32;
 /** Room for a visible `total_chars` truncation marker in bounded text. */
@@ -35,7 +32,6 @@ export interface AgentLimits {
   maxToolResultChars: number;
   maxSystemContextChars: number;
   maxInputChars: number;
-  chatMaxInputChars: number;
 }
 
 /** Character count used for caller strings and JSON-serialised model values. */
@@ -90,13 +86,6 @@ export function resolveAgentLimits(env: NodeJS.ProcessEnv = process.env): AgentL
     maxInputChars: Math.max(
       MIN_AGENT_MAX_INPUT_CHARS,
       positiveIntegerEnv(env.AGENT_MAX_INPUT_CHARS, DEFAULT_AGENT_MAX_INPUT_CHARS)
-    ),
-    chatMaxInputChars: Math.max(
-      MIN_AGENT_CHAT_MAX_INPUT_CHARS,
-      positiveIntegerEnv(
-        env.AGENT_CHAT_MAX_INPUT_CHARS,
-        DEFAULT_AGENT_CHAT_MAX_INPUT_CHARS
-      )
     ),
   };
 }

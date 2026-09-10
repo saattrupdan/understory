@@ -11,7 +11,6 @@ vi.mock("ai", async () => {
 });
 
 import { runMutation, runQuery, streamChat } from "../src/agent/agent.js";
-import { inputLength } from "../src/agent/limits.js";
 import { KnowledgeBase } from "../src/okf/index.js";
 import { TraceStore } from "../src/agent/trace.js";
 
@@ -74,38 +73,18 @@ describe("agent input bounds", () => {
     expect(options.prepareStep({ stepNumber: 9 })).toEqual({ activeTools: [] });
   });
 
-  it("uses a separate finite chat-history bound", async () => {
+  it("passes chat history beyond the one-shot input bound to streamText", async () => {
     const kb = await knowledgeBase();
     vi.stubEnv("AGENT_MAX_INPUT_CHARS", "32");
-    vi.stubEnv("AGENT_CHAT_MAX_INPUT_CHARS", "40000");
     vi.stubEnv("LLM_API_FORMAT", "openai");
     vi.stubEnv("LLM_API_BASE_URL", "http://localhost:1/v1");
     vi.stubEnv("LLM_API_KEY", "test");
     vi.stubEnv("LLM_MODEL", "test-model");
     streamTextMock.mockReturnValue({});
-
-    await expect(
-      streamChat(kb, [{ role: "user", content: "x".repeat(30_000) }])
-    ).resolves.toBeDefined();
-    await expect(
-      streamChat(kb, [{ role: "user", content: "x".repeat(50_000) }])
-    ).rejects.toThrow("AGENT_CHAT_MAX_INPUT_CHARS");
-  });
-
-  it("bounds the complete serialized chat history before streaming", async () => {
-    const kb = await knowledgeBase();
-    const messages = [{ role: "user" as const, content: "hello" }];
-    vi.stubEnv("AGENT_CHAT_MAX_INPUT_CHARS", String(inputLength(messages)));
-    vi.stubEnv("LLM_API_FORMAT", "openai");
-    vi.stubEnv("LLM_API_BASE_URL", "http://localhost:1/v1");
-    vi.stubEnv("LLM_API_KEY", "test");
-    vi.stubEnv("LLM_MODEL", "test-model");
-    streamTextMock.mockReturnValue({});
+    const messages = [{ role: "user" as const, content: "x".repeat(40) }];
 
     await expect(streamChat(kb, messages)).resolves.toBeDefined();
-    await expect(streamChat(kb, [{ role: "user", content: "x".repeat(1_000_000) }])).rejects.toThrow(
-      "AGENT_CHAT_MAX_INPUT_CHARS"
-    );
     expect(streamTextMock).toHaveBeenCalledTimes(1);
+    expect((streamTextMock.mock.calls[0]?.[0] as { messages: unknown }).messages).toEqual(messages);
   });
 });

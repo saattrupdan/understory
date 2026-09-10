@@ -637,12 +637,6 @@ export async function streamChat(
   options: AgentOptions = {}
 ) {
   const limits = resolveAgentLimits();
-  assertInputWithinLimit(
-    messages,
-    limits.chatMaxInputChars,
-    "Chat history",
-    "AGENT_CHAT_MAX_INPUT_CHARS"
-  );
   const state = new AgentRunContext(limits);
   const ctx = await promptContext(kb, "chat", state);
   const recorder = new TraceRecorder();
