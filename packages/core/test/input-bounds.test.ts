@@ -85,4 +85,79 @@ describe("agent input bounds", () => {
     expect(streamTextMock).toHaveBeenCalledTimes(1);
     expect((streamTextMock.mock.calls[0]?.[0] as { messages: unknown }).messages).toEqual(messages);
   });
+
+  it("does not apply configured data budgets to interactive chat", async () => {
+    const kb = await knowledgeBase();
+    const longBody = "document-body-".repeat(80);
+    for (let index = 0; index < 16; index += 1) {
+      await kb.writeConcept(
+        `/facts/context-${index}.md`,
+        { type: `UniqueContextType${index}`, title: `Context ${index}` },
+        index === 0 ? longBody : `context ${index}`,
+        "Added context."
+      );
+    }
+    vi.stubEnv("AGENT_MAX_DOCUMENT_CHARS", "4");
+    vi.stubEnv("AGENT_MAX_TOOL_RESULT_CHARS", "300");
+    vi.stubEnv("AGENT_MAX_SYSTEM_CONTEXT_CHARS", "240");
+    vi.stubEnv("AGENT_MAX_INPUT_CHARS", "180");
+    vi.stubEnv("LLM_API_FORMAT", "openai");
+    vi.stubEnv("LLM_API_BASE_URL", "http://localhost:1/v1");
+    vi.stubEnv("LLM_API_KEY", "test");
+    vi.stubEnv("LLM_MODEL", "test-model");
+    streamTextMock.mockReturnValue({});
+
+    await streamChat(kb, [{ role: "user", content: "inspect and update" }]);
+    const options = streamTextMock.mock.calls[0]?.[0] as {
+      system: string;
+      tools: Record<
+        string,
+        {
+          inputSchema: { safeParse(value: unknown): { success: boolean } };
+          execute(args: any, context: any): Promise<any>;
+        }
+      >;
+    };
+    const toolContext = { toolCallId: "test", messages: [] };
+
+    expect(options.system).toContain("UniqueContextType15");
+    expect(options.system).toContain("context-15.md");
+    expect(options.system).not.toContain("system types truncated");
+    expect(options.system).not.toContain("system tree truncated");
+
+    const page = await options.tools.read_concept.execute(
+      { path: "/facts/context-0.md", offset: 0 },
+      toolContext
+    );
+    expect(page.body).toBe(longBody + "\n");
+    expect(page).toMatchObject({ truncated: false, next_offset: null });
+
+    const firstTree = await options.tools.list_directory.execute({}, toolContext);
+    const secondTree = await options.tools.list_directory.execute({}, toolContext);
+    expect(firstTree).toContain("context-15.md");
+    expect(secondTree).toBe(firstTree);
+    expect(JSON.stringify(page).length + firstTree.length + secondTree.length).toBeGreaterThan(300);
+
+    const giantWrite = {
+      path: "/facts/schema-unbounded.md",
+      frontmatter: { type: "Fact", payload: "x".repeat(500) },
+      body: "x".repeat(500),
+      log_summary: "Added schema-unbounded fact.",
+    };
+    expect(options.tools.write_concept.inputSchema.safeParse(giantWrite).success).toBe(true);
+
+    for (const suffix of ["a", "b"]) {
+      await options.tools.write_concept.execute(
+        {
+          path: `/facts/write-${suffix}.md`,
+          frontmatter: { type: "Fact" },
+          body: suffix.repeat(80),
+          log_summary: `Added write ${suffix}.`,
+        },
+        toolContext
+      );
+    }
+    await expect(kb.readConcept("/facts/write-a.md")).resolves.toBeDefined();
+    await expect(kb.readConcept("/facts/write-b.md")).resolves.toBeDefined();
+  });
 });

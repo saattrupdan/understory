@@ -636,8 +636,7 @@ export async function streamChat(
   messages: ModelMessage[],
   options: AgentOptions = {}
 ) {
-  const limits = resolveAgentLimits();
-  const state = new AgentRunContext(limits);
+  const state = AgentRunContext.unbounded();
   const ctx = await promptContext(kb, "chat", state);
   const recorder = new TraceRecorder();
   const filesChanged = new Set<string>();

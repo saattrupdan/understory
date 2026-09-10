@@ -31,19 +31,23 @@ interface BodyRead {
 export type AgentLimitsInput = Omit<AgentLimits, "maxInputChars"> &
   Partial<Pick<AgentLimits, "maxInputChars">>;
 
+const UNBOUNDED = Symbol("unbounded-agent-run");
+
 export class AgentRunContext {
-  private readonly limits: Pick<
+  private readonly limits?: Pick<
     AgentLimits,
     "maxSteps" | "maxDocumentChars" | "maxToolResultChars" | "maxSystemContextChars" | "maxInputChars"
   >;
-  private remainingChars: number;
-  private remainingSystemChars: number;
+  private remainingChars?: number;
+  private remainingSystemChars?: number;
   private systemTreeWritten = false;
   private systemTypesWritten = false;
   private readonly bodyReads = new Map<string, BodyRead>();
   private writeInputChars = 0;
 
-  constructor(limits: AgentLimitsInput) {
+  constructor(limits: AgentLimitsInput | typeof UNBOUNDED) {
+    if (limits === UNBOUNDED) return;
+
     this.limits = {
       ...limits,
       maxInputChars: limits.maxInputChars ?? DEFAULT_AGENT_MAX_INPUT_CHARS,
@@ -60,16 +64,26 @@ export class AgentRunContext {
     );
   }
 
-  get remaining(): number {
+  /** Create a chat context with no application-level data-size budgets. */
+  static unbounded(): AgentRunContext {
+    return new AgentRunContext(UNBOUNDED);
+  }
+
+  get isUnbounded(): boolean {
+    return this.limits === undefined;
+  }
+
+  get remaining(): number | undefined {
     return this.remainingChars;
   }
 
-  get remainingSystemContext(): number {
+  get remainingSystemContext(): number | undefined {
     return this.remainingSystemChars;
   }
 
   /** Budget available for useful payload before the next control notice. */
-  get payloadBudget(): number {
+  get payloadBudget(): number | undefined {
+    if (this.remainingChars === undefined) return undefined;
     return Math.max(
       0,
       this.remainingChars - EXHAUSTION_SERIALISED_LENGTH - TOOL_RESULT_CONTROL_OVERHEAD
@@ -77,7 +91,8 @@ export class AgentRunContext {
   }
 
   fits(value: unknown): boolean {
-    return serialisedLength(value) <= this.payloadBudget;
+    const budget = this.payloadBudget;
+    return budget === undefined || serialisedLength(value) <= budget;
   }
 
   /**
@@ -87,26 +102,30 @@ export class AgentRunContext {
    * replaced with a valid notice rather than returning undefined.
    */
   consume<T>(value: T): T {
+    if (this.isUnbounded) return value;
     if (value === undefined) return this.exhausted() as T;
+    const budget = this.payloadBudget!;
     const length = serialisedLength(value);
-    if (length > this.payloadBudget) return this.exhausted() as T;
-    this.remainingChars -= length;
+    if (length > budget) return this.exhausted() as T;
+    this.remainingChars! -= length;
     return value;
   }
 
   /** Consume a value, structurally fitting it against the reserved payload budget. */
   result<T>(value: T): T {
-    const budget = this.payloadBudget;
+    if (this.isUnbounded) return value;
+    const budget = this.payloadBudget!;
     const fitted = fitValue(value, budget);
     if (fitted === undefined) return this.exhausted() as T;
     const length = serialisedLength(fitted);
     if (length > budget) return this.exhausted() as T;
-    this.remainingChars -= length;
+    this.remainingChars! -= length;
     return fitted as T;
   }
 
   /** Reserve space for dynamic system context, independently of tool results. */
   systemTree(tree: string): string {
+    if (this.isUnbounded) return tree;
     const result = this.consumeSystemText(
       tree,
       SYSTEM_TREE_MARKER,
@@ -118,6 +137,7 @@ export class AgentRunContext {
 
   /** Bound the type map embedded in the system prompt. */
   systemTypes(types: string[]): string[] {
+    if (this.isUnbounded) return types;
     if (types.length === 0) {
       this.systemTypesWritten = true;
       return [];
@@ -133,12 +153,13 @@ export class AgentRunContext {
   }
 
   private consumeSystemText(value: string, marker: string, reserveAfter = 0): string {
-    if (serialisedLength(value) <= this.remainingSystemChars - reserveAfter) {
-      this.remainingSystemChars -= serialisedLength(value);
+    const remainingSystemChars = this.remainingSystemChars!;
+    if (serialisedLength(value) <= remainingSystemChars - reserveAfter) {
+      this.remainingSystemChars = remainingSystemChars - serialisedLength(value);
       return value;
     }
     const markerLength = serialisedLength(marker);
-    if (markerLength + reserveAfter > this.remainingSystemChars) {
+    if (markerLength + reserveAfter > remainingSystemChars) {
       return "";
     }
     let low = 0;
@@ -147,14 +168,14 @@ export class AgentRunContext {
     while (low <= high) {
       const middle = Math.floor((low + high) / 2);
       const candidate = value.slice(0, middle) + marker;
-      if (serialisedLength(candidate) + reserveAfter <= this.remainingSystemChars) {
+      if (serialisedLength(candidate) + reserveAfter <= remainingSystemChars) {
         best = candidate;
         low = middle + 1;
       } else {
         high = middle - 1;
       }
     }
-    this.remainingSystemChars -= serialisedLength(best);
+    this.remainingSystemChars = remainingSystemChars - serialisedLength(best);
     return best;
   }
 
@@ -166,7 +187,7 @@ export class AgentRunContext {
    * undefined merely because the run is exhausted.
    */
   exhausted(): string {
-    if (this.remainingChars >= EXHAUSTION_SERIALISED_LENGTH) {
+    if (this.remainingChars !== undefined && this.remainingChars >= EXHAUSTION_SERIALISED_LENGTH) {
       this.remainingChars -= EXHAUSTION_SERIALISED_LENGTH;
     }
     return EXHAUSTION_NOTICE;
@@ -210,19 +231,22 @@ export class AgentRunContext {
     return hash;
   }
 
-  get maxDocumentChars(): number {
-    return this.limits.maxDocumentChars;
+  get maxDocumentChars(): number | undefined {
+    return this.limits?.maxDocumentChars;
   }
 
-  get maxInputChars(): number {
-    return this.limits.maxInputChars;
+  get maxInputChars(): number | undefined {
+    return this.limits?.maxInputChars;
   }
 
-  /** Meter model-generated write arguments across all writes in this run. */
+  /** Meter model-generated write arguments across all writes in a bounded run. */
   assertWriteInput(value: unknown): void {
+    const maxInputChars = this.maxInputChars;
+    if (maxInputChars === undefined) return;
+
     const length = inputLength(value);
-    if (length > this.maxInputChars || this.writeInputChars + length > this.maxInputChars) {
-      throw new Error(`Write tool input exceeds AGENT_MAX_INPUT_CHARS (${this.maxInputChars} characters)`);
+    if (length > maxInputChars || this.writeInputChars + length > maxInputChars) {
+      throw new Error(`Write tool input exceeds AGENT_MAX_INPUT_CHARS (${maxInputChars} characters)`);
     }
     this.writeInputChars += length;
   }
