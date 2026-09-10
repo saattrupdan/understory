@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   forceCenter,
   forceCollide,
@@ -75,11 +75,15 @@ export function GraphView({
   onNavigate,
   pathsOpen,
   onPathsOpenChange,
+  expandButtonRef,
+  collapseButtonRef,
 }: {
   refreshKey: number;
   onNavigate: (path: string) => void;
   pathsOpen: boolean;
   onPathsOpenChange: (open: boolean) => void;
+  expandButtonRef: RefObject<HTMLButtonElement>;
+  collapseButtonRef: RefObject<HTMLButtonElement>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
@@ -90,24 +94,10 @@ export function GraphView({
   const [hovered, setHovered] = useState<string | null>(null);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const [traces, setTraces] = useState<TraceSummary[]>([]);
-  const queryToggleRef = useRef<HTMLButtonElement>(null);
-  const pendingQueryFocusRef = useRef<"open" | "closed" | null>(null);
   const [activeTrace, setActiveTrace] = useState<QueryTrace | null>(null);
   const [progress, setProgress] = useState(100); // path scrubber, 0–100
   const [playing, setPlaying] = useState(false);
   const dragRef = useRef<{ mode: "node" | "pan"; node?: SimNode; lastX: number; lastY: number } | null>(null);
-
-  useEffect(() => {
-    const focusTarget = pendingQueryFocusRef.current;
-    if (!focusTarget) return;
-    pendingQueryFocusRef.current = null;
-    queryToggleRef.current?.focus();
-  }, [pathsOpen]);
-
-  const togglePaths = () => {
-    pendingQueryFocusRef.current = pathsOpen ? "closed" : "open";
-    onPathsOpenChange(!pathsOpen);
-  };
 
   // Auto-play: sweep the scrubber to 100, then stop.
   useEffect(() => {
@@ -323,19 +313,31 @@ export function GraphView({
 
   return (
     <div className="relative flex h-full w-full overflow-hidden bg-zinc-950">
-      <div ref={containerRef} className="relative min-w-0 flex-1 overflow-hidden bg-zinc-950">
+      <div
+        ref={containerRef}
+        data-testid="graph-canvas"
+        className="relative min-w-0 flex-1 overflow-hidden bg-zinc-950"
+      >
       {/* Legend */}
-      <div className="absolute left-3 top-3 z-10 space-y-1 rounded-lg border border-zinc-800 bg-zinc-900/80 p-2 text-xs">
+      <div
+        data-testid="graph-legend"
+        className={`pointer-events-none absolute left-3 top-3 z-10 max-h-[calc(100%-6rem)] max-w-[calc(100%-1.5rem)] space-y-1 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/80 p-2 text-xs ${
+          pathsOpen ? "hidden lg:block" : ""
+        }`}
+      >
         {[...typeColors.entries()].map(([t, c]) => (
-          <div key={t} className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ background: c }} />
-            <span className="text-zinc-300">{t}</span>
+          <div key={t} className="flex min-w-0 items-start gap-2">
+            <span
+              className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: c }}
+            />
+            <span className="min-w-0 break-words text-zinc-300">{t}</span>
           </div>
         ))}
         {nodes.some((n) => n.links === 0) && (
-          <div className="flex items-center gap-2 border-t border-zinc-800 pt-1">
-            <span className="h-2.5 w-2.5 rounded-full border border-red-500" />
-            <span className="text-zinc-400">orphan (unlinked)</span>
+          <div className="flex min-w-0 items-start gap-2 border-t border-zinc-800 pt-1">
+            <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full border border-red-500" />
+            <span className="min-w-0 break-words text-zinc-400">orphan (unlinked)</span>
           </div>
         )}
       </div>
@@ -565,7 +567,7 @@ export function GraphView({
         hidden={!pathsOpen}
         className={
           pathsOpen
-            ? "fixed inset-y-0 right-0 z-30 flex w-72 max-w-[calc(100vw-2rem)] flex-col border-l border-zinc-800 bg-zinc-900 text-xs shadow-2xl lg:static lg:z-auto lg:w-72 lg:max-w-[36%] lg:shrink-0 lg:bg-zinc-900/90 lg:shadow-none"
+            ? "fixed bottom-0 right-0 top-14 z-30 flex w-72 max-w-[calc(100vw-2rem)] flex-col border-l border-zinc-800 bg-zinc-900 text-xs shadow-2xl lg:static lg:z-auto lg:w-72 lg:max-w-[36%] lg:shrink-0 lg:bg-zinc-900/90 lg:shadow-none"
             : undefined
         }
       >
@@ -575,9 +577,9 @@ export function GraphView({
         >
           <span className="min-w-0 flex-1 truncate font-semibold text-zinc-300">Query paths</span>
           <button
-            ref={queryToggleRef}
+            ref={collapseButtonRef}
             type="button"
-            onClick={togglePaths}
+            onClick={() => onPathsOpenChange(false)}
             aria-label={queryPathsToggleLabel(pathsOpen)}
             aria-expanded={pathsOpen}
             aria-controls="query-paths-sidebar"
@@ -602,6 +604,7 @@ export function GraphView({
             <button
               type="button"
               key={t.id}
+              data-testid="query-path-row"
               onClick={() => (activeTrace?.id === t.id ? closeTrace() : selectTrace(t.id))}
               className={`block w-full rounded px-2 py-1.5 text-left hover:bg-zinc-800 ${
                 activeTrace?.id === t.id ? "bg-zinc-800 ring-1 ring-zinc-700" : ""
@@ -628,9 +631,9 @@ export function GraphView({
 
       {!pathsOpen && (
         <button
-          ref={queryToggleRef}
+          ref={expandButtonRef}
           type="button"
-          onClick={togglePaths}
+          onClick={() => onPathsOpenChange(true)}
           aria-label={queryPathsToggleLabel(pathsOpen)}
           aria-expanded={pathsOpen}
           aria-controls="query-paths-sidebar"
@@ -639,7 +642,7 @@ export function GraphView({
             top: QUERY_PATHS_LAYOUT.toggleTop,
             height: QUERY_PATHS_LAYOUT.toggleHeight,
           }}
-          className="fixed right-3 z-40 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute"
+          className="absolute right-3 z-40 hidden whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:block"
         >
           <span aria-hidden="true">←</span>{" "}
           <span className="hidden xl:inline">Query paths</span>
