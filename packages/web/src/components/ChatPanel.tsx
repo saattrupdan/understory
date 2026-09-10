@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { authHeaders } from "../api";
 import type { AppConfig } from "../api";
+import { isNearBottom, scrollToBottom } from "./chatScroll";
 
 const WRITE_TOOLS = new Set(["write_concept", "patch_concept", "delete_concept"]);
 
@@ -35,6 +36,19 @@ export function ChatPanel({
 }) {
   const [input, setInput] = useState("");
   const [model, setModel] = useState("");
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const chatContentRef = useRef<HTMLDivElement>(null);
+  const shouldFollowRef = useRef(true);
+
+  const handleChatScroll = () => {
+    const element = chatScrollRef.current;
+    if (element) shouldFollowRef.current = isNearBottom(element);
+  };
+
+  const followLatestContent = () => {
+    const element = chatScrollRef.current;
+    if (element) scrollToBottom(element);
+  };
   const { messages, sendMessage, setMessages, status, error, clearError } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
@@ -45,6 +59,26 @@ export function ChatPanel({
   });
 
   const busy = status === "submitted" || status === "streaming";
+
+  // Keep following streamed text and tool updates while the user is already at
+  // the bottom. Once they scroll up, leave the viewport where they put it.
+  useLayoutEffect(() => {
+    if (shouldFollowRef.current) followLatestContent();
+  }, [messages, status, error]);
+
+  // Markdown rendering can change the content height after the message update
+  // (for example when syntax highlighting finishes), so message dependencies
+  // alone are not enough to keep the latest content visible.
+  useEffect(() => {
+    const content = chatContentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      if (shouldFollowRef.current) followLatestContent();
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div className="flex h-full flex-col">
@@ -78,8 +112,9 @@ export function ChatPanel({
         </div>
       </div>
 
-      <div className="flex-1 space-y-3 overflow-y-auto p-3">
-        {error && (
+      <div ref={chatScrollRef} onScroll={handleChatScroll} className="flex-1 overflow-y-auto">
+        <div ref={chatContentRef} className="space-y-3 p-3">
+          {error && (
           <div role="alert" className="rounded-lg border border-red-800/70 bg-red-950/40 px-3 py-2 text-sm text-red-200">
             <p>{chatErrorMessage(error)}</p>
             <div className="mt-2 flex gap-2 text-xs">
@@ -162,7 +197,8 @@ export function ChatPanel({
             })}
           </div>
         ))}
-        {busy && <div className="animate-pulse text-xs text-zinc-500">agent working…</div>}
+          {busy && <div className="animate-pulse text-xs text-zinc-500">agent working…</div>}
+        </div>
       </div>
 
       <form
