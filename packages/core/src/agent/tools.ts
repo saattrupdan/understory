@@ -26,8 +26,8 @@ function conceptPathSchema(maxChars = MAX_CONCEPT_PATH_CHARS) {
     .describe('Canonical bundle-relative path starting with exactly one "/", ending in .md');
 }
 
-function frontmatterSchema(maxInputChars: number) {
-  return z
+function frontmatterSchema(maxInputChars?: number) {
+  const schema = z
     .object({
       type: z
         .string()
@@ -39,13 +39,19 @@ function frontmatterSchema(maxInputChars: number) {
       resource: z.string().max(2_048).optional().describe("Canonical URI of the underlying asset"),
       tags: z.array(z.string().max(MAX_TAG_CHARS)).max(MAX_TAGS).optional(),
     })
-    .passthrough()
-    .superRefine((value, ctx) => {
-      if (inputLength(value) > maxInputChars) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "frontmatter exceeds the input limit" });
-      }
-    })
-    .describe("YAML frontmatter. Additional producer-defined keys are allowed.");
+    .passthrough();
+  const bounded =
+    maxInputChars === undefined
+      ? schema
+      : schema.superRefine((value, ctx) => {
+          if (inputLength(value) > maxInputChars) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "frontmatter exceeds the input limit",
+            });
+          }
+        });
+  return bounded.describe("YAML frontmatter. Additional producer-defined keys are allowed.");
 }
 
 const logSummary = z
@@ -66,13 +72,16 @@ export interface ReadPage {
   next_offset: number | null;
 }
 
-function readPage(concept: Concept, offset: number, maxChars: number): ReadPage {
+function readPage(concept: Concept, offset: number, maxChars?: number): ReadPage {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > concept.body.length) {
     throw new Error(
       `Invalid offset ${offset} for ${concept.path}; expected an integer from 0 to ${concept.body.length}`
     );
   }
-  const body = concept.body.slice(offset, offset + maxChars);
+  const body =
+    maxChars === undefined
+      ? concept.body.slice(offset)
+      : concept.body.slice(offset, offset + maxChars);
   const nextOffset = offset + body.length;
   const truncated = nextOffset < concept.body.length;
   return {
@@ -298,7 +307,9 @@ export function buildReadTools(
         // the model's next step is to read plausible concepts, not give up.
         // Paths and types only: this lands in the transcript at every missed
         // step, and descriptions would triple its cost for no navigation gain.
-        const tree = boundText(formatTree(await kb.listTree(), 0, false), state.payloadBudget);
+        const fullTree = formatTree(await kb.listTree(), 0, false);
+        const budget = state.payloadBudget;
+        const tree = budget === undefined ? fullTree : boundText(fullTree, budget);
         return state.result({
           hits: [],
           notice:
@@ -308,8 +319,9 @@ export function buildReadTools(
       },
     }),
     read_concept: tool({
-      description:
-        "Read one concept's frontmatter and a bounded body page. If truncated, use next_offset to page through the body before replacing it.",
+      description: state.isUnbounded
+        ? "Read one concept's frontmatter and complete body."
+        : "Read one concept's frontmatter and a bounded body page. If truncated, use next_offset to page through the body before replacing it.",
       inputSchema: z.object({
         path: conceptPathSchema(),
         offset: z.number().int().min(0).default(0).describe("Body character offset"),
@@ -330,7 +342,9 @@ export function buildReadTools(
           if (!isExpectedReadError(error)) throw error;
           return state.result(readError(c.path, error));
         }
-        const bounded = boundedReadPage(page, page.body.length, state.payloadBudget, state);
+        const budget = state.payloadBudget;
+        const bounded =
+          budget === undefined ? page : boundedReadPage(page, page.body.length, budget, state);
         const result = bounded === undefined ? state.exhausted() : state.consume(bounded);
         if (isReadPage(result)) {
           state.recordBodyPage(c.path, offset, c.body, page.body, result.body);
@@ -339,9 +353,10 @@ export function buildReadTools(
       },
     }),
     read_concepts: tool({
-      description:
-        "Read several concepts in one call with frontmatter retained and a bounded aggregate body. " +
-        "Each body may be paged with read_concept if its metadata says truncated.",
+      description: state.isUnbounded
+        ? "Read several concepts in one call with frontmatter and complete bodies retained."
+        : "Read several concepts in one call with frontmatter retained and a bounded aggregate body. " +
+          "Each body may be paged with read_concept if its metadata says truncated.",
       inputSchema: z.object({
         paths: z.array(conceptPathSchema()).min(1).max(12).describe("Concept paths to read together"),
       }),
@@ -382,11 +397,31 @@ export function buildReadTools(
           returned_body_chars: 0,
           total_body_chars: totalChars,
           truncated: false,
-          max_body_chars: state.maxDocumentChars,
-          continuation:
-            "Page included bodies with each page's next_offset; retry omitted paths in a fresh request.",
+          max_body_chars: state.maxDocumentChars ?? null,
+          continuation: state.isUnbounded
+            ? "All available concept bodies were returned in full."
+            : "Page included bodies with each page's next_offset; retry omitted paths in a fresh request.",
         };
-        if (JSON.stringify(base).length > state.payloadBudget) return state.exhausted();
+        const budget = state.payloadBudget;
+        if (budget === undefined) {
+          for (const requested of paths) {
+            const page = sourcePages.get(requested);
+            if (!page) continue;
+            base.read.push(page);
+            base.returned_body_chars += page.body.length;
+          }
+          base.truncated = base.missing.length > 0;
+          const result = state.consume(base);
+          for (const page of result.read) {
+            const source = sourceByCanonicalPath.get(page.path);
+            const sourcePage = sourcePagesByCanonicalPath.get(page.path);
+            if (source && sourcePage) {
+              state.recordBodyPage(source.path, 0, source.body, sourcePage.body, page.body);
+            }
+          }
+          return result;
+        }
+        if (JSON.stringify(base).length > budget) return state.exhausted();
 
         for (const requested of paths) {
           const source = sourceConcepts.get(requested);
@@ -397,7 +432,7 @@ export function buildReadTools(
           let best: ReadPage | undefined;
           while (low <= high) {
             const middle = Math.floor((low + high) / 2);
-            const candidate = boundedReadPage(page, middle, state.payloadBudget, state);
+            const candidate = boundedReadPage(page, middle, budget, state);
             if (!candidate) {
               high = middle - 1;
               continue;
@@ -407,7 +442,7 @@ export function buildReadTools(
               read: [...base.read, candidate],
               returned_body_chars: base.returned_body_chars + candidate.body.length,
             };
-            if (JSON.stringify(result).length <= state.payloadBudget) {
+            if (JSON.stringify(result).length <= budget) {
               best = candidate;
               low = middle + 1;
             } else {
@@ -449,7 +484,9 @@ export function buildReadTools(
       inputSchema: z.object({}),
       execute: async () => {
         trace?.record("list_directory", "", []);
-        return state.result(boundText(formatTree(await kb.listTree(), 0, false), state.payloadBudget));
+        const tree = formatTree(await kb.listTree(), 0, false);
+        const budget = state.payloadBudget;
+        return state.result(budget === undefined ? tree : boundText(tree, budget));
       },
     }),
     lint_knowledge: tool({
@@ -496,13 +533,23 @@ export function buildWriteTools(
 ) {
   const maxInputChars = state.maxInputChars;
   const boundedPath = conceptPathSchema(maxInputChars);
-  const boundedLogSummary = logSummary.max(maxInputChars);
+  const boundedLogSummary =
+    maxInputChars === undefined ? logSummary : logSummary.max(maxInputChars);
   const boundedFrontmatter = frontmatterSchema(maxInputChars);
-  const boundedPatchFrontmatter = z.record(z.unknown()).superRefine((value, ctx) => {
-    if (inputLength(value) > maxInputChars) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "frontmatter exceeds the input limit" });
-    }
-  });
+  const patchFrontmatter = z.record(z.unknown());
+  const boundedPatchFrontmatter =
+    maxInputChars === undefined
+      ? patchFrontmatter
+      : patchFrontmatter.superRefine((value, ctx) => {
+          if (inputLength(value) > maxInputChars) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "frontmatter exceeds the input limit",
+            });
+          }
+        });
+  const writeBody =
+    maxInputChars === undefined ? z.string() : z.string().max(maxInputChars);
 
   return {
     write_concept: tool({
@@ -511,7 +558,7 @@ export function buildWriteTools(
       inputSchema: z.object({
         path: boundedPath,
         frontmatter: boundedFrontmatter,
-        body: z.string().max(maxInputChars).describe("Markdown body (no frontmatter block)"),
+        body: writeBody.describe("Markdown body (no frontmatter block)"),
         log_summary: boundedLogSummary,
       }),
       execute: async ({ path, frontmatter, body, log_summary }: WriteConceptArgs) => {
@@ -537,12 +584,10 @@ export function buildWriteTools(
               .string()
               .min(1)
               .describe("Top-level heading name, e.g. 'Schema'. Must be non-empty — to replace the whole body use replace_body instead."),
-            content: z.string().max(maxInputChars).describe("New content for that section"),
+            content: writeBody.describe("New content for that section"),
           })
           .optional(),
-        replace_body: z
-          .string()
-          .max(maxInputChars)
+        replace_body: writeBody
           .optional()
           .describe("Replace the entire markdown body (frontmatter untouched). Use for restructuring; prefer replace_section for targeted edits."),
         log_summary: boundedLogSummary,
