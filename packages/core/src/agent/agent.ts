@@ -639,13 +639,14 @@ export async function streamChat(
   const limits = resolveAgentLimits();
   assertInputWithinLimit(
     messages,
-    limits.maxInputChars,
-    "Chat history"
+    limits.chatMaxInputChars,
+    "Chat history",
+    "AGENT_CHAT_MAX_INPUT_CHARS"
   );
   const state = new AgentRunContext(limits);
   const ctx = await promptContext(kb, "chat", state);
   const recorder = new TraceRecorder();
-  const maxSteps = limits.maxSteps;
+  const maxSteps = limits.chatMaxSteps;
   const filesChanged = new Set<string>();
   let modelChain: string[] = [];
   // The user turn that started this run, for the trace record.
