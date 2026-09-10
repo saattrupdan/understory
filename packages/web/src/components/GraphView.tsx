@@ -12,11 +12,7 @@ import {
   recenterGraphAfterResize,
   type GraphViewportSize,
 } from "./graphViewport";
-import {
-  QUERY_PATHS_DEFAULT_OPEN,
-  QUERY_PATHS_LAYOUT,
-  queryPathsToggleLabel,
-} from "./queryPathsLayout";
+import { QUERY_PATHS_LAYOUT, queryPathsToggleLabel } from "./queryPathsLayout";
 
 interface SimNode {
   path: string;
@@ -77,9 +73,13 @@ function traceVisits(trace: QueryTrace): { path: string; seq: number; write: boo
 export function GraphView({
   refreshKey,
   onNavigate,
+  pathsOpen,
+  onPathsOpenChange,
 }: {
   refreshKey: number;
   onNavigate: (path: string) => void;
+  pathsOpen: boolean;
+  onPathsOpenChange: (open: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
@@ -90,11 +90,24 @@ export function GraphView({
   const [hovered, setHovered] = useState<string | null>(null);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const [traces, setTraces] = useState<TraceSummary[]>([]);
-  const [pathsOpen, setPathsOpen] = useState(QUERY_PATHS_DEFAULT_OPEN);
+  const queryToggleRef = useRef<HTMLButtonElement>(null);
+  const pendingQueryFocusRef = useRef<"open" | "closed" | null>(null);
   const [activeTrace, setActiveTrace] = useState<QueryTrace | null>(null);
   const [progress, setProgress] = useState(100); // path scrubber, 0–100
   const [playing, setPlaying] = useState(false);
   const dragRef = useRef<{ mode: "node" | "pan"; node?: SimNode; lastX: number; lastY: number } | null>(null);
+
+  useEffect(() => {
+    const focusTarget = pendingQueryFocusRef.current;
+    if (!focusTarget) return;
+    pendingQueryFocusRef.current = null;
+    queryToggleRef.current?.focus();
+  }, [pathsOpen]);
+
+  const togglePaths = () => {
+    pendingQueryFocusRef.current = pathsOpen ? "closed" : "open";
+    onPathsOpenChange(!pathsOpen);
+  };
 
   // Auto-play: sweep the scrubber to 100, then stop.
   useEffect(() => {
@@ -557,10 +570,24 @@ export function GraphView({
         }
       >
         <div
-          className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 pr-14"
+          className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2"
           style={{ minHeight: QUERY_PATHS_LAYOUT.headerHeight }}
         >
-          <span className="font-semibold text-zinc-300">Query paths</span>
+          <span className="min-w-0 flex-1 truncate font-semibold text-zinc-300">Query paths</span>
+          <button
+            ref={queryToggleRef}
+            type="button"
+            onClick={togglePaths}
+            aria-label={queryPathsToggleLabel(pathsOpen)}
+            aria-expanded={pathsOpen}
+            aria-controls="query-paths-sidebar"
+            title={queryPathsToggleLabel(pathsOpen)}
+            style={{ height: QUERY_PATHS_LAYOUT.toggleHeight }}
+            className="shrink-0 rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+          >
+            <span aria-hidden="true">→</span>{" "}
+            <span className="hidden xl:inline">Query paths</span>
+          </button>
         </div>
         <div
           className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2"
@@ -599,22 +626,25 @@ export function GraphView({
         </div>
       </aside>
 
-      <button
-        type="button"
-        onClick={() => setPathsOpen((open) => !open)}
-        aria-label={queryPathsToggleLabel(pathsOpen)}
-        aria-expanded={pathsOpen}
-        aria-controls="query-paths-sidebar"
-        title={queryPathsToggleLabel(pathsOpen)}
-        style={{
-          top: QUERY_PATHS_LAYOUT.toggleTop,
-          height: QUERY_PATHS_LAYOUT.toggleHeight,
-        }}
-        className="fixed right-3 z-40 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute"
-      >
-        <span aria-hidden="true">{pathsOpen ? "→" : "←"}</span>{" "}
-        <span className="hidden lg:inline">Query paths</span>
-      </button>
+      {!pathsOpen && (
+        <button
+          ref={queryToggleRef}
+          type="button"
+          onClick={togglePaths}
+          aria-label={queryPathsToggleLabel(pathsOpen)}
+          aria-expanded={pathsOpen}
+          aria-controls="query-paths-sidebar"
+          title={queryPathsToggleLabel(pathsOpen)}
+          style={{
+            top: QUERY_PATHS_LAYOUT.toggleTop,
+            height: QUERY_PATHS_LAYOUT.toggleHeight,
+          }}
+          className="fixed right-3 z-40 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute"
+        >
+          <span aria-hidden="true">←</span>{" "}
+          <span className="hidden xl:inline">Query paths</span>
+        </button>
+      )}
     </div>
   );
 }

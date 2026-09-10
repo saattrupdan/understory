@@ -5,6 +5,8 @@ import { ConceptView } from "./components/ConceptView";
 import { LogView } from "./components/LogView";
 import { ChatPanel } from "./components/ChatPanel";
 import { GraphView } from "./components/GraphView";
+import { QUERY_PATHS_DEFAULT_OPEN } from "./components/queryPathsLayout";
+import { sidebarControlLayout } from "./components/sidebarLayout";
 
 type View =
   | { kind: "concept"; path: string }
@@ -22,7 +24,9 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [queryPathsOpen, setQueryPathsOpen] = useState(QUERY_PATHS_DEFAULT_OPEN);
   const chatExpandRef = useRef<HTMLButtonElement>(null);
+  const chatToggleRef = useRef<HTMLButtonElement>(null);
   const chatCollapseRef = useRef<HTMLButtonElement>(null);
   const pendingChatFocusRef = useRef<"expand" | "collapse" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,11 +60,20 @@ export default function App() {
   }, [view]);
 
   useEffect(() => {
+    if (view.kind !== "graph") setQueryPathsOpen(QUERY_PATHS_DEFAULT_OPEN);
+  }, [view.kind]);
+
+  useEffect(() => {
     const focusTarget = pendingChatFocusRef.current;
     if (!focusTarget) return;
     pendingChatFocusRef.current = null;
-    if (focusTarget === "collapse") chatCollapseRef.current?.focus();
-    else chatExpandRef.current?.focus();
+    if (focusTarget === "collapse") {
+      chatCollapseRef.current?.focus();
+    } else if (chatExpandRef.current?.getClientRects().length) {
+      chatExpandRef.current.focus();
+    } else {
+      chatToggleRef.current?.focus();
+    }
   }, [chatOpen]);
 
   const openChat = () => {
@@ -99,6 +112,12 @@ export default function App() {
     setError(null);
     setQuery("");
   }, []);
+
+  const controlLayout = sidebarControlLayout({
+    chatOpen,
+    graphVisible: view.kind === "graph",
+    queryPathsOpen,
+  });
 
   if (needsToken) {
     return (
@@ -204,11 +223,9 @@ export default function App() {
             Graph
           </button>
           <button
+            ref={chatToggleRef}
             type="button"
-            onClick={() => {
-              if (chatOpen) setChatOpen(false);
-              else openChat();
-            }}
+            onClick={chatOpen ? collapseChat : openChat}
             aria-expanded={chatOpen}
             aria-controls="chat-sidebar"
             className="flex-1 border-l border-zinc-800 px-3 py-2 text-zinc-400 hover:bg-zinc-800"
@@ -231,9 +248,14 @@ export default function App() {
         )}
         {!error && view.kind === "log" && <LogView entries={log} onNavigate={openConcept} />}
         {!error && view.kind === "graph" && (
-          <GraphView refreshKey={graphRefreshKey} onNavigate={openConcept} />
+          <GraphView
+            refreshKey={graphRefreshKey}
+            onNavigate={openConcept}
+            pathsOpen={queryPathsOpen}
+            onPathsOpenChange={setQueryPathsOpen}
+          />
         )}
-        {!chatOpen && (
+        {(controlLayout.showChatLauncher || controlLayout.showMobileChatLauncher) && (
           <button
             type="button"
             ref={chatExpandRef}
@@ -242,9 +264,13 @@ export default function App() {
             aria-expanded={false}
             aria-controls="chat-sidebar"
             title="Expand chat sidebar"
-            className={`fixed right-3 z-20 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute ${
-              view.kind === "graph" ? "top-14" : "top-3"
-            }`}
+            className={
+              controlLayout.showMobileChatLauncher
+                ? "fixed left-3 top-3 z-40 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:hidden"
+                : `fixed right-3 z-20 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute ${
+                    view.kind === "graph" ? "top-14" : "top-3"
+                  }`
+            }
           >
             <span aria-hidden="true">←</span> Chat
           </button>
