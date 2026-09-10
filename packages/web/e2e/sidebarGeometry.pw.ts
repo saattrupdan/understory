@@ -117,10 +117,69 @@ async function expectHitTarget(locator: Locator) {
   expect(hit).toBe(true);
 }
 
-async function graphNodePaths(page: Page): Promise<string[]> {
+type GraphNodeGeometry = Record<string, { x: number; y: number }>;
+
+async function graphNodeGeometry(page: Page): Promise<GraphNodeGeometry> {
   return page.getByTestId("graph-node").evaluateAll((nodes) =>
-    nodes.map((node) => node.getAttribute("data-node-path") ?? "")
+    Object.fromEntries(
+      nodes.map((node) => {
+        const box = node.getBoundingClientRect();
+        return [
+          node.getAttribute("data-node-path") ?? "",
+          { x: box.left + box.width / 2, y: box.top + box.height / 2 },
+        ];
+      })
+    )
   );
+}
+
+async function settledGraphNodeGeometry(page: Page): Promise<GraphNodeGeometry> {
+  let previous = await graphNodeGeometry(page);
+  let stableSamples = 0;
+
+  for (let sample = 0; sample < 80; sample += 1) {
+    await page.waitForTimeout(100);
+    const current = await graphNodeGeometry(page);
+    const stable = Object.keys(previous).every(
+      (path) =>
+        Math.abs(current[path].x - previous[path].x) <= 0.25 &&
+        Math.abs(current[path].y - previous[path].y) <= 0.25
+    );
+    stableSamples = stable ? stableSamples + 1 : 0;
+    if (stableSamples >= 3) return current;
+    previous = current;
+  }
+
+  throw new Error("Graph nodes did not settle");
+}
+
+function expectRelativeGraphPositions(
+  before: GraphNodeGeometry,
+  after: GraphNodeGeometry,
+  tolerance = 3
+) {
+  const paths = Object.keys(before).sort();
+  expect(Object.keys(after).sort()).toEqual(paths);
+  for (let i = 0; i < paths.length; i += 1) {
+    for (let j = i + 1; j < paths.length; j += 1) {
+      const first = paths[i];
+      const second = paths[j];
+      expect(
+        Math.abs(
+          after[first].x - after[second].x - (before[first].x - before[second].x)
+        )
+      ).toBeLessThanOrEqual(tolerance);
+      expect(
+        Math.abs(
+          after[first].y - after[second].y - (before[first].y - before[second].y)
+        )
+      ).toBeLessThanOrEqual(tolerance);
+    }
+  }
+}
+
+async function expectCanvasWidth(canvas: Locator, expected: number) {
+  expect(Math.abs((await rect(canvas)).width - expected)).toBeLessThanOrEqual(1);
 }
 
 for (const viewport of VIEWPORTS) {
@@ -151,7 +210,7 @@ for (const viewport of VIEWPORTS) {
 
     await expect(legend.getByText("Long concept type")).toBeVisible();
     await expect(page.getByTestId("graph-node")).toHaveCount(3);
-    const initialNodePaths = await graphNodePaths(page);
+    const initialNodeGeometry = await settledGraphNodeGeometry(page);
     const initialCanvasWidth = (await rect(canvas)).width;
 
     await expect(queryLauncher).toHaveAttribute("aria-expanded", "false");
@@ -193,6 +252,9 @@ for (const viewport of VIEWPORTS) {
     await expectContained(firstQueryRow, querySidebar);
     await expectNoOverlap(queryCollapse, firstQueryRow);
     await expectNoOverlap(chatRoute, firstQueryRow);
+    const queryOpenNodeGeometry = await settledGraphNodeGeometry(page);
+    const queryOpenCanvasWidth = (await rect(canvas)).width;
+    expectRelativeGraphPositions(initialNodeGeometry, queryOpenNodeGeometry);
 
     if (mobile) {
       await expect(legend).toBeHidden();
@@ -200,8 +262,9 @@ for (const viewport of VIEWPORTS) {
       await expectContained(mobileChatToggle, rail);
       await expect(mobileQueryToggle).toHaveAttribute("aria-expanded", "true");
       await expectHitTarget(mobileQueryToggle);
+      await expectCanvasWidth(canvas, initialCanvasWidth);
     } else {
-      expect((await rect(canvas)).width).toBeLessThan(initialCanvasWidth);
+      expect(queryOpenCanvasWidth).toBeLessThan(initialCanvasWidth);
       await expectHitTarget(queryCollapse);
     }
 
@@ -224,14 +287,20 @@ for (const viewport of VIEWPORTS) {
     await expectContained(chatHeading, chatSidebar);
     await expectContained(chatCollapse, chatSidebar);
     await expectContained(chatInput, chatSidebar);
+    const bothOpenNodeGeometry = await settledGraphNodeGeometry(page);
+    const bothOpenCanvasWidth = (await rect(canvas)).width;
+    expectRelativeGraphPositions(queryOpenNodeGeometry, bothOpenNodeGeometry);
 
     if (mobile) {
       // Both panels stay mounted in the both-open state, but the rail is above
       // the full-screen chat overlay and is the unambiguous panel switch.
       await expect(mobileQueryToggle).toHaveAttribute("aria-expanded", "true");
       await expect(mobileChatToggle).toHaveAttribute("aria-expanded", "true");
+      await expectNoOverlap(rail, chatHeading);
+      await expectNoOverlap(rail, chatCollapse);
       await expectHitTarget(mobileQueryToggle);
       await expectHitTarget(mobileChatToggle);
+      await expectHitTarget(chatCollapse);
       const queryIsOccluded = await firstQueryRow.evaluate((element) => {
         const box = element.getBoundingClientRect();
         const target = document.elementFromPoint(
@@ -249,39 +318,67 @@ for (const viewport of VIEWPORTS) {
       await expect(mobileChatToggle).toBeFocused();
       await expect(querySidebar).toBeVisible();
       await expectHitTarget(firstQueryRow);
+      const queryAfterChatCollapse = await settledGraphNodeGeometry(page);
+      expectRelativeGraphPositions(bothOpenNodeGeometry, queryAfterChatCollapse);
+      await expectCanvasWidth(canvas, queryOpenCanvasWidth);
+
       await mobileQueryToggle.click();
       await expect(querySidebar).toBeHidden();
       await expect(mobileQueryToggle).toHaveAttribute("aria-expanded", "false");
       await expect(mobileQueryToggle).toBeFocused();
+      const closedAfterQueryCollapse = await settledGraphNodeGeometry(page);
+      expectRelativeGraphPositions(queryAfterChatCollapse, closedAfterQueryCollapse);
+      await expectCanvasWidth(canvas, initialCanvasWidth);
 
       // The chat-only overlay remains switchable from the same rail.
       await mobileChatToggle.click();
       await expect(chatSidebar).toBeVisible();
       await expect(mobileChatToggle).toBeFocused();
       await expectHitTarget(mobileChatToggle);
+      await expectNoOverlap(rail, chatHeading);
+      await expectNoOverlap(rail, chatCollapse);
+      await expectHitTarget(chatCollapse);
+      const chatOnlyNodeGeometry = await settledGraphNodeGeometry(page);
+      expectRelativeGraphPositions(closedAfterQueryCollapse, chatOnlyNodeGeometry);
       await mobileChatToggle.click();
       await expect(chatSidebar).toBeHidden();
       await expect(mobileChatToggle).toBeFocused();
+      const closedAfterChatCollapse = await settledGraphNodeGeometry(page);
+      expectRelativeGraphPositions(chatOnlyNodeGeometry, closedAfterChatCollapse);
+      await expectCanvasWidth(canvas, initialCanvasWidth);
     } else {
       await expectNoOverlap(querySidebar, chatSidebar);
-      expect((await rect(canvas)).width).toBeLessThan(initialCanvasWidth);
+      expect(bothOpenCanvasWidth).toBeLessThan(initialCanvasWidth);
       await expectHitTarget(chatCollapse);
       await chatCollapse.click();
       await expect(chatSidebar).toBeHidden();
       await expect(chatRoute).toBeFocused();
+      const queryAfterChatCollapse = await settledGraphNodeGeometry(page);
+      expectRelativeGraphPositions(bothOpenNodeGeometry, queryAfterChatCollapse);
+      await expectCanvasWidth(canvas, queryOpenCanvasWidth);
+
       await queryCollapse.click();
       await expect(querySidebar).toBeHidden();
       await expect(queryLauncher).toBeFocused();
       await expect(legend).toBeVisible();
+      const closedAfterQueryCollapse = await settledGraphNodeGeometry(page);
+      expectRelativeGraphPositions(queryAfterChatCollapse, closedAfterQueryCollapse);
+      await expectCanvasWidth(canvas, initialCanvasWidth);
 
       await chatLauncher.click();
       await expect(chatSidebar).toBeVisible();
+      const chatOnlyNodeGeometry = await settledGraphNodeGeometry(page);
+      expectRelativeGraphPositions(closedAfterQueryCollapse, chatOnlyNodeGeometry);
       expect((await rect(canvas)).width).toBeLessThan(initialCanvasWidth);
       await chatSidebar.getByRole("button", { name: "Collapse chat sidebar" }).click();
       await expect(chatSidebar).toBeHidden();
+      const closedAfterChatCollapse = await settledGraphNodeGeometry(page);
+      expectRelativeGraphPositions(chatOnlyNodeGeometry, closedAfterChatCollapse);
+      await expectCanvasWidth(canvas, initialCanvasWidth);
     }
 
-    expect(await graphNodePaths(page)).toEqual(initialNodePaths);
+    expectRelativeGraphPositions(initialNodeGeometry, await graphNodeGeometry(page));
+    await expectCanvasWidth(canvas, initialCanvasWidth);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
       viewport.width
     );

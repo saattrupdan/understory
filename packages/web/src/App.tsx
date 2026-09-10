@@ -345,7 +345,7 @@ export default function App() {
         hidden={!chatOpen}
         className={
           chatOpen
-            ? "fixed inset-0 z-40 w-full border-l border-zinc-800 bg-zinc-950 lg:static lg:z-auto lg:w-96 lg:max-w-[35vw] lg:shrink-0"
+            ? "fixed inset-x-0 bottom-0 top-14 z-40 w-full border-l border-zinc-800 bg-zinc-950 lg:static lg:z-auto lg:w-96 lg:max-w-[35vw] lg:shrink-0"
             : undefined
         }
       >
