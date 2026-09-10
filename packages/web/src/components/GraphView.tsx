@@ -569,7 +569,7 @@ export function GraphView({
         hidden={!pathsOpen}
         className={
           pathsOpen
-            ? "fixed bottom-0 right-0 top-14 z-30 flex w-72 max-w-[calc(100vw-2rem)] flex-col border-l border-zinc-800 bg-zinc-900 text-xs shadow-2xl lg:static lg:z-auto lg:w-72 lg:max-w-[36%] lg:shrink-0 lg:bg-zinc-900/90 lg:shadow-none"
+            ? "fixed bottom-0 right-12 top-0 z-30 flex w-72 max-w-[calc(100vw-3rem)] flex-col border-l border-zinc-800 bg-zinc-900 text-xs shadow-2xl lg:static lg:z-auto lg:mr-12 lg:w-72 lg:max-w-[36%] lg:shrink-0 lg:bg-zinc-900/90 lg:shadow-none"
             : undefined
         }
       >
@@ -644,7 +644,7 @@ export function GraphView({
             top: QUERY_PATHS_LAYOUT.toggleTop,
             height: QUERY_PATHS_LAYOUT.toggleHeight,
           }}
-          className="absolute right-3 z-40 hidden whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:block"
+          className="absolute right-14 z-40 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:block"
         >
           <span aria-hidden="true">←</span>{" "}
           <span className="hidden xl:inline">Query paths</span>
