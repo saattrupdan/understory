@@ -109,7 +109,9 @@ export default function App() {
     pendingMemoryFocusRef.current = "collapse";
     if (isNarrowViewport()) {
       pendingChatFocusRef.current = null;
+      pendingQueryFocusRef.current = null;
       setChatOpen(false);
+      setQueryPathsOpen(false);
     }
     setMemoryOpen(true);
   };
@@ -139,7 +141,9 @@ export default function App() {
     pendingQueryFocusRef.current = open ? "collapse" : "expand";
     if (open && isNarrowViewport()) {
       pendingChatFocusRef.current = null;
+      pendingMemoryFocusRef.current = null;
       setChatOpen(false);
+      setMemoryOpen(false);
     }
     setQueryPathsOpen(open);
   };

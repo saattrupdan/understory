@@ -121,10 +121,20 @@ for (const viewport of VIEWPORTS) {
 
     await expect(page.getByTestId("graph-node")).toHaveCount(3);
     await expect(page.getByTestId("graph-legend")).toBeVisible();
+    const querySidebar = page.locator("#query-paths-sidebar");
+    const queryCollapse = querySidebar.getByRole("button", {
+      name: "Collapse query paths sidebar",
+    });
+
     await expect(memorySidebar).toBeHidden();
+    await expect(memorySidebar).toHaveAttribute("aria-hidden", "true");
     await expect(chatSidebar).toBeHidden();
+    await expect(chatSidebar).toHaveAttribute("aria-hidden", "true");
+    await expect(querySidebar).toBeHidden();
+    await expect(querySidebar).toHaveAttribute("aria-hidden", "true");
     await expect(memoryLauncher).toHaveAttribute("aria-expanded", "false");
     await expect(chatLauncher).toHaveAttribute("aria-expanded", "false");
+    await expect(queryLauncher).toHaveAttribute("aria-expanded", "false");
     await expectHitTarget(memoryLauncher);
     await expectHitTarget(chatLauncher);
     await expectHitTarget(queryLauncher);
@@ -185,12 +195,12 @@ for (const viewport of VIEWPORTS) {
     await expectWidth(canvas, initialWidth);
 
     await queryLauncher.click();
-    const querySidebar = page.locator("#query-paths-sidebar");
-    const queryCollapse = querySidebar.getByRole("button", {
-      name: "Collapse query paths sidebar",
-    });
     await expect(querySidebar).toBeVisible();
+    await expect(querySidebar).toHaveAttribute("aria-hidden", "false");
+    await expect(queryCollapse).toHaveAttribute("aria-expanded", "true");
     await expect(queryCollapse).toBeFocused();
+    await expect(page.getByTestId("query-path-row")).toBeVisible();
+    await expectHitTarget(page.getByTestId("query-path-row"));
     await expectNoOverlap(queryCollapse, memoryLauncher);
     await expectNoOverlap(queryCollapse, chatLauncher);
     await expectNoOverlap(querySidebar, chatLauncher);
@@ -203,8 +213,50 @@ for (const viewport of VIEWPORTS) {
 
     await queryCollapse.click();
     await expect(querySidebar).toBeHidden();
+    await expect(querySidebar).toHaveAttribute("aria-hidden", "true");
+    await expect(queryLauncher).toHaveAttribute("aria-expanded", "false");
     await expect(queryLauncher).toBeFocused();
     await expectWidth(canvas, initialWidth);
+
+    if (!desktop) {
+      // Narrow panels are mutually exclusive: opening paths closes memory.
+      await memoryLauncher.click();
+      const memoryCollapse = page.getByRole("button", {
+        name: "Collapse memory sidebar",
+      });
+      await expect(memorySidebar).toBeVisible();
+      await expect(memorySidebar).toHaveAttribute("aria-hidden", "false");
+      await expect(memoryCollapse).toHaveAttribute("aria-expanded", "true");
+      await expect(memoryCollapse).toBeFocused();
+
+      await queryLauncher.click();
+      await expect(memorySidebar).toBeHidden();
+      await expect(memorySidebar).toHaveAttribute("aria-hidden", "true");
+      await expect(memoryLauncher).toHaveAttribute("aria-expanded", "false");
+      await expect(querySidebar).toBeVisible();
+      await expect(querySidebar).toHaveAttribute("aria-hidden", "false");
+      await expect(queryCollapse).toHaveAttribute("aria-expanded", "true");
+      await expect(queryCollapse).toBeFocused();
+      await expectHitTarget(queryCollapse);
+      await expectHitTarget(page.getByTestId("query-path-row"));
+
+      // And opening memory closes paths without focusing the hidden collapse.
+      await queryCollapse.click();
+      await queryLauncher.click();
+      await expect(queryCollapse).toBeFocused();
+      await expectHitTarget(page.getByTestId("query-path-row"));
+
+      await memoryLauncher.click();
+      await expect(querySidebar).toBeHidden();
+      await expect(querySidebar).toHaveAttribute("aria-hidden", "true");
+      await expect(queryLauncher).toHaveAttribute("aria-expanded", "false");
+      await expect(memorySidebar).toBeVisible();
+      await expect(memorySidebar).toHaveAttribute("aria-hidden", "false");
+      await expect(memoryCollapse).toHaveAttribute("aria-expanded", "true");
+      await expect(memoryCollapse).toBeFocused();
+      await expectHitTarget(memoryCollapse);
+    }
+
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
       viewport.width
     );
