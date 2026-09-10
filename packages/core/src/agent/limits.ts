@@ -2,9 +2,6 @@ import { positiveIntegerEnv } from "../util/env.js";
 
 export const DEFAULT_AGENT_MAX_STEPS = 8;
 export const MIN_AGENT_MAX_STEPS = 2;
-/** Chat is interactive and may need more read/write rounds than one-shot calls. */
-export const DEFAULT_AGENT_CHAT_MAX_STEPS = 32;
-export const MIN_AGENT_CHAT_MAX_STEPS = 2;
 export const DEFAULT_AGENT_MAX_DOCUMENT_CHARS = 12_000;
 export const DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS = 24_000;
 export const DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS = 24_000;
@@ -27,7 +24,6 @@ export const MIN_AGENT_MAX_SYSTEM_CONTEXT_CHARS = 240;
 
 export interface AgentLimits {
   maxSteps: number;
-  chatMaxSteps: number;
   maxDocumentChars: number;
   maxToolResultChars: number;
   maxSystemContextChars: number;
@@ -63,10 +59,6 @@ export function resolveAgentLimits(env: NodeJS.ProcessEnv = process.env): AgentL
     maxSteps: Math.max(
       MIN_AGENT_MAX_STEPS,
       positiveIntegerEnv(env.AGENT_MAX_STEPS, DEFAULT_AGENT_MAX_STEPS)
-    ),
-    chatMaxSteps: Math.max(
-      MIN_AGENT_CHAT_MAX_STEPS,
-      positiveIntegerEnv(env.AGENT_CHAT_MAX_STEPS, DEFAULT_AGENT_CHAT_MAX_STEPS)
     ),
     maxDocumentChars: positiveIntegerEnv(
       env.AGENT_MAX_DOCUMENT_CHARS,

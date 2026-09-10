@@ -55,10 +55,8 @@ describe("agent input bounds", () => {
     expect(generateTextMock).toHaveBeenCalledTimes(1);
   });
 
-  it("uses a separate bounded step budget for chat", async () => {
+  it("does not impose an application-level tool-step cutoff on chat", async () => {
     const kb = await knowledgeBase();
-    vi.stubEnv("AGENT_MAX_STEPS", "2");
-    vi.stubEnv("AGENT_CHAT_MAX_STEPS", "10");
     vi.stubEnv("LLM_API_FORMAT", "openai");
     vi.stubEnv("LLM_API_BASE_URL", "http://localhost:1/v1");
     vi.stubEnv("LLM_API_KEY", "test");
@@ -66,11 +64,11 @@ describe("agent input bounds", () => {
     streamTextMock.mockReturnValue({});
 
     await streamChat(kb, [{ role: "user", content: "hello" }]);
-    const options = streamTextMock.mock.calls[0]?.[0] as {
-      prepareStep: (step: { stepNumber: number }) => unknown;
-    };
-    expect(options.prepareStep({ stepNumber: 8 })).toBeUndefined();
-    expect(options.prepareStep({ stepNumber: 9 })).toEqual({ activeTools: [] });
+    const options = streamTextMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    // The empty condition list delegates continuation to the AI SDK/model and
+    // catches a bounded stopWhen callback or a final-step prepareStep hook.
+    expect(options).not.toHaveProperty("prepareStep");
+    expect(options.stopWhen).toEqual([]);
   });
 
   it("passes chat history beyond the one-shot input bound to streamText", async () => {

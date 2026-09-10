@@ -640,7 +640,6 @@ export async function streamChat(
   const state = new AgentRunContext(limits);
   const ctx = await promptContext(kb, "chat", state);
   const recorder = new TraceRecorder();
-  const maxSteps = limits.chatMaxSteps;
   const filesChanged = new Set<string>();
   let modelChain: string[] = [];
   // The user turn that started this run, for the trace record.
@@ -688,8 +687,9 @@ export async function streamChat(
         ...buildReadTools(kb, recorder, state),
         ...buildWriteTools(kb, filesChanged, recorder, state),
       },
-      stopWhen: stepCountIs(maxSteps),
-      prepareStep: prepareFinalSynthesisStep(maxSteps),
+      // An empty condition list lets AI SDK v5 continue until the model stops,
+      // without imposing an application-level step budget.
+      stopWhen: [],
       // AI SDK v5 applies this transform before toUIMessageStreamResponse(),
       // so malformed text is dropped before it can reach the HTTP client.
       experimental_transform: protocolGuard.transform,
