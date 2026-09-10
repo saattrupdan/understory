@@ -1,10 +1,24 @@
 import express, { type Router } from "express";
-import { convertToModelMessages, type UIMessage } from "ai";
+import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  convertToModelMessages,
+  type UIMessage,
+} from "ai";
 import { streamChat, type KnowledgeBase } from "@understory/core";
 
 interface ChatBody {
   messages: UIMessage[];
   model?: string;
+}
+
+function chatErrorMessage(error: unknown, filesChanged: Set<string>): string {
+  const message = error instanceof Error ? error.message : String(error);
+  // streamChat includes this suffix in trace/error messages too. Avoid adding it
+  // twice when an AI SDK error part is passed through the wrapper below.
+  if (filesChanged.size === 0 || message.includes("⚠ Partial mutation:")) return message;
+  const files = [...filesChanged].sort();
+  return `${message}\n\n⚠ Partial mutation: ${files.length} file(s) changed before failure.\nFiles changed:\n${files.map((file) => `- ${file}`).join("\n")}`;
 }
 
 /**
@@ -14,16 +28,31 @@ interface ChatBody {
 export function chatRouter(kb: KnowledgeBase): Router {
   const router = express.Router();
 
-  router.post("/chat", async (req, res) => {
+  // This is intentionally route-specific: chat history has no application-level
+  // size ceiling. Other API/MCP requests use the app's 4 MiB parser.
+  router.post("/chat", express.json({ limit: Infinity }), async (req, res) => {
+    let responseStarted = false;
     try {
       const { messages, model } = req.body as ChatBody;
-      const { result } = await streamChat(kb, convertToModelMessages(messages), { model });
-      const response = result.toUIMessageStreamResponse({
-        // AI SDK's default deliberately hides server errors. Chat failures carry
-        // the partial-mutation/file list, which is part of this endpoint's safety
-        // contract and must be visible to the caller.
-        onError: (error) => (error instanceof Error ? error.message : String(error)),
+      const { result, filesChanged } = await streamChat(
+        kb,
+        convertToModelMessages(messages),
+        { model }
+      );
+      const onError = (error: unknown) => chatErrorMessage(error, filesChanged);
+
+      // streamText emits its `finish` chunk before awaiting stream callbacks such
+      // as onFinish. Wrap its UI stream in a second AI SDK v5 stream so a later
+      // callback rejection is encoded as an `error` part followed by [DONE],
+      // rather than looking like a clean response to DefaultChatTransport.
+      const stream = createUIMessageStream({
+        execute: ({ writer }) => {
+          writer.merge(result.toUIMessageStream({ onError }));
+        },
+        onError,
       });
+      responseStarted = true;
+      const response = createUIMessageStreamResponse({ stream });
       res.status(response.status);
       response.headers.forEach((value, key) => res.setHeader(key, value));
       if (response.body) {
@@ -36,10 +65,12 @@ export function chatRouter(kb: KnowledgeBase): Router {
       const message = error instanceof Error ? error.message : String(error);
       // Errors before a stream exists otherwise become an empty client request.
       // Keep the response machine-readable; the web client extracts `error`.
-      if (!res.headersSent) {
+      if (!responseStarted && !res.headersSent) {
         res.status(500).json({ error: message });
       } else {
-        res.end();
+        // The AI SDK wrapper handles stream failures. Anything reaching here is
+        // an unexpected transport/write failure; do not turn it into a clean EOF.
+        res.destroy(error instanceof Error ? error : new Error(message));
       }
     }
   });
