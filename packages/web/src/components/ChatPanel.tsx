@@ -35,7 +35,7 @@ export function ChatPanel({
 }) {
   const [input, setInput] = useState("");
   const [model, setModel] = useState("");
-  const { messages, sendMessage, status, error, clearError } = useChat({
+  const { messages, sendMessage, setMessages, status, error, clearError } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
       headers: () => authHeaders(),
@@ -50,19 +50,32 @@ export function ChatPanel({
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
         <span className="text-sm font-semibold text-zinc-300">Agent chat</span>
-        {config && (
-          <div className="ml-auto flex items-center gap-1.5">
-            {config.fallbackConfigured && (
-              <span title="Fallback model configured" className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            )}
-            <input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={config.model}
-              className="w-32 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-xs text-zinc-300 outline-none focus:border-cyan-600"
-            />
-          </div>
-        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          {config && (
+            <>
+              {config.fallbackConfigured && (
+                <span title="Fallback model configured" className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              )}
+              <input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={config.model}
+                className="w-32 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-xs text-zinc-300 outline-none focus:border-cyan-600"
+              />
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setMessages([]);
+              clearError();
+            }}
+            disabled={busy}
+            className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Reset chat
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto p-3">

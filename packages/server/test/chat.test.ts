@@ -21,7 +21,7 @@ afterEach(async () => {
 
 describe("chat endpoint", () => {
   it("returns a visible HTTP error when streaming cannot start", async () => {
-    streamChatMock.mockRejectedValueOnce(new Error("Chat history exceeds AGENT_CHAT_MAX_INPUT_CHARS"));
+    streamChatMock.mockRejectedValueOnce(new Error("The model provider is unavailable"));
     const app = express();
     app.use(express.json());
     app.use(chatRouter({} as never));
@@ -38,7 +38,7 @@ describe("chat endpoint", () => {
 
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({
-      error: "Chat history exceeds AGENT_CHAT_MAX_INPUT_CHARS",
+      error: "The model provider is unavailable",
     });
   });
 });
