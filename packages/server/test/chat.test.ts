@@ -1,15 +1,21 @@
 import http from "node:http";
 import express from "express";
+import { DefaultChatTransport } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const streamChatMock = vi.hoisted(() => vi.fn());
-vi.mock("@understory/core", () => ({ streamChat: streamChatMock }));
+vi.mock("@understory/core", async () => {
+  const actual = await vi.importActual<typeof import("@understory/core")>("@understory/core");
+  return { ...actual, streamChat: streamChatMock };
+});
 
 import { chatRouter } from "../src/api/chat.js";
+import { createApp } from "../src/index.js";
 
 let server: http.Server | undefined;
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   streamChatMock.mockReset();
   if (server) {
     await new Promise<void>((resolve, reject) =>
@@ -40,5 +46,83 @@ describe("chat endpoint", () => {
     expect(await response.json()).toEqual({
       error: "The model provider is unavailable",
     });
+  });
+
+  it("encodes a post-header failure as an AI SDK error part", async () => {
+    const failure = new Error("synthesis failed");
+    const chunksBeforeFailure = [
+      { type: "start" },
+      { type: "text-start", id: "text-1" },
+      { type: "text-delta", id: "text-1", delta: "partial answer" },
+      { type: "text-end", id: "text-1" },
+      { type: "finish", finishReason: "stop" },
+    ];
+    let chunkIndex = 0;
+    const failingStream = new ReadableStream({
+      pull(controller) {
+        if (chunkIndex < chunksBeforeFailure.length) {
+          controller.enqueue(chunksBeforeFailure[chunkIndex++]);
+        } else {
+          controller.error(failure);
+        }
+      },
+    });
+    streamChatMock.mockResolvedValueOnce({
+      result: { toUIMessageStream: vi.fn(() => failingStream) },
+      filesChanged: new Set(["concepts/example.md"]),
+    });
+    vi.stubEnv("AUTH_TOKEN", "");
+    const app = createApp({ bundle: { root: process.cwd() } } as never);
+    server = http.createServer(app);
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not start");
+
+    const transport = new DefaultChatTransport({ api: `http://127.0.0.1:${address.port}/api/chat` });
+    const stream = await transport.sendMessages({
+      trigger: "submit-message",
+      chatId: "test-chat",
+      messageId: undefined,
+      messages: [{ id: "user-1", role: "user", parts: [{ type: "text", text: "hello" }] }],
+      abortSignal: undefined,
+    });
+    const chunks: Array<{ type: string; errorText?: string }> = [];
+    for await (const chunk of stream) chunks.push(chunk as { type: string; errorText?: string });
+
+    expect(chunks.some((chunk) => chunk.type === "finish")).toBe(true);
+    expect(chunks).toContainEqual({
+      type: "error",
+      errorText:
+        "synthesis failed\n\n⚠ Partial mutation: 1 file(s) changed before failure.\nFiles changed:\n- concepts/example.md",
+    });
+  });
+
+  it("passes chat histories larger than the bounded API parser", async () => {
+    streamChatMock.mockResolvedValueOnce({
+      result: {
+        toUIMessageStream: vi.fn(
+          () => new ReadableStream({ start(controller) { controller.close(); } })
+        ),
+      },
+      filesChanged: new Set<string>(),
+    });
+    vi.stubEnv("AUTH_TOKEN", "");
+    const app = createApp({ bundle: { root: process.cwd() } } as never);
+    server = http.createServer(app);
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not start");
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ id: "user-1", role: "user", parts: [{ type: "text", text: "x".repeat(4_500_000) }] }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(streamChatMock).toHaveBeenCalledOnce();
   });
 });
