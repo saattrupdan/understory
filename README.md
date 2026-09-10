@@ -210,7 +210,7 @@ This design mirrors the pattern in Karpathy's [LLM Wiki](https://gist.github.com
 ## Tests
 
 ```bash
-pnpm exec playwright install chromium      # once, for web geometry tests
+pnpm --filter @understory/web exec playwright install chromium  # once, for web geometry tests
 pnpm test                                  # unit and rendered browser geometry tests
 pnpm --filter @understory/web test:browser # rendered sidebar geometry only
 pnpm --filter @understory/server exec tsx scripts/mcp-smoke.mts   # MCP stdio round-trip (needs SMOKE_BUNDLE + an API key)

@@ -72,7 +72,11 @@ export default function App() {
     if (!focusTarget) return;
     pendingChatFocusRef.current = null;
     if (focusTarget === "collapse") {
-      chatCollapseRef.current?.focus();
+      if (mobileChatExpandRef.current?.getClientRects().length) {
+        mobileChatExpandRef.current.focus();
+      } else {
+        chatCollapseRef.current?.focus();
+      }
     } else if (mobileChatExpandRef.current?.getClientRects().length) {
       mobileChatExpandRef.current.focus();
     } else if (desktopChatExpandRef.current?.getClientRects().length) {
@@ -87,13 +91,17 @@ export default function App() {
     if (!focusTarget) return;
     pendingQueryFocusRef.current = null;
     if (focusTarget === "collapse") {
-      queryCollapseRef.current?.focus();
+      if (chatOpen && mobileQueryExpandRef.current?.getClientRects().length) {
+        mobileQueryExpandRef.current.focus();
+      } else {
+        queryCollapseRef.current?.focus();
+      }
     } else if (mobileQueryExpandRef.current?.getClientRects().length) {
       mobileQueryExpandRef.current.focus();
     } else {
       desktopQueryExpandRef.current?.focus();
     }
-  }, [queryPathsOpen]);
+  }, [chatOpen, queryPathsOpen]);
 
   const openChat = () => {
     pendingChatFocusRef.current = "collapse";
@@ -175,38 +183,40 @@ export default function App() {
 
   return (
     <div className="flex h-screen pt-14 lg:pt-0">
-      {!chatOpen && (
-        <header
-          data-testid="mobile-control-rail"
-          aria-label="Sidebar controls"
-          className="fixed inset-x-0 top-0 z-50 flex h-14 items-center justify-end gap-2 border-b border-zinc-800 bg-zinc-950 px-3 lg:hidden"
-        >
-          {view.kind === "graph" && !queryPathsOpen && (
-            <button
-              ref={mobileQueryExpandRef}
-              type="button"
-              onClick={() => setQueryPathsVisibility(true)}
-              aria-label="Expand query paths sidebar"
-              aria-expanded={false}
-              aria-controls="query-paths-sidebar"
-              className="whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-            >
-              <span aria-hidden="true">←</span> Paths
-            </button>
-          )}
+      <header
+        data-testid="mobile-control-rail"
+        aria-label="Sidebar controls"
+        className="fixed inset-x-0 top-0 z-50 flex h-14 items-center justify-end gap-2 border-b border-zinc-800 bg-zinc-950 px-3 lg:hidden"
+      >
+        {view.kind === "graph" && (
           <button
-            ref={mobileChatExpandRef}
+            ref={mobileQueryExpandRef}
+            data-testid="mobile-query-toggle"
             type="button"
-            onClick={openChat}
-            aria-label="Expand chat sidebar"
-            aria-expanded={false}
-            aria-controls="chat-sidebar"
+            onClick={() => setQueryPathsVisibility(!queryPathsOpen)}
+            aria-label={queryPathsOpen ? "Collapse query paths sidebar" : "Expand query paths sidebar"}
+            aria-expanded={queryPathsOpen}
+            aria-controls="query-paths-sidebar"
             className="whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
           >
-            <span aria-hidden="true">←</span> Chat
+            <span aria-hidden="true">{queryPathsOpen ? "→" : "←"}</span>{" "}
+            {queryPathsOpen ? "Hide paths" : "Paths"}
           </button>
-        </header>
-      )}
+        )}
+        <button
+          ref={mobileChatExpandRef}
+          data-testid="mobile-chat-toggle"
+          type="button"
+          onClick={chatOpen ? collapseChat : openChat}
+          aria-label={chatOpen ? "Collapse chat sidebar" : "Expand chat sidebar"}
+          aria-expanded={chatOpen}
+          aria-controls="chat-sidebar"
+          className="whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+        >
+          <span aria-hidden="true">{chatOpen ? "→" : "←"}</span>{" "}
+          {chatOpen ? "Hide chat" : "Chat"}
+        </button>
+      </header>
 
       {/* Sidebar */}
       <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800">
@@ -275,6 +285,7 @@ export default function App() {
           </button>
           <button
             ref={chatToggleRef}
+            data-testid="navigation-chat-toggle"
             type="button"
             onClick={chatOpen ? collapseChat : openChat}
             aria-expanded={chatOpen}
