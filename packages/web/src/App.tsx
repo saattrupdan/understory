@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, setAuthToken, type AppConfig, type Concept, type ConformanceReport, type LogEntry, type SearchHit, type TreeNode } from "./api";
+import {
+  api,
+  ApiError,
+  setAuthToken,
+  type AppConfig,
+  type Concept,
+  type ConformanceReport,
+  type LogEntry,
+  type SearchHit,
+  type TreeNode,
+} from "./api";
 import { Tree } from "./components/Tree";
 import { ConceptView } from "./components/ConceptView";
 import { LogView } from "./components/LogView";
@@ -13,24 +23,28 @@ type View =
   | { kind: "graph" }
   | { kind: "empty" };
 
+const isNarrowViewport = () =>
+  typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches;
+
 export default function App() {
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [report, setReport] = useState<ConformanceReport | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
-  const [view, setView] = useState<View>({ kind: "empty" });
+  const [view, setView] = useState<View>({ kind: "graph" });
   const [concept, setConcept] = useState<Concept | null>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [queryPathsOpen, setQueryPathsOpen] = useState(QUERY_PATHS_DEFAULT_OPEN);
-  const mobileChatExpandRef = useRef<HTMLButtonElement>(null);
-  const desktopChatExpandRef = useRef<HTMLButtonElement>(null);
-  const chatToggleRef = useRef<HTMLButtonElement>(null);
+  const memoryExpandRef = useRef<HTMLButtonElement>(null);
+  const memoryCollapseRef = useRef<HTMLButtonElement>(null);
+  const pendingMemoryFocusRef = useRef<"expand" | "collapse" | null>(null);
+  const chatExpandRef = useRef<HTMLButtonElement>(null);
   const chatCollapseRef = useRef<HTMLButtonElement>(null);
   const pendingChatFocusRef = useRef<"expand" | "collapse" | null>(null);
-  const mobileQueryExpandRef = useRef<HTMLButtonElement>(null);
-  const desktopQueryExpandRef = useRef<HTMLButtonElement>(null);
+  const queryExpandRef = useRef<HTMLButtonElement>(null);
   const queryCollapseRef = useRef<HTMLButtonElement>(null);
   const pendingQueryFocusRef = useRef<"expand" | "collapse" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,43 +82,51 @@ export default function App() {
   }, [view.kind]);
 
   useEffect(() => {
+    const focusTarget = pendingMemoryFocusRef.current;
+    if (!focusTarget) return;
+    pendingMemoryFocusRef.current = null;
+    if (focusTarget === "collapse") memoryCollapseRef.current?.focus();
+    else memoryExpandRef.current?.focus();
+  }, [memoryOpen]);
+
+  useEffect(() => {
     const focusTarget = pendingChatFocusRef.current;
     if (!focusTarget) return;
     pendingChatFocusRef.current = null;
-    if (focusTarget === "collapse") {
-      if (mobileChatExpandRef.current?.getClientRects().length) {
-        mobileChatExpandRef.current.focus();
-      } else {
-        chatCollapseRef.current?.focus();
-      }
-    } else if (mobileChatExpandRef.current?.getClientRects().length) {
-      mobileChatExpandRef.current.focus();
-    } else if (desktopChatExpandRef.current?.getClientRects().length) {
-      desktopChatExpandRef.current.focus();
-    } else {
-      chatToggleRef.current?.focus();
-    }
+    if (focusTarget === "collapse") chatCollapseRef.current?.focus();
+    else chatExpandRef.current?.focus();
   }, [chatOpen]);
 
   useEffect(() => {
     const focusTarget = pendingQueryFocusRef.current;
     if (!focusTarget) return;
     pendingQueryFocusRef.current = null;
-    if (focusTarget === "collapse") {
-      if (chatOpen && mobileQueryExpandRef.current?.getClientRects().length) {
-        mobileQueryExpandRef.current.focus();
-      } else {
-        queryCollapseRef.current?.focus();
-      }
-    } else if (mobileQueryExpandRef.current?.getClientRects().length) {
-      mobileQueryExpandRef.current.focus();
-    } else {
-      desktopQueryExpandRef.current?.focus();
+    if (focusTarget === "collapse") queryCollapseRef.current?.focus();
+    else queryExpandRef.current?.focus();
+  }, [queryPathsOpen]);
+
+  const openMemory = () => {
+    pendingMemoryFocusRef.current = "collapse";
+    if (isNarrowViewport()) {
+      pendingChatFocusRef.current = null;
+      setChatOpen(false);
     }
-  }, [chatOpen, queryPathsOpen]);
+    setMemoryOpen(true);
+  };
+
+  const collapseMemory = () => {
+    pendingMemoryFocusRef.current = "expand";
+    setMemoryOpen(false);
+  };
 
   const openChat = () => {
     pendingChatFocusRef.current = "collapse";
+    if (isNarrowViewport()) {
+      pendingMemoryFocusRef.current = null;
+      pendingQueryFocusRef.current = null;
+      setMemoryOpen(false);
+      setQueryPathsOpen(false);
+    }
     setChatOpen(true);
   };
 
@@ -115,6 +137,10 @@ export default function App() {
 
   const setQueryPathsVisibility = (open: boolean) => {
     pendingQueryFocusRef.current = open ? "collapse" : "expand";
+    if (open && isNarrowViewport()) {
+      pendingChatFocusRef.current = null;
+      setChatOpen(false);
+    }
     setQueryPathsOpen(open);
   };
 
@@ -182,44 +208,35 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen pt-14 lg:pt-0">
-      <header
-        data-testid="mobile-control-rail"
-        aria-label="Sidebar controls"
-        className="fixed inset-x-0 top-0 z-50 flex h-14 items-center justify-end gap-2 border-b border-zinc-800 bg-zinc-950 px-3 lg:hidden"
-      >
-        {view.kind === "graph" && (
-          <button
-            ref={mobileQueryExpandRef}
-            data-testid="mobile-query-toggle"
-            type="button"
-            onClick={() => setQueryPathsVisibility(!queryPathsOpen)}
-            aria-label={queryPathsOpen ? "Collapse query paths sidebar" : "Expand query paths sidebar"}
-            aria-expanded={queryPathsOpen}
-            aria-controls="query-paths-sidebar"
-            className="whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-          >
-            <span aria-hidden="true">{queryPathsOpen ? "→" : "←"}</span>{" "}
-            {queryPathsOpen ? "Hide paths" : "Paths"}
-          </button>
-        )}
+    <div data-testid="app-shell" className="relative flex h-screen min-w-0 overflow-hidden">
+      {!memoryOpen && (
         <button
-          ref={mobileChatExpandRef}
-          data-testid="mobile-chat-toggle"
+          ref={memoryExpandRef}
+          data-testid="memory-sidebar-toggle"
           type="button"
-          onClick={chatOpen ? collapseChat : openChat}
-          aria-label={chatOpen ? "Collapse chat sidebar" : "Expand chat sidebar"}
-          aria-expanded={chatOpen}
-          aria-controls="chat-sidebar"
-          className="whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+          onClick={openMemory}
+          aria-label="Expand memory sidebar"
+          aria-expanded={false}
+          aria-controls="memory-sidebar"
+          title="Expand memory sidebar"
+          className="absolute left-0 top-1/2 z-50 h-10 w-9 -translate-y-1/2 rounded-r-lg border border-l-0 border-zinc-700 bg-zinc-900/95 text-sm text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
         >
-          <span aria-hidden="true">{chatOpen ? "→" : "←"}</span>{" "}
-          {chatOpen ? "Hide chat" : "Chat"}
+          <span aria-hidden="true">→</span>
         </button>
-      </header>
+      )}
 
-      {/* Sidebar */}
-      <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800">
+      <aside
+        id="memory-sidebar"
+        data-testid="memory-sidebar"
+        aria-label="Memory navigation sidebar"
+        aria-hidden={!memoryOpen}
+        hidden={!memoryOpen}
+        className={
+          memoryOpen
+            ? "fixed inset-y-0 left-0 z-40 flex w-[min(18rem,calc(100vw-3rem))] flex-col border-r border-zinc-800 bg-zinc-950 shadow-2xl lg:static lg:z-auto lg:w-72 lg:shrink-0 lg:shadow-none"
+            : undefined
+        }
+      >
         <div data-testid="navigation-header" className="border-b border-zinc-800 p-3">
           <div className="flex items-center gap-2">
             <h1 className="text-sm font-bold tracking-wide text-cyan-300">understory 🌱</h1>
@@ -235,6 +252,19 @@ export default function App() {
                 {report.conformant ? "conformant" : "non-conformant"}
               </span>
             )}
+            <button
+              ref={memoryCollapseRef}
+              data-testid="memory-sidebar-collapse"
+              type="button"
+              onClick={collapseMemory}
+              aria-label="Collapse memory sidebar"
+              aria-expanded={true}
+              aria-controls="memory-sidebar"
+              title="Collapse memory sidebar"
+              className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            >
+              <span aria-hidden="true">←</span>
+            </button>
           </div>
           <input
             value={query}
@@ -283,22 +313,12 @@ export default function App() {
           >
             Graph
           </button>
-          <button
-            ref={chatToggleRef}
-            data-testid="navigation-chat-toggle"
-            type="button"
-            onClick={chatOpen ? collapseChat : openChat}
-            aria-expanded={chatOpen}
-            aria-controls="chat-sidebar"
-            className="flex-1 border-l border-zinc-800 px-3 py-2 text-zinc-400 hover:bg-zinc-800"
-          >
-            {chatOpen ? "Hide chat" : "Chat"}
-          </button>
         </div>
       </aside>
 
-      {/* Main */}
-      <main className={`relative min-w-0 flex-1 ${view.kind === "graph" ? "overflow-hidden" : "overflow-y-auto"}`}>
+      <main
+        className={`relative min-w-0 flex-1 ${view.kind === "graph" ? "overflow-hidden" : "overflow-y-auto"}`}
+      >
         {error && <p className="p-6 text-sm text-red-400">{error}</p>}
         {!error && view.kind === "empty" && (
           <div className="flex h-full items-center justify-center text-zinc-600">
@@ -315,37 +335,37 @@ export default function App() {
             onNavigate={openConcept}
             pathsOpen={queryPathsOpen}
             onPathsOpenChange={setQueryPathsVisibility}
-            expandButtonRef={desktopQueryExpandRef}
+            expandButtonRef={queryExpandRef}
             collapseButtonRef={queryCollapseRef}
           />
         )}
-        {!chatOpen && !(view.kind === "graph" && queryPathsOpen) && (
-          <button
-            type="button"
-            ref={desktopChatExpandRef}
-            onClick={openChat}
-            aria-label="Expand chat sidebar"
-            aria-expanded={false}
-            aria-controls="chat-sidebar"
-            title="Expand chat sidebar"
-            className={`absolute right-3 z-20 hidden whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:block ${
-              view.kind === "graph" ? "top-14" : "top-3"
-            }`}
-          >
-            <span aria-hidden="true">←</span> Chat
-          </button>
-        )}
       </main>
 
-      {/* Chat */}
+      {!chatOpen && (
+        <button
+          ref={chatExpandRef}
+          data-testid="chat-sidebar-toggle"
+          type="button"
+          onClick={openChat}
+          aria-label="Expand chat sidebar"
+          aria-expanded={false}
+          aria-controls="chat-sidebar"
+          title="Expand chat sidebar"
+          className="absolute right-0 top-1/2 z-50 h-10 w-9 -translate-y-1/2 rounded-l-lg border border-r-0 border-zinc-700 bg-zinc-900/95 text-sm text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+        >
+          <span aria-hidden="true">←</span>
+        </button>
+      )}
+
       <aside
         id="chat-sidebar"
+        data-testid="chat-sidebar"
         aria-label="Chat sidebar"
         aria-hidden={!chatOpen}
         hidden={!chatOpen}
         className={
           chatOpen
-            ? "fixed inset-x-0 bottom-0 top-14 z-40 w-full border-l border-zinc-800 bg-zinc-950 lg:static lg:z-auto lg:w-96 lg:max-w-[35vw] lg:shrink-0"
+            ? "fixed inset-y-0 right-0 z-40 w-[min(24rem,calc(100vw-3rem))] border-l border-zinc-800 bg-zinc-950 shadow-2xl lg:static lg:z-auto lg:w-96 lg:max-w-[35vw] lg:shrink-0 lg:shadow-none"
             : undefined
         }
       >
