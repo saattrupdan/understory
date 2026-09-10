@@ -6,7 +6,6 @@ import { LogView } from "./components/LogView";
 import { ChatPanel } from "./components/ChatPanel";
 import { GraphView } from "./components/GraphView";
 import { QUERY_PATHS_DEFAULT_OPEN } from "./components/queryPathsLayout";
-import { sidebarControlLayout } from "./components/sidebarLayout";
 
 type View =
   | { kind: "concept"; path: string }
@@ -25,10 +24,15 @@ export default function App() {
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [queryPathsOpen, setQueryPathsOpen] = useState(QUERY_PATHS_DEFAULT_OPEN);
-  const chatExpandRef = useRef<HTMLButtonElement>(null);
+  const mobileChatExpandRef = useRef<HTMLButtonElement>(null);
+  const desktopChatExpandRef = useRef<HTMLButtonElement>(null);
   const chatToggleRef = useRef<HTMLButtonElement>(null);
   const chatCollapseRef = useRef<HTMLButtonElement>(null);
   const pendingChatFocusRef = useRef<"expand" | "collapse" | null>(null);
+  const mobileQueryExpandRef = useRef<HTMLButtonElement>(null);
+  const desktopQueryExpandRef = useRef<HTMLButtonElement>(null);
+  const queryCollapseRef = useRef<HTMLButtonElement>(null);
+  const pendingQueryFocusRef = useRef<"expand" | "collapse" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsToken, setNeedsToken] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
@@ -69,12 +73,27 @@ export default function App() {
     pendingChatFocusRef.current = null;
     if (focusTarget === "collapse") {
       chatCollapseRef.current?.focus();
-    } else if (chatExpandRef.current?.getClientRects().length) {
-      chatExpandRef.current.focus();
+    } else if (mobileChatExpandRef.current?.getClientRects().length) {
+      mobileChatExpandRef.current.focus();
+    } else if (desktopChatExpandRef.current?.getClientRects().length) {
+      desktopChatExpandRef.current.focus();
     } else {
       chatToggleRef.current?.focus();
     }
   }, [chatOpen]);
+
+  useEffect(() => {
+    const focusTarget = pendingQueryFocusRef.current;
+    if (!focusTarget) return;
+    pendingQueryFocusRef.current = null;
+    if (focusTarget === "collapse") {
+      queryCollapseRef.current?.focus();
+    } else if (mobileQueryExpandRef.current?.getClientRects().length) {
+      mobileQueryExpandRef.current.focus();
+    } else {
+      desktopQueryExpandRef.current?.focus();
+    }
+  }, [queryPathsOpen]);
 
   const openChat = () => {
     pendingChatFocusRef.current = "collapse";
@@ -84,6 +103,11 @@ export default function App() {
   const collapseChat = () => {
     pendingChatFocusRef.current = "expand";
     setChatOpen(false);
+  };
+
+  const setQueryPathsVisibility = (open: boolean) => {
+    pendingQueryFocusRef.current = open ? "collapse" : "expand";
+    setQueryPathsOpen(open);
   };
 
   // Re-load the open concept (and graph) after chat mutations.
@@ -112,12 +136,6 @@ export default function App() {
     setError(null);
     setQuery("");
   }, []);
-
-  const controlLayout = sidebarControlLayout({
-    chatOpen,
-    graphVisible: view.kind === "graph",
-    queryPathsOpen,
-  });
 
   if (needsToken) {
     return (
@@ -156,10 +174,43 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen pt-14 lg:pt-0">
+      {!chatOpen && (
+        <header
+          data-testid="mobile-control-rail"
+          aria-label="Sidebar controls"
+          className="fixed inset-x-0 top-0 z-50 flex h-14 items-center justify-end gap-2 border-b border-zinc-800 bg-zinc-950 px-3 lg:hidden"
+        >
+          {view.kind === "graph" && !queryPathsOpen && (
+            <button
+              ref={mobileQueryExpandRef}
+              type="button"
+              onClick={() => setQueryPathsVisibility(true)}
+              aria-label="Expand query paths sidebar"
+              aria-expanded={false}
+              aria-controls="query-paths-sidebar"
+              className="whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            >
+              <span aria-hidden="true">←</span> Paths
+            </button>
+          )}
+          <button
+            ref={mobileChatExpandRef}
+            type="button"
+            onClick={openChat}
+            aria-label="Expand chat sidebar"
+            aria-expanded={false}
+            aria-controls="chat-sidebar"
+            className="whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+          >
+            <span aria-hidden="true">←</span> Chat
+          </button>
+        </header>
+      )}
+
       {/* Sidebar */}
       <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800">
-        <div className="border-b border-zinc-800 p-3">
+        <div data-testid="navigation-header" className="border-b border-zinc-800 p-3">
           <div className="flex items-center gap-2">
             <h1 className="text-sm font-bold tracking-wide text-cyan-300">understory 🌱</h1>
             {report && (
@@ -252,25 +303,23 @@ export default function App() {
             refreshKey={graphRefreshKey}
             onNavigate={openConcept}
             pathsOpen={queryPathsOpen}
-            onPathsOpenChange={setQueryPathsOpen}
+            onPathsOpenChange={setQueryPathsVisibility}
+            expandButtonRef={desktopQueryExpandRef}
+            collapseButtonRef={queryCollapseRef}
           />
         )}
-        {(controlLayout.showChatLauncher || controlLayout.showMobileChatLauncher) && (
+        {!chatOpen && !(view.kind === "graph" && queryPathsOpen) && (
           <button
             type="button"
-            ref={chatExpandRef}
+            ref={desktopChatExpandRef}
             onClick={openChat}
             aria-label="Expand chat sidebar"
             aria-expanded={false}
             aria-controls="chat-sidebar"
             title="Expand chat sidebar"
-            className={
-              controlLayout.showMobileChatLauncher
-                ? "fixed left-3 top-3 z-40 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:hidden"
-                : `fixed right-3 z-20 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute ${
-                    view.kind === "graph" ? "top-14" : "top-3"
-                  }`
-            }
+            className={`absolute right-3 z-20 hidden whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:block ${
+              view.kind === "graph" ? "top-14" : "top-3"
+            }`}
           >
             <span aria-hidden="true">←</span> Chat
           </button>
