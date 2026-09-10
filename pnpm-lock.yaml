@@ -154,6 +154,9 @@ importers:
       vite:
         specifier: ^6.0.0
         version: 6.4.3(@types/node@20.19.43)(jiti@1.21.7)(tsx@4.23.0)
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@20.19.43)(jiti@1.21.7)(tsx@4.23.0)
 
 packages:
 

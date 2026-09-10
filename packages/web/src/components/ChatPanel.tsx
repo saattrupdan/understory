@@ -4,7 +4,12 @@ import { DefaultChatTransport } from "ai";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { authHeaders } from "../api";
 import type { AppConfig } from "../api";
-import { isNearBottom, scrollToBottom } from "./chatScroll";
+import {
+  createChatScrollState,
+  followLatestContent,
+  reactivateChatScroll,
+  updateChatScrollState,
+} from "./chatScroll";
 
 const WRITE_TOOLS = new Set(["write_concept", "patch_concept", "delete_concept"]);
 
@@ -38,17 +43,19 @@ export function ChatPanel({
   const [model, setModel] = useState("");
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatContentRef = useRef<HTMLDivElement>(null);
-  const shouldFollowRef = useRef(true);
+  const chatScrollStateRef = useRef(createChatScrollState());
 
   const handleChatScroll = () => {
     const element = chatScrollRef.current;
-    if (element) shouldFollowRef.current = isNearBottom(element);
+    if (element) updateChatScrollState(chatScrollStateRef.current, element);
   };
 
-  const followLatestContent = () => {
+  const followLatestChatContent = () => {
     const element = chatScrollRef.current;
-    if (element) scrollToBottom(element);
+    if (element) followLatestContent(chatScrollStateRef.current, element);
   };
+
+  const reactivateChat = () => reactivateChatScroll(chatScrollStateRef.current);
   const { messages, sendMessage, setMessages, status, error, clearError } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
@@ -63,7 +70,7 @@ export function ChatPanel({
   // Keep following streamed text and tool updates while the user is already at
   // the bottom. Once they scroll up, leave the viewport where they put it.
   useLayoutEffect(() => {
-    if (shouldFollowRef.current) followLatestContent();
+    followLatestChatContent();
   }, [messages, status, error]);
 
   // Markdown rendering can change the content height after the message update
@@ -73,9 +80,7 @@ export function ChatPanel({
     const content = chatContentRef.current;
     if (!content || typeof ResizeObserver === "undefined") return;
 
-    const observer = new ResizeObserver(() => {
-      if (shouldFollowRef.current) followLatestContent();
-    });
+    const observer = new ResizeObserver(followLatestChatContent);
     observer.observe(content);
     return () => observer.disconnect();
   }, []);
@@ -101,6 +106,7 @@ export function ChatPanel({
           <button
             type="button"
             onClick={() => {
+              reactivateChat();
               setMessages([]);
               clearError();
             }}
@@ -121,6 +127,7 @@ export function ChatPanel({
               <button
                 type="button"
                 onClick={() => {
+                  reactivateChat();
                   clearError();
                   void sendMessage();
                 }}
@@ -205,6 +212,7 @@ export function ChatPanel({
         onSubmit={(e) => {
           e.preventDefault();
           if (!input.trim() || busy) return;
+          reactivateChat();
           sendMessage({ text: input });
           setInput("");
         }}
