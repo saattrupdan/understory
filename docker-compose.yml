@@ -8,7 +8,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./sample-bundle:/bundle
+      # Keep live memory outside the checkout. The sample bundle is only the
+      # default demo fixture; local deployments set this path in .env.
+      - "${UNDERSTORY_BUNDLE_PATH:-./sample-bundle}:/bundle"
     environment:
       BUNDLE_ROOT: /bundle
       AUTH_TOKEN: ${AUTH_TOKEN:-}
