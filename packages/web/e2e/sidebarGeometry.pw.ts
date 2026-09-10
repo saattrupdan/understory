@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const VIEWPORTS = [
   { width: 390, height: 844 },
-  { width: 1024, height: 800 },
+  { width: 1024, height: 768 },
   { width: 1280, height: 800 },
 ] as const;
 
@@ -105,91 +105,183 @@ async function expectContained(child: Locator, parent: Locator) {
   );
 }
 
+async function expectHitTarget(locator: Locator) {
+  const hit = await locator.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const target = document.elementFromPoint(
+      box.left + box.width / 2,
+      box.top + box.height / 2
+    );
+    return target === element || element.contains(target);
+  });
+  expect(hit).toBe(true);
+}
+
+async function graphNodePaths(page: Page): Promise<string[]> {
+  return page.getByTestId("graph-node").evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-node-path") ?? "")
+  );
+}
+
 for (const viewport of VIEWPORTS) {
-  test(`sidebar geometry at ${viewport.width}px`, async ({ page }) => {
+  test(`sidebar geometry at ${viewport.width}x${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await mockApi(page);
     await page.goto("/");
     await page.getByRole("button", { name: "Graph", exact: true }).click();
 
+    const mobile = viewport.width === 390;
     const rail = page.getByTestId("mobile-control-rail");
+    const mobileQueryToggle = page.getByTestId("mobile-query-toggle");
+    const mobileChatToggle = page.getByTestId("mobile-chat-toggle");
     const navHeader = page.getByTestId("navigation-header");
     const legend = page.getByTestId("graph-legend");
     const canvas = page.getByTestId("graph-canvas");
-    const chatLauncher = page.getByRole("button", {
-      name: "Expand chat sidebar",
-    });
-    const queryLauncher = page.getByRole("button", {
-      name: "Expand query paths sidebar",
-    });
+    const querySidebar = page.locator("#query-paths-sidebar");
+    const chatSidebar = page.locator("#chat-sidebar");
+    const queryLauncher = mobile
+      ? mobileQueryToggle
+      : page.getByRole("button", { name: "Expand query paths sidebar" });
+    const chatLauncher = mobile
+      ? mobileChatToggle
+      : page.getByRole("button", { name: "Expand chat sidebar" });
+    const chatRoute = mobile
+      ? mobileChatToggle
+      : page.getByTestId("navigation-chat-toggle");
+
     await expect(legend.getByText("Long concept type")).toBeVisible();
+    await expect(page.getByTestId("graph-node")).toHaveCount(3);
+    const initialNodePaths = await graphNodePaths(page);
     const initialCanvasWidth = (await rect(canvas)).width;
 
-    await expect(chatLauncher).toHaveCount(1);
-    await expect(queryLauncher).toHaveCount(1);
+    await expect(queryLauncher).toHaveAttribute("aria-expanded", "false");
+    await expect(chatLauncher).toHaveAttribute("aria-expanded", "false");
+    await expect(querySidebar).toBeHidden();
+    await expect(chatSidebar).toBeHidden();
     await expectNoOverlap(chatLauncher, queryLauncher);
     await expectNoOverlap(legend, chatLauncher);
     await expectNoOverlap(legend, queryLauncher);
 
-    if (viewport.width === 390) {
+    if (mobile) {
+      await expect(rail).toBeVisible();
       await expectContained(chatLauncher, rail);
       await expectContained(queryLauncher, rail);
       await expectNoOverlap(rail, navHeader);
       await expectNoOverlap(rail, legend);
+      await expectHitTarget(queryLauncher);
+      await expectHitTarget(chatLauncher);
     } else {
       await expect(rail).toBeHidden();
+      await expectHitTarget(queryLauncher);
+      await expectHitTarget(chatLauncher);
     }
 
     await queryLauncher.click();
-    const querySidebar = page.locator("#query-paths-sidebar");
-    const queryCollapse = page.getByRole("button", {
+    const queryHeading = querySidebar.getByRole("heading", { name: "Query paths" });
+    const queryCollapse = querySidebar.getByRole("button", {
       name: "Collapse query paths sidebar",
     });
     const firstQueryRow = page.getByTestId("query-path-row").first();
-    const chatRoute =
-      viewport.width === 390
-        ? chatLauncher
-        : page.getByRole("button", { name: "Chat", exact: true });
     await expect(querySidebar).toBeVisible();
+    await expect(querySidebar).toHaveAttribute("aria-hidden", "false");
+    await expect(queryCollapse).toHaveAttribute("aria-expanded", "true");
     await expect(queryCollapse).toBeFocused();
+    await expect(queryHeading).toBeVisible();
+    await expect(firstQueryRow).toBeVisible();
+    await expectContained(queryHeading, querySidebar);
+    await expectContained(queryCollapse, querySidebar);
+    await expectContained(firstQueryRow, querySidebar);
     await expectNoOverlap(queryCollapse, firstQueryRow);
     await expectNoOverlap(chatRoute, firstQueryRow);
 
-    if (viewport.width === 390) {
+    if (mobile) {
       await expect(legend).toBeHidden();
       await expectNoOverlap(rail, querySidebar);
-      await expectContained(chatLauncher, rail);
+      await expectContained(mobileChatToggle, rail);
+      await expect(mobileQueryToggle).toHaveAttribute("aria-expanded", "true");
+      await expectHitTarget(mobileQueryToggle);
     } else {
       expect((await rect(canvas)).width).toBeLessThan(initialCanvasWidth);
+      await expectHitTarget(queryCollapse);
     }
 
     await chatRoute.click();
-    const chatSidebar = page.locator("#chat-sidebar");
-    const chatCollapse = page.getByRole("button", {
+    const chatHeading = chatSidebar.getByRole("heading", { name: "Agent chat" });
+    const chatCollapse = chatSidebar.getByRole("button", {
       name: "Collapse chat sidebar",
     });
+    const chatInput = chatSidebar.locator("textarea");
     await expect(chatSidebar).toBeVisible();
-    await expect(chatCollapse).toBeFocused();
-    if (viewport.width > 390) {
+    await expect(chatSidebar).toHaveAttribute("aria-hidden", "false");
+    if (mobile) {
+      await expect(mobileChatToggle).toBeFocused();
+    } else {
+      await expect(chatCollapse).toBeFocused();
+    }
+    await expect(chatHeading).toBeVisible();
+    await expect(chatCollapse).toHaveAttribute("aria-expanded", "true");
+    await expect(chatInput).toBeVisible();
+    await expectContained(chatHeading, chatSidebar);
+    await expectContained(chatCollapse, chatSidebar);
+    await expectContained(chatInput, chatSidebar);
+
+    if (mobile) {
+      // Both panels stay mounted in the both-open state, but the rail is above
+      // the full-screen chat overlay and is the unambiguous panel switch.
+      await expect(mobileQueryToggle).toHaveAttribute("aria-expanded", "true");
+      await expect(mobileChatToggle).toHaveAttribute("aria-expanded", "true");
+      await expectHitTarget(mobileQueryToggle);
+      await expectHitTarget(mobileChatToggle);
+      const queryIsOccluded = await firstQueryRow.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const target = document.elementFromPoint(
+          box.left + box.width / 2,
+          box.top + box.height / 2
+        );
+        const chat = document.querySelector("#chat-sidebar");
+        return Boolean(target && chat && (target === chat || chat.contains(target)));
+      });
+      expect(queryIsOccluded).toBe(true);
+
+      // Switching from both-open never depends on the obscured query panel.
+      await mobileChatToggle.click();
+      await expect(chatSidebar).toBeHidden();
+      await expect(mobileChatToggle).toBeFocused();
+      await expect(querySidebar).toBeVisible();
+      await expectHitTarget(firstQueryRow);
+      await mobileQueryToggle.click();
+      await expect(querySidebar).toBeHidden();
+      await expect(mobileQueryToggle).toHaveAttribute("aria-expanded", "false");
+      await expect(mobileQueryToggle).toBeFocused();
+
+      // The chat-only overlay remains switchable from the same rail.
+      await mobileChatToggle.click();
+      await expect(chatSidebar).toBeVisible();
+      await expect(mobileChatToggle).toBeFocused();
+      await expectHitTarget(mobileChatToggle);
+      await mobileChatToggle.click();
+      await expect(chatSidebar).toBeHidden();
+      await expect(mobileChatToggle).toBeFocused();
+    } else {
       await expectNoOverlap(querySidebar, chatSidebar);
       expect((await rect(canvas)).width).toBeLessThan(initialCanvasWidth);
-    }
+      await expectHitTarget(chatCollapse);
+      await chatCollapse.click();
+      await expect(chatSidebar).toBeHidden();
+      await expect(chatRoute).toBeFocused();
+      await queryCollapse.click();
+      await expect(querySidebar).toBeHidden();
+      await expect(queryLauncher).toBeFocused();
+      await expect(legend).toBeVisible();
 
-    await chatCollapse.click();
-    await expect(chatRoute).toBeFocused();
-    await queryCollapse.click();
-    await expect(queryLauncher).toBeFocused();
-    await expect(legend).toBeVisible();
-    expect((await rect(canvas)).width).toBe(initialCanvasWidth);
-
-    await chatLauncher.click();
-    await expect(chatSidebar).toBeVisible();
-    if (viewport.width === 390) {
-      expect((await rect(chatSidebar)).width).toBe(viewport.width);
-    } else {
+      await chatLauncher.click();
+      await expect(chatSidebar).toBeVisible();
       expect((await rect(canvas)).width).toBeLessThan(initialCanvasWidth);
+      await chatSidebar.getByRole("button", { name: "Collapse chat sidebar" }).click();
+      await expect(chatSidebar).toBeHidden();
     }
 
+    expect(await graphNodePaths(page)).toEqual(initialNodePaths);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
       viewport.width
     );

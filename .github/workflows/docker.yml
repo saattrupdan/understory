@@ -22,6 +22,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install
+      - run: pnpm --filter @understory/web exec playwright install --with-deps chromium
       - run: pnpm -r build
       - run: pnpm test
 

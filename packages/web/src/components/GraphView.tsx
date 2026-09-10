@@ -520,6 +520,8 @@ export function GraphView({
             return (
               <g
                 key={n.path}
+                data-testid="graph-node"
+                data-node-path={n.path}
                 transform={`translate(${n.x},${n.y})`}
                 opacity={dim ? 0.15 : 1}
                 className="cursor-pointer"
@@ -575,7 +577,7 @@ export function GraphView({
           className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2"
           style={{ minHeight: QUERY_PATHS_LAYOUT.headerHeight }}
         >
-          <span className="min-w-0 flex-1 truncate font-semibold text-zinc-300">Query paths</span>
+          <h2 className="min-w-0 flex-1 truncate font-semibold text-zinc-300">Query paths</h2>
           <button
             ref={collapseButtonRef}
             type="button"
