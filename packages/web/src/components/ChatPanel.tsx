@@ -7,6 +7,19 @@ import type { AppConfig } from "../api";
 
 const WRITE_TOOLS = new Set(["write_concept", "patch_concept", "delete_concept"]);
 
+function chatErrorMessage(error: Error): string {
+  try {
+    const parsed: unknown = JSON.parse(error.message);
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      const message = (parsed as { error?: unknown }).error;
+      if (typeof message === "string") return message;
+    }
+  } catch {
+    // The AI SDK may provide a plain provider or network error.
+  }
+  return error.message || "The chat request failed.";
+}
+
 /**
  * Chat with the same agent the MCP server runs. Tool calls render inline —
  * watching which tools fire on which files is how we test the agent.
@@ -22,7 +35,7 @@ export function ChatPanel({
 }) {
   const [input, setInput] = useState("");
   const [model, setModel] = useState("");
-  const { messages, sendMessage, status } = useChat({
+  const { messages, sendMessage, status, error, clearError } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
       headers: () => authHeaders(),
@@ -53,6 +66,30 @@ export function ChatPanel({
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto p-3">
+        {error && (
+          <div role="alert" className="rounded-lg border border-red-800/70 bg-red-950/40 px-3 py-2 text-sm text-red-200">
+            <p>{chatErrorMessage(error)}</p>
+            <div className="mt-2 flex gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  clearError();
+                  void sendMessage();
+                }}
+                className="rounded border border-red-700 px-2 py-1 font-semibold hover:bg-red-900/50"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={clearError}
+                className="rounded border border-zinc-700 px-2 py-1 hover:bg-zinc-800"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
         {messages.length === 0 && (
           <p className="p-4 text-sm text-zinc-500">
             Test the knowledge agent here — ask a question, or tell it something worth
