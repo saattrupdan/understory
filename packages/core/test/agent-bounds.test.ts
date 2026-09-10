@@ -11,7 +11,6 @@ import {
   DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
   DEFAULT_AGENT_MAX_INPUT_CHARS,
   DEFAULT_AGENT_MAX_STEPS,
-  DEFAULT_AGENT_CHAT_MAX_STEPS,
   DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
   DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
   EXHAUSTION_SERIALISED_LENGTH,
@@ -30,7 +29,6 @@ describe("agent context bounds", () => {
   it("uses safe defaults and rejects invalid environment values", () => {
     expect(resolveAgentLimits({})).toEqual({
       maxSteps: DEFAULT_AGENT_MAX_STEPS,
-      chatMaxSteps: DEFAULT_AGENT_CHAT_MAX_STEPS,
       maxDocumentChars: DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
       maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
       maxSystemContextChars: DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
@@ -44,17 +42,14 @@ describe("agent context bounds", () => {
       })
     ).toEqual({
       maxSteps: DEFAULT_AGENT_MAX_STEPS,
-      chatMaxSteps: DEFAULT_AGENT_CHAT_MAX_STEPS,
       maxDocumentChars: DEFAULT_AGENT_MAX_DOCUMENT_CHARS,
       maxToolResultChars: DEFAULT_AGENT_MAX_TOOL_RESULT_CHARS,
       maxSystemContextChars: DEFAULT_AGENT_MAX_SYSTEM_CONTEXT_CHARS,
       maxInputChars: DEFAULT_AGENT_MAX_INPUT_CHARS,
     });
     expect(resolveAgentLimits({ AGENT_MAX_STEPS: "1" }).maxSteps).toBe(MIN_AGENT_MAX_STEPS);
-    expect(resolveAgentLimits({ AGENT_CHAT_MAX_STEPS: "1" }).chatMaxSteps).toBe(2);
     expect(
       resolveAgentLimits({
-        AGENT_CHAT_MAX_STEPS: "40",
         AGENT_MAX_STEPS: "3",
         AGENT_MAX_DOCUMENT_CHARS: "400",
         AGENT_MAX_TOOL_RESULT_CHARS: "900",
@@ -62,7 +57,6 @@ describe("agent context bounds", () => {
       })
     ).toEqual({
       maxSteps: 3,
-      chatMaxSteps: 40,
       maxDocumentChars: 400,
       maxToolResultChars: 900,
       maxSystemContextChars: 700,

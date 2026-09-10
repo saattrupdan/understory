@@ -28,7 +28,7 @@ interface BodyRead {
  * asynchronous tool operation. JavaScript does not interleave that section,
  * which makes concurrent AI SDK tool calls safe without serialising the reads.
  */
-export type AgentLimitsInput = Omit<AgentLimits, "maxInputChars" | "chatMaxSteps"> &
+export type AgentLimitsInput = Omit<AgentLimits, "maxInputChars"> &
   Partial<Pick<AgentLimits, "maxInputChars">>;
 
 export class AgentRunContext {
