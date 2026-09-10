@@ -12,6 +12,11 @@ import {
   recenterGraphAfterResize,
   type GraphViewportSize,
 } from "./graphViewport";
+import {
+  QUERY_PATHS_DEFAULT_OPEN,
+  QUERY_PATHS_LAYOUT,
+  queryPathsToggleLabel,
+} from "./queryPathsLayout";
 
 interface SimNode {
   path: string;
@@ -85,7 +90,7 @@ export function GraphView({
   const [hovered, setHovered] = useState<string | null>(null);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const [traces, setTraces] = useState<TraceSummary[]>([]);
-  const [pathsOpen, setPathsOpen] = useState(false);
+  const [pathsOpen, setPathsOpen] = useState(QUERY_PATHS_DEFAULT_OPEN);
   const [activeTrace, setActiveTrace] = useState<QueryTrace | null>(null);
   const [progress, setProgress] = useState(100); // path scrubber, 0–100
   const [playing, setPlaying] = useState(false);
@@ -551,10 +556,16 @@ export function GraphView({
             : undefined
         }
       >
-        <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 pr-14">
+        <div
+          className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 pr-14"
+          style={{ minHeight: QUERY_PATHS_LAYOUT.headerHeight }}
+        >
           <span className="font-semibold text-zinc-300">Query paths</span>
         </div>
-        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+        <div
+          className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2"
+          style={{ paddingTop: QUERY_PATHS_LAYOUT.listPaddingTop }}
+        >
           {traces.length === 0 && (
             <p className="p-2 text-zinc-500">
               No recorded runs yet — ask the agent something and its traversal will appear here.
@@ -591,11 +602,15 @@ export function GraphView({
       <button
         type="button"
         onClick={() => setPathsOpen((open) => !open)}
-        aria-label={`${pathsOpen ? "Collapse" : "Expand"} query paths sidebar`}
+        aria-label={queryPathsToggleLabel(pathsOpen)}
         aria-expanded={pathsOpen}
         aria-controls="query-paths-sidebar"
-        title={`${pathsOpen ? "Collapse" : "Expand"} query paths sidebar`}
-        className="fixed right-3 top-3 z-40 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute"
+        title={queryPathsToggleLabel(pathsOpen)}
+        style={{
+          top: QUERY_PATHS_LAYOUT.toggleTop,
+          height: QUERY_PATHS_LAYOUT.toggleHeight,
+        }}
+        className="fixed right-3 z-40 whitespace-nowrap rounded-lg border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-semibold text-zinc-300 shadow-lg hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 lg:absolute"
       >
         <span aria-hidden="true">{pathsOpen ? "→" : "←"}</span>{" "}
         <span className="hidden lg:inline">Query paths</span>
