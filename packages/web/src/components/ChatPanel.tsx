@@ -1,4 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
@@ -59,6 +65,19 @@ export function ChatPanel({
   });
 
   const busy = status === "submitted" || status === "streaming";
+
+  const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  };
 
   // Keep following streamed text and tool updates while the user is already at
   // the bottom. Once they scroll up, leave the viewport where they put it.
@@ -210,11 +229,13 @@ export function ChatPanel({
         }}
         className="border-t border-zinc-800 p-3"
       >
-        <input
+        <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleInputKeyDown}
           placeholder="Ask or teach the knowledge base…"
-          className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-cyan-600"
+          rows={3}
+          className="w-full resize-y rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-cyan-600"
         />
       </form>
     </div>
