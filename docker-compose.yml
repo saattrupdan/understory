@@ -32,8 +32,9 @@ services:
       LOCAL_BASE_URL: ${LOCAL_BASE_URL:-}
       LOCAL_API_KEY: ${LOCAL_API_KEY:-}
       GIT_AUTOCOMMIT: ${GIT_AUTOCOMMIT:-false}
-      # Per-run agent context bounds (AGENT_MAX_STEPS must be at least 2).
+      # Per-run agent context bounds (step limits must be at least 2).
       AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-8}
+      AGENT_CHAT_MAX_STEPS: ${AGENT_CHAT_MAX_STEPS:-32}
       AGENT_MAX_DOCUMENT_CHARS: ${AGENT_MAX_DOCUMENT_CHARS:-12000}
       AGENT_MAX_TOOL_RESULT_CHARS: ${AGENT_MAX_TOOL_RESULT_CHARS:-24000}
       AGENT_MAX_SYSTEM_CONTEXT_CHARS: ${AGENT_MAX_SYSTEM_CONTEXT_CHARS:-24000}
