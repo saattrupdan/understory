@@ -1,7 +1,8 @@
 import path from "node:path";
 import { sha256 } from "../util/hash.js";
+import { throwIfAborted } from "../util/abort.js";
 import { simpleGit, type SimpleGit } from "simple-git";
-import { Bundle } from "./bundle.js";
+import { Bundle, replaceSection } from "./bundle.js";
 import { pruneEmptyDirs, regenerateIndexChain } from "./indexer.js";
 import { appendLog, readLog } from "./logger.js";
 import { searchBundle, listTypes, type SearchOptions } from "./search.js";
@@ -85,10 +86,13 @@ export class KnowledgeBase {
     conceptPath: string,
     frontmatter: ConceptFrontmatter,
     body: string,
-    logSummary: string
+    logSummary: string,
+    signal?: AbortSignal
   ): Promise<Concept> {
     return this.enqueue(async () => {
+      throwIfAborted(signal);
       const canonical = this.bundle.toBundlePath(conceptPath);
+      throwIfAborted(signal);
       if (await this.bundle.exists(canonical)) {
         throw new Error(`Concept already exists: ${canonical}; use patch_concept`);
       }
@@ -96,6 +100,7 @@ export class KnowledgeBase {
       try {
         // The existence check gives a useful error for the common case. `wx`
         // also closes the race with a creator outside this process.
+        throwIfAborted(signal);
         concept = await this.bundle.writeConcept(canonical, frontmatter, body, { exclusive: true });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") {
@@ -105,55 +110,86 @@ export class KnowledgeBase {
       }
       await this.afterMutation(concept.path, "Creation", logSummary);
       return concept;
-    });
+    }, signal);
   }
 
   writeConcept(
     conceptPath: string,
     frontmatter: ConceptFrontmatter,
     body: string,
-    logSummary: string
+    logSummary: string,
+    signal?: AbortSignal
   ): Promise<Concept> {
     return this.enqueue(async () => {
+      throwIfAborted(signal);
       const existed = await this.bundle.exists(conceptPath);
+      throwIfAborted(signal);
       const concept = await this.bundle.writeConcept(conceptPath, frontmatter, body);
       await this.afterMutation(concept.path, existed ? "Update" : "Creation", logSummary);
       return concept;
-    });
+    }, signal);
   }
 
   patchConcept(
     conceptPath: string,
     changes: Parameters<Bundle["patchConcept"]>[1],
     logSummary: string,
-    expectedBodyHash?: string
+    expectedBodyHash?: string,
+    signal?: AbortSignal
   ): Promise<Concept> {
     return this.enqueue(async () => {
+      throwIfAborted(signal);
       if (expectedBodyHash) {
         const current = await this.bundle.readConcept(conceptPath);
+        throwIfAborted(signal);
         const actual = sha256(current.body);
         if (actual !== expectedBodyHash) {
           throw new Error(`Concept changed while it was being read: ${current.path}`);
         }
       }
-      const concept = await this.bundle.patchConcept(conceptPath, changes);
+
+      // Read and construct the patch while serialized, then check again at the
+      // last possible point before the concept file is written.
+      const existing = await this.bundle.readConcept(conceptPath);
+      throwIfAborted(signal);
+      const fm: ConceptFrontmatter = { ...existing.frontmatter };
+      if (changes.frontmatter) {
+        for (const [key, value] of Object.entries(changes.frontmatter)) {
+          if (value === null) delete fm[key];
+          else fm[key] = value;
+        }
+      }
+      let body = changes.replaceBody ?? existing.body;
+      if (changes.replaceSection) {
+        body = replaceSection(body, changes.replaceSection.heading, changes.replaceSection.content);
+      }
+      throwIfAborted(signal);
+      const concept = await this.bundle.writeConcept(existing.path, fm, body);
       await this.afterMutation(concept.path, "Update", logSummary);
       return concept;
-    });
+    }, signal);
   }
 
-  deleteConcept(conceptPath: string, logSummary: string): Promise<void> {
+  deleteConcept(conceptPath: string, logSummary: string, signal?: AbortSignal): Promise<void> {
     return this.enqueue(async () => {
+      throwIfAborted(signal);
       const canonical = this.bundle.toBundlePath(conceptPath);
+      throwIfAborted(signal);
       await this.bundle.deleteConcept(canonical);
       await this.afterMutation(canonical, "Deletion", logSummary);
-    });
+    }, signal);
   }
 
-  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  private enqueue<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const key = this.bundle.root;
+    const run = () => {
+      // This runs only after the preceding mutation has fully settled, so a
+      // cancelled waiter never starts any filesystem work of its own.
+      throwIfAborted(signal);
+      return fn();
+    };
     const previous = KnowledgeBase.mutationQueues.get(key) ?? Promise.resolve();
-    const next = previous.then(fn, fn);
+    const next = previous.then(run, run);
     const settled = next.then(
       () => undefined,
       () => undefined

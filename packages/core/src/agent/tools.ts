@@ -569,7 +569,7 @@ export function buildWriteTools(
       execute: async ({ path, frontmatter, body, log_summary }: WriteConceptArgs) => {
         state.checkCancellation();
         state.assertWriteInput({ path, frontmatter, body, log_summary });
-        const c = await kb.createConcept(path, frontmatter, body, log_summary);
+        const c = await kb.createConcept(path, frontmatter, body, log_summary, state.abortSignal);
         filesChanged.add(c.path);
         recordHotWrite(c.path);
         trace?.record("write_concept", c.path, [c.path], true);
@@ -601,10 +601,13 @@ export function buildWriteTools(
       execute: async ({ path, frontmatter, replace_section, replace_body, log_summary }: PatchConceptArgs) => {
         state.checkCancellation();
         state.assertWriteInput({ path, frontmatter, replace_section, replace_body, log_summary });
-        const expectedBodyHash =
-          replace_body === undefined
-            ? undefined
-            : state.expectedBodyHash(path, (await kb.readConcept(path)).body);
+        let expectedBodyHash: string | undefined;
+        if (replace_body !== undefined) {
+          const current = await kb.readConcept(path);
+          state.checkCancellation();
+          expectedBodyHash = state.expectedBodyHash(path, current.body);
+        }
+        state.checkCancellation();
         const c = await kb.patchConcept(
           path,
           {
@@ -615,7 +618,8 @@ export function buildWriteTools(
             replaceBody: replace_body,
           },
           log_summary,
-          expectedBodyHash
+          expectedBodyHash,
+          state.abortSignal
         );
         filesChanged.add(c.path);
         recordHotWrite(c.path);
@@ -633,7 +637,7 @@ export function buildWriteTools(
       execute: async ({ path, log_summary }: DeleteConceptArgs) => {
         state.checkCancellation();
         state.assertWriteInput({ path, log_summary });
-        await kb.deleteConcept(path, log_summary);
+        await kb.deleteConcept(path, log_summary, state.abortSignal);
         filesChanged.add(path);
         recordHotDelete(path);
         trace?.record("delete_concept", path, [path], true);

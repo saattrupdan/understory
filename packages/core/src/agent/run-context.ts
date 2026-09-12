@@ -77,6 +77,11 @@ export class AgentRunContext {
     throw this.signal.reason ?? new DOMException("The operation was aborted", "AbortError");
   }
 
+  /** Signal used to cancel filesystem work started by this run. */
+  get abortSignal(): AbortSignal | undefined {
+    return this.signal;
+  }
+
   get isUnbounded(): boolean {
     return this.limits === undefined;
   }
