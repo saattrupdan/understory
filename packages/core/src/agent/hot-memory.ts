@@ -4,6 +4,7 @@ import { capEnv } from "../util/env.js";
 import type { AgentOptions } from "./agent.js";
 import type { RecallFinish, RecallGeneration } from "./recall.js";
 import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
+import { isAbortError, throwIfAborted } from "../util/abort.js";
 
 /**
  * Hot memory: a small working set of recently written concepts. Queries consult
@@ -89,6 +90,7 @@ export async function hotLookup(
   // Injectable for tests.
   generate: HotGenerate = defaultGenerate
 ): Promise<string | null> {
+  throwIfAborted(options.signal);
   if (process.env.HOT_MEMORY === "false") return null;
   const ttl = parseDuration(process.env.HOT_MEMORY_TTL) ?? DEFAULT_TTL_MS;
   const cutoff = Date.now() - ttl;
@@ -96,15 +98,18 @@ export async function hotLookup(
   const sections: string[] = [];
 
   for (const [path, touchedAt] of hotConcepts) {
+    throwIfAborted(options.signal);
     if (touchedAt < cutoff) continue;
     try {
       const c = await kb.readConcept(path); // fresh read — never stale
+      throwIfAborted(options.signal);
       const fm = c.frontmatter;
       sections.push(
         `CONCEPT ${c.path}${fm.title ? ` — ${fm.title}` : ""}${fm.description ? ` (${fm.description})` : ""}\n` +
           c.body.slice(0, MAX_EXCERPT_CHARS)
       );
-    } catch {
+    } catch (error) {
+      if (isAbortError(error, options.signal)) throw error;
       hotConcepts.delete(path); // deleted behind our back
     }
   }
@@ -123,6 +128,7 @@ export async function hotLookup(
     DEFAULT_MAX_OUTPUT_TOKENS
   );
   const generation = await generate(system, prompt, options, { maxOutputTokens });
+  throwIfAborted(options.signal);
   const text = generation.text.trim();
 
   // Ran out of output tokens: the reply is cut off mid-sentence and reads like
@@ -170,18 +176,21 @@ const defaultGenerate: HotGenerate = async (system, prompt, options, controls) =
   const providers: any = await import("../providers/index.js");
   let model;
   if (typeof providers.resolveModel === "function") {
-    model = await providers.resolveModel((options as any).provider, options.model);
+    model = await providers.resolveModel((options as any).provider, options.model, options.signal);
   } else {
     const cfg = providers.resolveModelConfig(process.env);
-    model = await providers.createModel({
-      ...(options.model ? { ...cfg, model: options.model } : cfg),
-      // Sent as extraBody exactly as recall sends it: transformRequestBody
-      // applies it after the SDK writes max_tokens, so this wins over both the
-      // call-level option below and LLM_MAX_OUTPUT_TOKENS in the environment —
-      // HOT_MEMORY_MAX_OUTPUT_TOKENS is the knob that moves it. No thinking
-      // budget is set here; the layer has no such knob.
-      extraBody: { max_tokens: controls.maxOutputTokens },
-    });
+    model = await providers.createModel(
+      {
+        ...(options.model ? { ...cfg, model: options.model } : cfg),
+        // Sent as extraBody exactly as recall sends it: transformRequestBody
+        // applies it after the SDK writes max_tokens, so this wins over both the
+        // call-level option below and LLM_MAX_OUTPUT_TOKENS in the environment —
+        // HOT_MEMORY_MAX_OUTPUT_TOKENS is the knob that moves it. No thinking
+        // budget is set here; the layer has no such knob.
+        extraBody: { max_tokens: controls.maxOutputTokens },
+      },
+      options.signal
+    );
   }
   const { generateText } = await import("ai");
   const result = await generateText({
@@ -192,6 +201,7 @@ const defaultGenerate: HotGenerate = async (system, prompt, options, controls) =
     // The only cap that would reach a model built without extraBody, i.e. the
     // branch above that does not exist yet.
     maxOutputTokens: controls.maxOutputTokens,
+    abortSignal: options.signal,
   });
   const finishReason: RecallFinish =
     result.finishReason === "stop" || result.finishReason === "length"

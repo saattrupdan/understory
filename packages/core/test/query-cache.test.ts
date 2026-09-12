@@ -135,6 +135,32 @@ describe("runQueryCached degradation", () => {
     expect(failed!.answer).toContain("connection refused");
   });
 
+  it("does not fall through when hot memory is cancelled", async () => {
+    const runner = deep("deep answer");
+    const cancellation = new DOMException("cancelled", "AbortError");
+    const hot = vi.fn(async () => {
+      throw cancellation;
+    });
+    const recall = vi.fn(async () => ({ answer: "recall answer", paths: [] as string[] }));
+
+    await expect(runQueryCached(kb, "q?", {}, runner, hot, recall)).rejects.toBe(cancellation);
+    expect(recall).not.toHaveBeenCalled();
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it("does not fall through when recall is cancelled", async () => {
+    const runner = deep("deep answer");
+    const cancellation = new DOMException("cancelled", "AbortError");
+    const recall = vi.fn(async () => {
+      throw cancellation;
+    });
+
+    await expect(
+      runQueryCached(kb, "q?", {}, runner, async () => null, recall)
+    ).rejects.toBe(cancellation);
+    expect(runner).not.toHaveBeenCalled();
+  });
+
   it("falls through to the next layer when the hot seam throws", async () => {
     const runner = deep("deep answer");
     const hot = vi.fn(async () => {

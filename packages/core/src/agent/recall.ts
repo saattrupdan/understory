@@ -2,6 +2,7 @@ import type { KnowledgeBase } from "../okf/index.js";
 import { capEnv } from "../util/env.js";
 import type { AgentOptions } from "./agent.js";
 import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
+import { isAbortError, throwIfAborted } from "../util/abort.js";
 
 /**
  * Recall fast path: deterministic retrieval (keyword search plus a one-hop walk
@@ -552,6 +553,7 @@ export async function runRecall(
   // Injectable for tests.
   generate: RecallGenerate = defaultGenerate
 ): Promise<RecallOutcome> {
+  throwIfAborted(options.signal);
   if (process.env.RECALL === "false") return { answer: null, paths: [] };
 
   const seeds = intEnv(process.env.RECALL_SEEDS, DEFAULT_SEEDS);
@@ -563,6 +565,7 @@ export async function runRecall(
   // gate for the fast path; expansion must never turn a weak/path-only query
   // into a generation request.
   const hits = await kb.search(question, { limit: Math.max(seeds, 1) });
+  throwIfAborted(options.signal);
   if (hits.length === 0) return { answer: null, paths: [] };
   // Ranking score deliberately rewards useful path decomposition, but is not
   // calibrated as evidence: ubiquitous components can still rank a hit first.
@@ -588,7 +591,9 @@ export async function runRecall(
   if (maxCandidates > 0) {
     const variantLimit = MAX_RECALL_VARIANT_HITS;
     for (const variant of variants) {
+      throwIfAborted(options.signal);
       const variantHits = await kb.search(variant.query, { limit: variantLimit });
+      throwIfAborted(options.signal);
       for (const [index, hit] of variantHits.entries()) {
         if (trustedVariantHit(hit, minScore)) {
           addRecallCandidate(pool, hit, index + 1, variant);
@@ -604,7 +609,9 @@ export async function runRecall(
   // way to widen the net without another LLM call.
   if (ordered.length < maxCandidates) {
     const neighbours = await neighboursOf(kb);
+    throwIfAborted(options.signal);
     for (const seed of ordered.slice(0, 2)) {
+      throwIfAborted(options.signal);
       for (const n of neighbours.get(seed) ?? []) {
         if (chosen.size >= maxCandidates) break;
         if (!chosen.has(n)) {
@@ -619,6 +626,7 @@ export async function runRecall(
   const sections: string[] = [];
   const paths: string[] = [];
   for (const p of ordered) {
+    throwIfAborted(options.signal);
     try {
       const c = await kb.readConcept(p); // fresh read — never stale
       const fm = c.frontmatter;
@@ -627,7 +635,8 @@ export async function runRecall(
           c.body.slice(0, excerptChars)
       );
       paths.push(c.path);
-    } catch {
+    } catch (error) {
+      if (isAbortError(error, options.signal)) throw error;
       // Deleted or unreadable since the search — skip it.
     }
   }
@@ -650,6 +659,7 @@ export async function runRecall(
     maxOutputTokens,
     thinkingBudget: intEnv(process.env.RECALL_THINKING_BUDGET, DEFAULT_THINKING_BUDGET),
   });
+  throwIfAborted(options.signal);
   const text = generation.text.trim();
 
   // Ran out of output tokens: the reply is cut off mid-sentence and reads like
@@ -697,19 +707,22 @@ const defaultGenerate: RecallGenerate = async (system, prompt, options, controls
   const providers: any = await import("../providers/index.js");
   let model;
   if (typeof providers.resolveModel === "function") {
-    model = await providers.resolveModel((options as any).provider, options.model);
+    model = await providers.resolveModel((options as any).provider, options.model, options.signal);
   } else {
     const cfg = providers.resolveModelConfig(process.env);
-    model = await providers.createModel({
-      ...(options.model ? { ...cfg, model: options.model } : cfg),
-      // A bounded reasoning trace: the answer needs grounding, not a long
-      // chain of thought, and decoding thinking tokens is what makes these
-      // calls slow. Ignored by providers that do not support it.
-      extraBody: {
-        ...(providers.thinkingBudgetBody?.(controls.thinkingBudget) ?? {}),
-        max_tokens: controls.maxOutputTokens,
+    model = await providers.createModel(
+      {
+        ...(options.model ? { ...cfg, model: options.model } : cfg),
+        // A bounded reasoning trace: the answer needs grounding, not a long
+        // chain of thought, and decoding thinking tokens is what makes these
+        // calls slow. Ignored by providers that do not support it.
+        extraBody: {
+          ...(providers.thinkingBudgetBody?.(controls.thinkingBudget) ?? {}),
+          max_tokens: controls.maxOutputTokens,
+        },
       },
-    });
+      options.signal
+    );
   }
   const { generateText } = await import("ai");
   const result = await generateText({
@@ -726,6 +739,7 @@ const defaultGenerate: RecallGenerate = async (system, prompt, options, controls
     // option stays because it is the only cap that would reach a model built
     // without extraBody — which is precisely the branch that does not exist yet.
     maxOutputTokens: controls.maxOutputTokens,
+    abortSignal: options.signal,
   });
   return {
     text: result.text,

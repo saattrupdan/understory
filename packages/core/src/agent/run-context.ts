@@ -44,8 +44,10 @@ export class AgentRunContext {
   private systemTypesWritten = false;
   private readonly bodyReads = new Map<string, BodyRead>();
   private writeInputChars = 0;
+  private readonly signal?: AbortSignal;
 
-  constructor(limits: AgentLimitsInput | typeof UNBOUNDED) {
+  constructor(limits: AgentLimitsInput | typeof UNBOUNDED, signal?: AbortSignal) {
+    this.signal = signal;
     if (limits === UNBOUNDED) return;
 
     this.limits = {
@@ -65,8 +67,14 @@ export class AgentRunContext {
   }
 
   /** Create a chat context with no application-level data-size budgets. */
-  static unbounded(): AgentRunContext {
-    return new AgentRunContext(UNBOUNDED);
+  static unbounded(signal?: AbortSignal): AgentRunContext {
+    return new AgentRunContext(UNBOUNDED, signal);
+  }
+
+  /** Stop a tool before it starts more filesystem work after cancellation. */
+  checkCancellation(): void {
+    if (!this.signal?.aborted) return;
+    throw this.signal.reason ?? new DOMException("The operation was aborted", "AbortError");
   }
 
   get isUnbounded(): boolean {

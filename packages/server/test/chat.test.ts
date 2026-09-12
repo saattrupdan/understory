@@ -46,6 +46,48 @@ describe("chat endpoint", () => {
     expect(await response.json()).toEqual({
       error: "The model provider is unavailable",
     });
+    const options = streamChatMock.mock.calls[0]?.[2] as { signal: AbortSignal };
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+    expect(options.signal.aborted).toBe(false);
+  });
+
+  it("aborts the server-side stream when the client disconnects", async () => {
+    let started!: () => void;
+    let capturedSignal!: AbortSignal;
+    const streamStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    streamChatMock.mockImplementationOnce(
+      (_kb: unknown, _messages: unknown, options: { signal: AbortSignal }) => {
+        capturedSignal = options.signal;
+        started();
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(options.signal.reason), {
+            once: true,
+          });
+        });
+      }
+    );
+    const app = express();
+    app.use(express.json());
+    app.use(chatRouter({} as never));
+    server = http.createServer(app);
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not start");
+
+    const request = http.request({
+      host: "127.0.0.1",
+      port: address.port,
+      path: "/chat",
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    });
+    request.on("error", () => {});
+    request.end(JSON.stringify({ messages: [] }));
+    await streamStarted;
+    request.destroy();
+    await vi.waitFor(() => expect(capturedSignal.aborted).toBe(true));
   });
 
   it("encodes a post-header failure as an AI SDK error part", async () => {

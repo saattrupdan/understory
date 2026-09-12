@@ -71,6 +71,25 @@ describe("agent input bounds", () => {
     expect(options.stopWhen).toEqual([]);
   });
 
+  it("forwards cancellation to model generations", async () => {
+    const kb = await knowledgeBase();
+    vi.stubEnv("LLM_API_FORMAT", "openai");
+    vi.stubEnv("LLM_API_BASE_URL", "http://localhost:1/v1");
+    vi.stubEnv("LLM_API_KEY", "test");
+    vi.stubEnv("LLM_MODEL", "test-model");
+    generateTextMock.mockResolvedValue({ text: "ok", steps: [] });
+    streamTextMock.mockReturnValue({});
+    const controller = new AbortController();
+
+    await runQuery(kb, "hello", { signal: controller.signal });
+    await streamChat(kb, [{ role: "user", content: "hello" }], {
+      signal: controller.signal,
+    });
+
+    expect(generateTextMock.mock.calls[0]?.[0].abortSignal).toBe(controller.signal);
+    expect(streamTextMock.mock.calls[0]?.[0].abortSignal).toBe(controller.signal);
+  });
+
   it("passes chat history beyond the one-shot input bound to streamText", async () => {
     const kb = await knowledgeBase();
     vi.stubEnv("AGENT_MAX_INPUT_CHARS", "32");

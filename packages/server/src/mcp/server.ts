@@ -6,6 +6,7 @@ import {
   resolveAgentLimits,
   runMutation,
   runQueryCached,
+  throwIfAborted,
   type MutationOutcome,
 } from "@understory/core";
 import { buildSeedMemory, seedInstructions } from "./seed.js";
@@ -47,8 +48,11 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
       description: queryDescription(seed),
       inputSchema: { question: z.string().max(maxInputChars).describe("The question to answer") },
     },
-    async ({ question }) => {
-      const { answer, source } = await runQueryCached(kb, question);
+    async ({ question }, extra) => {
+      throwIfAborted(extra.signal);
+      const { answer, source } = await runQueryCached(kb, question, {
+        signal: extra.signal,
+      });
       const marker =
         source === "cache" ? "\n\n(cached answer)" : source === "hot" ? "\n\n(hot memory)" : source === "recall" ? "\n\n(recall)" : "";
       return {
@@ -64,11 +68,14 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
    * refresh failure must never fail the mutation that triggered it.
    * (Instructions can't be updated mid-session; they refresh per session.)
    */
-  const refreshSeed = async () => {
+  const refreshSeed = async (signal: AbortSignal) => {
+    throwIfAborted(signal);
     try {
       const fresh = await buildSeedMemory(kb);
+      throwIfAborted(signal);
       queryTool.update({ description: queryDescription(fresh) });
     } catch (err) {
+      throwIfAborted(signal);
       console.error(`[understory] seed refresh failed: ${(err as Error).message}`);
     }
   };
@@ -119,7 +126,8 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
           .describe('Optional bundle path hint, e.g. "/apis/payments.md"'),
       },
     },
-    async ({ content, suggested_path }) => {
+    async ({ content, suggested_path }, extra) => {
+      throwIfAborted(extra.signal);
       // Wrap the payload as an explicit directive. Bare content (e.g. a plain
       // fact like "The user's name is Anirban Kar.") otherwise reads as a chat
       // message and the agent replies conversationally instead of persisting it.
@@ -133,8 +141,12 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
         `must use the write tools.\n\n` +
         `KNOWLEDGE TO RECORD:\n${content}` +
         (suggested_path ? `\n\nIf it fits, place new content at ${suggested_path}.` : "");
-      const outcome = await runMutation(kb, instruction);
-      await refreshSeed();
+      const outcome = await runMutation(kb, instruction, {
+        signal: extra.signal,
+      });
+      // A partial write remains reportable even when cancellation prevents the
+      // best-effort seed refresh from running.
+      if (!extra.signal.aborted) await refreshSeed(extra.signal);
       return mutationOutcomeResponse(outcome);
     }
   );
@@ -152,9 +164,12 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
           .describe("What to change, in natural language"),
       },
     },
-    async ({ instruction }) => {
-      const outcome = await runMutation(kb, instruction);
-      await refreshSeed();
+    async ({ instruction }, extra) => {
+      throwIfAborted(extra.signal);
+      const outcome = await runMutation(kb, instruction, {
+        signal: extra.signal,
+      });
+      if (!extra.signal.aborted) await refreshSeed(extra.signal);
       return mutationOutcomeResponse(outcome);
     }
   );
@@ -167,8 +182,10 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
         "Deterministic (no LLM): bundle statistics and OKF conformance report.",
       inputSchema: {},
     },
-    async () => {
+    async (_args, extra) => {
+      throwIfAborted(extra.signal);
       const [report, lint, types] = await Promise.all([kb.validate(), kb.lint(), kb.listTypes()]);
+      throwIfAborted(extra.signal);
       return {
         content: [
           {
@@ -205,8 +222,10 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
         "Health-check and repair the knowledge graph: an internal agent wires orphaned concepts (nothing links to them) into related concepts and fixes broken links. Run periodically to counter drift. No-op when the graph is already healthy.",
       inputSchema: {},
     },
-    async () => {
+    async (_args, extra) => {
+      throwIfAborted(extra.signal);
       const before = await kb.lint();
+      throwIfAborted(extra.signal);
       if (before.healthy) {
         return {
           content: [
@@ -235,9 +254,11 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
         `or remove the link if the target is gone.\n${brokenList}\n\n` +
         `Follow the enrich / link-both-ways rules. Read concepts before editing.`;
 
-      const outcome = await runMutation(kb, instruction);
-      await refreshSeed();
+      const outcome = await runMutation(kb, instruction, {
+        signal: extra.signal,
+      });
       if (!outcome.ok) return mutationOutcomeResponse(outcome);
+      await refreshSeed(extra.signal);
       const { summary, filesChanged } = outcome.result;
       const after = await kb.lint();
       return {

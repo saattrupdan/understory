@@ -25,11 +25,14 @@ export function withFallback(
     model: primary as ResolvedLanguageModel,
     middleware: {
       wrapGenerate: async ({ doGenerate, params }) => {
+        params.abortSignal?.throwIfAborted();
         try {
           return await doGenerate();
         } catch (err) {
           if (!isRetryableError(err, opts.retry429)) throw err;
+          if (params.abortSignal?.aborted || isAbortError(err)) throw err;
           try {
+            params.abortSignal?.throwIfAborted();
             return await fallbackModel.doGenerate(params);
           } catch (fallbackErr) {
             throw combinedFallbackError(err, fallbackErr);
@@ -37,6 +40,7 @@ export function withFallback(
         }
       },
       wrapStream: async ({ doStream, params }) => {
+        params.abortSignal?.throwIfAborted();
         try {
           return await doStream();
         } catch (err) {
@@ -44,7 +48,9 @@ export function withFallback(
           // returned to the caller, later stream errors must propagate; they
           // cannot be transparently failed over without replaying emitted events.
           if (!isRetryableError(err, opts.retry429)) throw err;
+          if (params.abortSignal?.aborted || isAbortError(err)) throw err;
           try {
+            params.abortSignal?.throwIfAborted();
             return await fallbackModel.doStream(params);
           } catch (fallbackErr) {
             throw combinedFallbackError(err, fallbackErr);
@@ -57,7 +63,7 @@ export function withFallback(
 
 /**
  * Positive allowlist: retry only on recognized transport/provider failures.
- * 401/403/AbortError are NOT retryable. 429 retries are opt-in via the
+ * 401/403/AbortError/TimeoutError are NOT retryable. 429 retries are opt-in via the
  * `retry429` option (wired from LLM_FALLBACK_RETRY_429 by the caller).
  */
 export function isRetryableError(err: unknown, retry429?: boolean): boolean {
@@ -131,7 +137,9 @@ function isTransportCode(code: string): boolean {
 }
 
 function isAbortError(err: unknown): boolean {
-  return !!err && typeof err === "object" && (err as { name?: unknown }).name === "AbortError";
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: unknown }).name;
+  return name === "AbortError" || name === "TimeoutError";
 }
 
 function combinedFallbackError(primaryErr: unknown, fallbackErr: unknown): Error {

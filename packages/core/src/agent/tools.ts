@@ -288,6 +288,7 @@ export function buildReadTools(
           .describe("Require ALL of these tags"),
       }),
       execute: async ({ query, type, tags }) => {
+        state.checkCancellation();
         const hits = await kb.search(query, { type, tags });
         trace?.record(
           "search_knowledge",
@@ -327,6 +328,7 @@ export function buildReadTools(
         offset: z.number().int().min(0).default(0).describe("Body character offset"),
       }),
       execute: async ({ path, offset = 0 }) => {
+        state.checkCancellation();
         let c: Concept;
         try {
           c = await kb.readConcept(path);
@@ -361,6 +363,7 @@ export function buildReadTools(
         paths: z.array(conceptPathSchema()).min(1).max(12).describe("Concept paths to read together"),
       }),
       execute: async ({ paths }) => {
+        state.checkCancellation();
         trace?.record(
           "read_concepts",
           paths.slice(0, 3).map((path) => boundedConceptPath(path)).join(", "),
@@ -483,6 +486,7 @@ export function buildReadTools(
         "List the bundle's compact directory tree with concept types (descriptions omitted). Use to understand structure and decide where new concepts belong.",
       inputSchema: z.object({}),
       execute: async () => {
+        state.checkCancellation();
         trace?.record("list_directory", "", []);
         const tree = formatTree(await kb.listTree(), 0, false);
         const budget = state.payloadBudget;
@@ -494,6 +498,7 @@ export function buildReadTools(
         "Graph health check: orphaned concepts (nothing links to them) and broken links. Use to find what needs wiring into the graph or fixing.",
       inputSchema: z.object({}),
       execute: async () => {
+        state.checkCancellation();
         trace?.record("lint_knowledge", "", []);
         const report = await kb.lint();
         return state.fits(report)
@@ -562,6 +567,7 @@ export function buildWriteTools(
         log_summary: boundedLogSummary,
       }),
       execute: async ({ path, frontmatter, body, log_summary }: WriteConceptArgs) => {
+        state.checkCancellation();
         state.assertWriteInput({ path, frontmatter, body, log_summary });
         const c = await kb.createConcept(path, frontmatter, body, log_summary);
         filesChanged.add(c.path);
@@ -593,6 +599,7 @@ export function buildWriteTools(
         log_summary: boundedLogSummary,
       }),
       execute: async ({ path, frontmatter, replace_section, replace_body, log_summary }: PatchConceptArgs) => {
+        state.checkCancellation();
         state.assertWriteInput({ path, frontmatter, replace_section, replace_body, log_summary });
         const expectedBodyHash =
           replace_body === undefined
@@ -624,6 +631,7 @@ export function buildWriteTools(
         log_summary: boundedLogSummary,
       }),
       execute: async ({ path, log_summary }: DeleteConceptArgs) => {
+        state.checkCancellation();
         state.assertWriteInput({ path, log_summary });
         await kb.deleteConcept(path, log_summary);
         filesChanged.add(path);
