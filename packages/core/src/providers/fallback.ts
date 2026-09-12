@@ -1,4 +1,5 @@
 import { wrapLanguageModel, type LanguageModel } from "ai";
+import { isAbortError } from "../util/abort.js";
 
 type ResolvedLanguageModel = Extract<LanguageModel, { doGenerate: unknown }>;
 
@@ -35,6 +36,7 @@ export function withFallback(
             params.abortSignal?.throwIfAborted();
             return await fallbackModel.doGenerate(params);
           } catch (fallbackErr) {
+            if (isAbortError(fallbackErr, params.abortSignal)) throw fallbackErr;
             throw combinedFallbackError(err, fallbackErr);
           }
         }
@@ -53,6 +55,7 @@ export function withFallback(
             params.abortSignal?.throwIfAborted();
             return await fallbackModel.doStream(params);
           } catch (fallbackErr) {
+            if (isAbortError(fallbackErr, params.abortSignal)) throw fallbackErr;
             throw combinedFallbackError(err, fallbackErr);
           }
         }
@@ -134,12 +137,6 @@ function isTransportCode(code: string): boolean {
     "UND_ERR_SOCKET",
   ];
   return codes.includes(code);
-}
-
-function isAbortError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const name = (err as { name?: unknown }).name;
-  return name === "AbortError" || name === "TimeoutError";
 }
 
 function combinedFallbackError(primaryErr: unknown, fallbackErr: unknown): Error {

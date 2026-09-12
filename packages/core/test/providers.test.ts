@@ -77,21 +77,47 @@ describe("discoverLlamaCppModel", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("cancels one discovery caller without cancelling shared discovery", async () => {
+  it("aborts discovery when its sole caller is cancelled", async () => {
+    const url = freshBaseURL();
+    let fetchSignal!: AbortSignal;
+    vi.mocked(fetch).mockImplementationOnce((_input, init) => {
+      fetchSignal = init?.signal as AbortSignal;
+      return new Promise<Response>((_, reject) => {
+        fetchSignal.addEventListener("abort", () => reject(fetchSignal.reason), { once: true });
+      });
+    });
+    const controller = new AbortController();
+    const cancelled = discoverLlamaCppModel(url, controller.signal);
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchSignal.aborted).toBe(true);
+
+    // The aborted entry is removed, so a later caller starts fresh discovery.
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ data: [{ id: "model-a" }] }));
+    await expect(discoverLlamaCppModel(url)).resolves.toBe("model-a");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps discovery alive for another caller when one is cancelled", async () => {
     const url = freshBaseURL();
     let resolveResponse: ((response: Response) => void) | undefined;
+    let fetchSignal!: AbortSignal;
     vi.mocked(fetch).mockReturnValueOnce(
       new Promise<Response>((resolve) => {
         resolveResponse = resolve;
       })
     );
-    const controller = new AbortController();
-    const cancelled = discoverLlamaCppModel(url, controller.signal);
-    controller.abort();
-    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+    // The second caller joins the same in-flight entry.
+    const first = discoverLlamaCppModel(url, new AbortController().signal);
+    const secondController = new AbortController();
+    const second = discoverLlamaCppModel(url, secondController.signal);
+    fetchSignal = vi.mocked(fetch).mock.calls[0]?.[1]?.signal as AbortSignal;
+    secondController.abort();
+    await expect(second).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchSignal.aborted).toBe(false);
 
     resolveResponse!(jsonResponse({ data: [{ id: "model-a" }] }));
-    await expect(discoverLlamaCppModel(url)).resolves.toBe("model-a");
+    await expect(first).resolves.toBe("model-a");
     expect(fetch).toHaveBeenCalledOnce();
   });
 });
@@ -229,6 +255,26 @@ describe("fallback middleware", () => {
 
     await expect(withFallback(primary, fallback).doGenerate({} as never)).rejects.toMatchObject({ statusCode: 401 });
     expect(fallback.doGenerate).not.toHaveBeenCalled();
+  });
+
+  it("rethrows cancellation during the fallback without wrapping it", async () => {
+    const controller = new AbortController();
+    const cancellation = new DOMException("cancelled", "AbortError");
+    const primary = fakeModel({
+      doGenerate: vi.fn(async () => {
+        throw { statusCode: 503 };
+      }),
+    });
+    const fallback = fakeModel({
+      doGenerate: vi.fn(async () => {
+        controller.abort(cancellation);
+        throw cancellation;
+      }),
+    });
+
+    await expect(
+      withFallback(primary, fallback).doGenerate({ abortSignal: controller.signal } as never)
+    ).rejects.toBe(cancellation);
   });
 
   it("preserves prototype getters like supportedUrls through the wrapper", () => {

@@ -187,7 +187,16 @@ export function resolveFallbackConfig(env: NodeJS.ProcessEnv = process.env): Mod
 // session that the user swapped which model (e.g. via llama-swap) has
 // loaded (a process-lifetime cache would never see that again).
 const DISCOVERY_TTL_MS = 60_000;
-const discoveryCache = new Map<string, { promise: Promise<string>; expiresAt: number }>();
+
+type DiscoveryEntry = {
+  promise: Promise<string>;
+  expiresAt: number;
+  controller: AbortController;
+  subscribers: number;
+  settled: boolean;
+};
+
+const discoveryCache = new Map<string, DiscoveryEntry>();
 
 /**
  * Auto-discover the model id from an OpenAI-compatible /v1/models endpoint.
@@ -200,11 +209,13 @@ export async function discoverLlamaCppModel(
   signal?: AbortSignal
 ): Promise<string> {
   const url = normalizeV1(baseURL);
-  const cached = discoveryCache.get(url);
-  let promise = cached && cached.expiresAt > Date.now() ? cached.promise : undefined;
-  if (!promise) {
-    promise = (async () => {
-      const res = await fetch(`${url}/models`);
+  throwIfAborted(signal);
+
+  let entry = discoveryCache.get(url);
+  if (!entry || entry.expiresAt <= Date.now()) {
+    const controller = new AbortController();
+    const promise = (async () => {
+      const res = await fetch(`${url}/models`, { signal: controller.signal });
       if (!res.ok) {
         throw new Error(`Model discovery failed: ${res.status} at ${url}/models`);
       }
@@ -218,33 +229,82 @@ export async function discoverLlamaCppModel(
       const loaded = models.find((m) => m.status?.value === "loaded");
       return (loaded ?? models[0]).id;
     })();
-    discoveryCache.set(url, { promise, expiresAt: Date.now() + DISCOVERY_TTL_MS });
-    // Don't cache failures — the server may just be starting up.
-    promise.catch(() => discoveryCache.delete(url));
+    entry = {
+      promise,
+      expiresAt: Date.now() + DISCOVERY_TTL_MS,
+      controller,
+      subscribers: 0,
+      settled: false,
+    };
+    discoveryCache.set(url, entry);
+    const createdEntry = entry;
+    // Don't cache failures — the server may just be starting up. Identity
+    // checking keeps an expired request from deleting a newer cache entry.
+    promise.then(
+      () => {
+        createdEntry.settled = true;
+      },
+      () => {
+        createdEntry.settled = true;
+        if (discoveryCache.get(url) === createdEntry) discoveryCache.delete(url);
+      }
+    );
   }
-  // The discovery request is shared, but cancellation belongs to this caller.
-  // Racing here prevents one stopped request from aborting discovery for all
-  // other callers using the same endpoint.
-  if (!signal) return promise;
-  throwIfAborted(signal);
+
+  const subscribedEntry = entry;
+  subscribedEntry.subscribers += 1;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    subscribedEntry.subscribers -= 1;
+    if (
+      subscribedEntry.subscribers === 0 &&
+      !subscribedEntry.settled
+    ) {
+      // No caller still needs this request. Remove it before aborting so a
+      // new caller starts a fresh discovery rather than joining a doomed one.
+      if (discoveryCache.get(url) === subscribedEntry) discoveryCache.delete(url);
+      subscribedEntry.controller.abort();
+    }
+  };
+
+  // A caller's cancellation only releases its subscription. The underlying
+  // fetch is aborted only when this was the last live subscriber.
+  if (!signal) {
+    return subscribedEntry.promise.then(
+      (model) => {
+        release();
+        return model;
+      },
+      (error: unknown) => {
+        release();
+        throw error;
+      }
+    );
+  }
+
   return new Promise<string>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
     const onAbort = () => {
       cleanup();
+      release();
       reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
     };
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
     signal.addEventListener("abort", onAbort, { once: true });
     if (signal.aborted) {
       onAbort();
       return;
     }
-    promise.then(
+    subscribedEntry.promise.then(
       (model) => {
         cleanup();
+        release();
         resolve(model);
       },
       (error: unknown) => {
         cleanup();
+        release();
         reject(error);
       }
     );
