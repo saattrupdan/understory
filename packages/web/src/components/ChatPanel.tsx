@@ -67,7 +67,7 @@ export function ChatPanel({
   };
 
   const reactivateChat = () => reactivateChatScroll(chatScrollStateRef.current);
-  const { messages, sendMessage, setMessages, status, error, clearError } = useChat({
+  const { messages, sendMessage, setMessages, status, error, clearError, stop } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
       headers: () => authHeaders(),
@@ -77,6 +77,20 @@ export function ChatPanel({
   });
 
   const busy = status === "submitted" || status === "streaming";
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+
+  // A page lifecycle change aborts the fetch, which also aborts the server-side
+  // model request instead of leaving an agent running after the tab is gone.
+  useEffect(() => {
+    const stopChat = () => stopRef.current();
+    window.addEventListener("pagehide", stopChat);
+    window.addEventListener("beforeunload", stopChat);
+    return () => {
+      window.removeEventListener("pagehide", stopChat);
+      window.removeEventListener("beforeunload", stopChat);
+    };
+  }, []);
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (
@@ -126,6 +140,15 @@ export function ChatPanel({
           >
             <span aria-hidden="true">→</span>
           </button>
+          {busy && (
+            <button
+              type="button"
+              onClick={stop}
+              className="rounded border border-amber-700 px-2 py-0.5 text-xs text-amber-300 hover:bg-amber-900/40"
+            >
+              Stop
+            </button>
+          )}
           {config && (
             <>
               {config.fallbackConfigured && (

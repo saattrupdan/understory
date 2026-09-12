@@ -32,12 +32,22 @@ export function chatRouter(kb: KnowledgeBase): Router {
   // size ceiling. Other API/MCP requests use the app's 4 MiB parser.
   router.post("/chat", express.json({ limit: Infinity }), async (req, res) => {
     let responseStarted = false;
+    let responseCompleted = false;
+    const abortController = new AbortController();
+    const abortRequest = () => {
+      if (!responseCompleted && !res.writableEnded) abortController.abort();
+    };
+    req.on("aborted", abortRequest);
+    req.on("close", () => {
+      if (req.aborted) abortRequest();
+    });
+    res.on("close", abortRequest);
     try {
       const { messages, model } = req.body as ChatBody;
       const { result, filesChanged } = await streamChat(
         kb,
         convertToModelMessages(messages),
-        { model }
+        { model, signal: abortController.signal }
       );
       const onError = (error: unknown) => chatErrorMessage(error, filesChanged);
 
@@ -60,6 +70,7 @@ export function chatRouter(kb: KnowledgeBase): Router {
           res.write(chunk);
         }
       }
+      responseCompleted = true;
       res.end();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -70,8 +81,12 @@ export function chatRouter(kb: KnowledgeBase): Router {
       } else {
         // The AI SDK wrapper handles stream failures. Anything reaching here is
         // an unexpected transport/write failure; do not turn it into a clean EOF.
+        abortController.abort();
         res.destroy(error instanceof Error ? error : new Error(message));
       }
+    } finally {
+      req.removeListener("aborted", abortRequest);
+      res.removeListener("close", abortRequest);
     }
   });
 

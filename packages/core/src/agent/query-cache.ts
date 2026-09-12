@@ -8,6 +8,7 @@ import { runRecall, type RecallOutcome } from "./recall.js";
 import { traceStore } from "./agent.js";
 import { TraceRecorder } from "./trace.js";
 import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
+import { isAbortError, throwIfAborted } from "../util/abort.js";
 import {
   assertInputWithinLimit,
   resolveAgentLimits,
@@ -74,13 +75,16 @@ export async function runQueryCached(
     resolveAgentLimits().maxInputChars,
     "Query input"
   );
+  throwIfAborted(options.signal);
   if (process.env.QUERY_CACHE === "false") {
     const result = await runner(kb, question, options);
+    throwIfAborted(options.signal);
     if (isMalformedAnswer(result.answer)) throw new Error(MALFORMED_ANSWER_MESSAGE);
     return { ...result, cached: false, source: "deep" };
   }
 
   const fingerprint = await bundleFingerprint(kb);
+  throwIfAborted(options.signal);
   const key = createHash("sha256")
     .update(`${fingerprint}\n${normalize(question)}\n${options.model ?? ""}`)
     .digest("hex");
@@ -95,6 +99,7 @@ export async function runQueryCached(
       // Refresh recency (Map preserves insertion order — delete + set = LRU touch).
       cache.delete(key);
       cache.set(key, hit);
+      throwIfAborted(options.signal);
       return { ...hit.result, cached: true, source: "cache" };
     }
   }
@@ -105,8 +110,9 @@ export async function runQueryCached(
   // LLM call. A confident hot answer also lands in the exact cache so identical
   // repeats become instant.
   //
-  // A layer that cannot reach its model may only cost the query the attempt.
-  // The deep agent is the one layer with a primary-then-fallback model chain
+  // A non-cancellation layer failure may only cost the query the attempt.
+  // Cancellation is deliberately rethrown so it cannot fall through. The deep
+  // agent is the one layer with a primary-then-fallback model chain
   // (resolveAgentModel + withFallback in agent.ts), so a connection error or a
   // non-retryable provider error thrown here used to unwind past it: the MCP
   // layer in packages/server turned it into an isError tool result, the one
@@ -116,7 +122,9 @@ export async function runQueryCached(
   let hotAnswer: string | null = null;
   try {
     hotAnswer = await hot(kb, question, options);
+    throwIfAborted(options.signal);
   } catch (err) {
+    if (isAbortError(err, options.signal)) throw err;
     console.error(
       `[understory] hot memory failed, falling through to the next layer: ${errorMessage(err)}`
     );
@@ -137,8 +145,9 @@ export async function runQueryCached(
   // the deep agent's retry loop is still the backstop. The recorder is made
   // before the call so the trace duration covers the retrieval and generation.
   //
-  // A throwing recall degrades exactly like a hot miss: the deep agent still
-  // gets the question. It is worth a trace, though — finalising that recorder
+  // A non-cancellation recall failure degrades exactly like a hot miss: the deep
+  // agent still gets the question. Cancellation exits before this fallback. It is
+  // worth a trace, though — finalising that recorder
   // with the failed outcome is what makes a broken layer show up in the trace
   // store instead of vanishing, and the empty outcome keeps the candidate hint
   // honest, since nothing was located.
@@ -146,7 +155,9 @@ export async function runQueryCached(
   let recalled: RecallOutcome = { answer: null, paths: [] };
   try {
     recalled = await recall(kb, question, options);
+    throwIfAborted(options.signal);
   } catch (err) {
+    if (isAbortError(err, options.signal)) throw err;
     console.error(
       `[understory] recall failed, escalating to the deep agent: ${errorMessage(err)}`
     );
@@ -177,6 +188,7 @@ export async function runQueryCached(
   // is handed over, so a declined attempt buys
   // the deep run a head start instead of costing an extra round-trip.
   const result = await runner(kb, withCandidateHint(question, recalled.paths), options); // writes its own trace
+  throwIfAborted(options.signal);
   if (isMalformedAnswer(result.answer)) throw new Error(MALFORMED_ANSWER_MESSAGE);
   store(key, result, ttl);
   return { ...result, cached: false, source: "deep" };

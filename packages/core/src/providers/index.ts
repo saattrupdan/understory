@@ -2,6 +2,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import { positiveIntegerEnv } from "../util/env.js";
+import { isAbortError, throwIfAborted } from "../util/abort.js";
 
 type ResolvedLanguageModel = Extract<LanguageModel, { doGenerate: unknown }>;
 
@@ -194,40 +195,75 @@ const discoveryCache = new Map<string, { promise: Promise<string>; expiresAt: nu
  * the first listed. Results are cached per URL with a 60s TTL so model
  * swaps are noticed within a session.
  */
-export async function discoverLlamaCppModel(baseURL: string): Promise<string> {
+export async function discoverLlamaCppModel(
+  baseURL: string,
+  signal?: AbortSignal
+): Promise<string> {
   const url = normalizeV1(baseURL);
   const cached = discoveryCache.get(url);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.promise;
+  let promise = cached && cached.expiresAt > Date.now() ? cached.promise : undefined;
+  if (!promise) {
+    promise = (async () => {
+      const res = await fetch(`${url}/models`);
+      if (!res.ok) {
+        throw new Error(`Model discovery failed: ${res.status} at ${url}/models`);
+      }
+      const body = (await res.json()) as {
+        data?: { id: string; status?: { value?: string } }[];
+      };
+      const models = body.data ?? [];
+      if (models.length === 0) {
+        throw new Error(`No models listed at ${url}/models`);
+      }
+      const loaded = models.find((m) => m.status?.value === "loaded");
+      return (loaded ?? models[0]).id;
+    })();
+    discoveryCache.set(url, { promise, expiresAt: Date.now() + DISCOVERY_TTL_MS });
+    // Don't cache failures — the server may just be starting up.
+    promise.catch(() => discoveryCache.delete(url));
   }
-  const promise = (async () => {
-    const res = await fetch(`${url}/models`);
-    if (!res.ok) {
-      throw new Error(`Model discovery failed: ${res.status} at ${url}/models`);
-    }
-    const body = (await res.json()) as {
-      data?: { id: string; status?: { value?: string } }[];
+  // The discovery request is shared, but cancellation belongs to this caller.
+  // Racing here prevents one stopped request from aborting discovery for all
+  // other callers using the same endpoint.
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return new Promise<string>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
     };
-    const models = body.data ?? [];
-    if (models.length === 0) {
-      throw new Error(`No models listed at ${url}/models`);
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
     }
-    const loaded = models.find((m) => m.status?.value === "loaded");
-    return (loaded ?? models[0]).id;
-  })();
-  discoveryCache.set(url, { promise, expiresAt: Date.now() + DISCOVERY_TTL_MS });
-  // Don't cache failures — the server may just be starting up.
-  promise.catch(() => discoveryCache.delete(url));
-  return promise;
+    promise.then(
+      (model) => {
+        cleanup();
+        resolve(model);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      }
+    );
+  });
 }
 
-export async function createModel(cfg: ModelConfig): Promise<ResolvedLanguageModel> {
+export async function createModel(
+  cfg: ModelConfig,
+  signal?: AbortSignal
+): Promise<ResolvedLanguageModel> {
   let model = cfg.model;
   if (!model) {
     if (cfg.format === "openai") {
       try {
-        model = await discoverLlamaCppModel(cfg.baseURL);
-      } catch {
+        model = await discoverLlamaCppModel(cfg.baseURL, signal);
+      } catch (error) {
+        if (isAbortError(error, signal)) {
+          throw error;
+        }
         throw new Error("LLM_MODEL is required for this endpoint.");
       }
     } else {

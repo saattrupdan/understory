@@ -76,6 +76,24 @@ describe("discoverLlamaCppModel", () => {
     await expect(discoverLlamaCppModel(url)).resolves.toBe("model-a");
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+
+  it("cancels one discovery caller without cancelling shared discovery", async () => {
+    const url = freshBaseURL();
+    let resolveResponse: ((response: Response) => void) | undefined;
+    vi.mocked(fetch).mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolveResponse = resolve;
+      })
+    );
+    const controller = new AbortController();
+    const cancelled = discoverLlamaCppModel(url, controller.signal);
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+
+    resolveResponse!(jsonResponse({ data: [{ id: "model-a" }] }));
+    await expect(discoverLlamaCppModel(url)).resolves.toBe("model-a");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
 });
 
 // ── Generic provider config (PR #5) ────────────────────────────────

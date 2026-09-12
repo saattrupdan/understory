@@ -24,6 +24,7 @@ import {
   resolveAgentLimits,
 } from "./limits.js";
 import { AgentRunContext, fitText } from "./run-context.js";
+import { isAbortError, throwIfAborted } from "../util/abort.js";
 import { TraceRecorder, TraceStore, type TraceUsage } from "./trace.js";
 import {
   createProtocolLeakageGuard,
@@ -34,6 +35,7 @@ import {
 
 export interface AgentOptions {
   model?: string;
+  signal?: AbortSignal;
 }
 
 export interface QueryResult {
@@ -81,7 +83,8 @@ async function resolveAgentModel(
   env: NodeJS.ProcessEnv = process.env
 ): Promise<ResolvedAgentModel> {
   const primaryConfig = withModelOverride(resolveModelConfig(env), options.model);
-  const primary = await createModel(primaryConfig);
+  throwIfAborted(options.signal);
+  const primary = await createModel(primaryConfig, options.signal);
   const fallbackConfig = resolveFallbackConfig(env);
 
   if (!fallbackConfig) {
@@ -101,7 +104,7 @@ async function resolveAgentModel(
     };
   }
 
-  const fallback = await createModel(fallbackConfig);
+  const fallback = await createModel(fallbackConfig, options.signal);
   return {
     // The initial loop keeps the existing transport-only fallback behaviour.
     model: withFallback(primary, fallback, {
@@ -468,8 +471,10 @@ export async function runQuery(
     limits.maxInputChars,
     "Query input"
   );
-  const state = new AgentRunContext(limits);
+  const state = new AgentRunContext(limits, options.signal);
+  throwIfAborted(options.signal);
   const ctx = await promptContext(kb, "query", state);
+  throwIfAborted(options.signal);
   const recorder = new TraceRecorder();
   const maxSteps = limits.maxSteps;
   let modelChain: string[] = [];
@@ -483,7 +488,9 @@ export async function runQuery(
       tools: buildReadTools(kb, recorder, state),
       stopWhen: stepCountIs(maxSteps),
       prepareStep: prepareFinalSynthesisStep(maxSteps),
+      abortSignal: options.signal,
     });
+    throwIfAborted(options.signal);
     assertSynthesised(result.steps);
 
     let finalText = result.text;
@@ -505,7 +512,9 @@ export async function runQuery(
         system: buildQuerySynthesisPrompt(),
         messages: repairMessages,
         tools: {},
+        abortSignal: options.signal,
       });
+      throwIfAborted(options.signal);
       assertSynthesised(repair.steps);
       if (isMalformedAnswer(repair.text) || isUnsafeSynthesisAnswer(repair.text)) {
         // KAT can interpret the valid assistant/tool transcript above as a
@@ -533,7 +542,9 @@ export async function runQuery(
             },
           ],
           tools: {},
+          abortSignal: options.signal,
         });
+        throwIfAborted(options.signal);
         assertSynthesised(secondRepair.steps);
         if (
           isMalformedAnswer(secondRepair.text) ||
@@ -578,8 +589,10 @@ export async function runMutation(
     limits.maxInputChars,
     "Mutation input"
   );
-  const state = new AgentRunContext(limits);
+  const state = new AgentRunContext(limits, options.signal);
+  throwIfAborted(options.signal);
   const ctx = await promptContext(kb, "mutate", state);
+  throwIfAborted(options.signal);
   const recorder = new TraceRecorder();
   const maxSteps = limits.maxSteps;
   const filesChanged = new Set<string>();
@@ -598,7 +611,9 @@ export async function runMutation(
       stopWhen: stepCountIs(maxSteps),
       prepareStep: prepareFinalSynthesisStep(maxSteps),
       temperature: 0.2,
+      abortSignal: options.signal,
     });
+    throwIfAborted(options.signal);
     assertSynthesised(result.steps);
     if (isMalformedAnswer(result.text)) {
       console.error(`[understory] mutation summary rejected: ${MALFORMED_ANSWER_MESSAGE}`);
@@ -618,6 +633,16 @@ export async function runMutation(
   } catch (err) {
     const files = [...filesChanged].sort();
     const message = errorMessage(err);
+    // A cancelled mutation with no writes must remain a cancellation so MCP and
+    // callers do not mistake it for a completed agent response. Once a write has
+    // landed, retain the existing partial-mutation report instead.
+    if (files.length === 0 && isAbortError(err, options.signal)) {
+      const trace = recorder.finalize("mutation", instruction, message, "failed", modelChain);
+      await traceStore(kb).save(trace).catch(() => {
+        // Preserve the provider cancellation even if trace persistence also fails.
+      });
+      throw err;
+    }
     if (files.length > 0) {
       const summary = `Partial mutation: ${files.length} file(s) changed before failure. Error: ${message}`;
       const trace = recorder.finalize("mutation", instruction, summary, "partial", modelChain);
@@ -636,8 +661,10 @@ export async function streamChat(
   messages: ModelMessage[],
   options: AgentOptions = {}
 ) {
-  const state = AgentRunContext.unbounded();
+  const state = AgentRunContext.unbounded(options.signal);
+  throwIfAborted(options.signal);
   const ctx = await promptContext(kb, "chat", state);
+  throwIfAborted(options.signal);
   const recorder = new TraceRecorder();
   const filesChanged = new Set<string>();
   let modelChain: string[] = [];
@@ -689,6 +716,7 @@ export async function streamChat(
       // An empty condition list lets AI SDK v5 continue until the model stops,
       // without imposing an application-level step budget.
       stopWhen: [],
+      abortSignal: options.signal,
       // AI SDK v5 applies this transform before toUIMessageStreamResponse(),
       // so malformed text is dropped before it can reach the HTTP client.
       experimental_transform: protocolGuard.transform,
