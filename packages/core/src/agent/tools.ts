@@ -495,7 +495,7 @@ export function buildReadTools(
     }),
     lint_knowledge: tool({
       description:
-        "Graph health check: orphaned concepts (nothing links to them) and broken links. Use to find what needs wiring into the graph or fixing.",
+        "Knowledge health check: orphaned concepts, broken links, duplicate section titles, and repeated content blocks. Use to find graph defects and accidental duplication.",
       inputSchema: z.object({}),
       execute: async () => {
         state.checkCancellation();

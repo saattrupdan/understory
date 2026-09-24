@@ -503,6 +503,111 @@ describe("lint (graph health)", () => {
     report = await lintBundle(kb.bundle);
     expect(report.brokenLinks).toEqual([]);
     expect(report.orphans).toEqual([]);
+    expect(report.duplicateSectionTitles).toEqual([]);
+    expect(report.duplicateContentBlocks).toEqual([]);
+    expect(report.healthy).toBe(true);
+  });
+
+  it("flags duplicate section titles and substantive content within one concept", async () => {
+    const repeated = "This paragraph contains enough substantive content to identify an accidental copy.";
+    const body = [
+      "# Details",
+      "",
+      "This paragraph contains enough substantive content",
+      "to identify an accidental copy.",
+      "",
+      "## Unique",
+      "",
+      "See [B](/b.md) for related information.",
+      "",
+      "#   details ##",
+      "",
+      repeated,
+    ].join("\n");
+    await kb.writeConcept("/a.md", { type: "T", title: "A" }, body, "add");
+    await kb.writeConcept("/b.md", { type: "T", title: "B" }, "See [A](/a.md).", "add");
+
+    const report = await lintBundle(kb.bundle);
+    expect(report.orphans).toEqual([]);
+    expect(report.brokenLinks).toEqual([]);
+    expect(report.duplicateSectionTitles).toEqual([
+      {
+        path: "/a.md",
+        title: "Details",
+        occurrences: [
+          { line: 1, level: 1 },
+          { line: 10, level: 1 },
+        ],
+      },
+    ]);
+    expect(report.duplicateContentBlocks).toEqual([
+      {
+        path: "/a.md",
+        excerpt: repeated,
+        lines: [3, 12],
+      },
+    ]);
+    expect(report.healthy).toBe(false);
+  });
+
+  it("does not report repeated short boilerplate as duplicate content", async () => {
+    await kb.writeConcept(
+      "/a.md",
+      { type: "T", title: "A" },
+      "# First\n\nsame\n\n# Second\n\nsame\n\nSee [B](/b.md).",
+      "add"
+    );
+    await kb.writeConcept("/b.md", { type: "T", title: "B" }, "See [A](/a.md).", "add");
+
+    const report = await lintBundle(kb.bundle);
+    expect(report.duplicateSectionTitles).toEqual([]);
+    expect(report.duplicateContentBlocks).toEqual([]);
+    expect(report.healthy).toBe(true);
+  });
+
+  it("allows same-named subsections under different parent sections", async () => {
+    await kb.writeConcept(
+      "/a.md",
+      { type: "T", title: "A" },
+      "# Service A\n\n## Usage\n\nalpha\n\n# Service B\n\n## Usage\n\nbeta\n\nSee [B](/b.md).",
+      "add"
+    );
+    await kb.writeConcept("/b.md", { type: "T", title: "B" }, "See [A](/a.md).", "add");
+
+    const report = await lintBundle(kb.bundle);
+    expect(report.duplicateSectionTitles).toEqual([]);
+    expect(report.healthy).toBe(true);
+  });
+
+  it("uses Markdown ATX rules and excludes code blocks from prose duplicates", async () => {
+    const code = "value:\n  nested: whitespace-sensitive example";
+    await kb.writeConcept(
+      "/a.md",
+      { type: "T", title: "A" },
+      [
+        "## C",
+        "",
+        "## C#",
+        "",
+        "    ## C",
+        "",
+        "```yaml",
+        code,
+        "```",
+        "",
+        "```yaml",
+        "value: nested: whitespace-sensitive example",
+        "```",
+        "",
+        "See [B](/b.md).",
+      ].join("\n"),
+      "add"
+    );
+    await kb.writeConcept("/b.md", { type: "T", title: "B" }, "See [A](/a.md).", "add");
+
+    const report = await lintBundle(kb.bundle);
+    expect(report.duplicateSectionTitles).toEqual([]);
+    expect(report.duplicateContentBlocks).toEqual([]);
     expect(report.healthy).toBe(true);
   });
 });

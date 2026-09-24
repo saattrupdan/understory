@@ -53,6 +53,29 @@ export async function runDream(
         lint.brokenLinks.map((b) => `- ${b.path} → ${b.target}`).join("\n")
     );
   }
+  if (lint.duplicateSectionTitles.length > 0) {
+    signals.push(
+      `DUPLICATE SECTION TITLES. Read each affected concept and verify whether the repeated ` +
+        `sections are accidental. Merge genuinely repeated sections under one heading while ` +
+        `preserving all distinct information; leave intentional repetition unchanged:\n` +
+        lint.duplicateSectionTitles
+          .map(
+            (d) =>
+              `- ${d.path}: ${d.title} (lines ${d.occurrences.map((o) => o.line).join(", ")})`
+          )
+          .join("\n")
+    );
+  }
+  if (lint.duplicateContentBlocks.length > 0) {
+    signals.push(
+      `DUPLICATE CONTENT BLOCKS. Read each affected concept and verify the repeated blocks ` +
+        `are redundant. Remove accidental copies while preserving one copy and any distinct ` +
+        `surrounding context; leave intentional repetition unchanged:\n` +
+        lint.duplicateContentBlocks
+          .map((d) => `- ${d.path}: lines ${d.lines.join(", ")} — ${d.excerpt}`)
+          .join("\n")
+    );
+  }
   if (dupes.length > 0) {
     signals.push(
       `LIKELY DUPLICATES (title/description similarity). Read each pair; if they cover the ` +

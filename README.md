@@ -200,10 +200,10 @@ The seed regenerates fresh for every new session. After `memory_add` / `memory_u
 
 ### Graph health & maintenance
 
-Memory is a graph, not a pile of notes, and graphs rot: concepts go **orphaned** (nothing links to them) and links go **broken**. Two mechanisms keep it healthy:
+Memory is a graph, not a pile of notes, and it drifts: concepts go **orphaned** (nothing links to them), links go **broken**, and repeated enrichment can introduce **duplicate sections or content**. Two mechanisms keep it healthy:
 
 - **Write-time linking** — new knowledge either enriches the concept it belongs to (an attribute of an existing entity is patched in, not filed separately) or, when it's a distinct entity, is created *and* back-linked from related concepts. Contradictions are superseded in place, never left standing alongside the old value.
-- **`memory_maintain`** — a deterministic lint (orphans + broken links, surfaced in `memory_status` under `graph`) drives an internal agent to wire orphans into related concepts and fix dangling links. Run it periodically to counter drift; it's a no-op when the graph is already healthy.
+- **`memory_maintain`** — a deterministic lint (orphans, broken links, duplicate section titles, and repeated substantive content blocks, surfaced in `memory_status` under `graph`) drives an internal agent to repair the findings. Run it periodically to counter drift; it's a no-op when memory is healthy.
 
 This design mirrors the pattern in Karpathy's [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) (index.md + log.md, create-vs-enrich, lint for orphans). Deferred from that pattern until scale warrants: an explicit page-type schema, and hybrid FTS5+embedding search (the naive scan in `search.ts` is fine into the low thousands of concepts).
 

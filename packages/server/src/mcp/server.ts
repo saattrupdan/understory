@@ -202,6 +202,8 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
                   links: lint.linkCount,
                   orphans: lint.orphans.length,
                   brokenLinks: lint.brokenLinks.length,
+                  duplicateSectionTitles: lint.duplicateSectionTitles.length,
+                  duplicateContentBlocks: lint.duplicateContentBlocks.length,
                   healthy: lint.healthy,
                 },
               },
@@ -219,7 +221,7 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
     {
       title: "Maintain / repair memory",
       description:
-        "Health-check and repair the knowledge graph: an internal agent wires orphaned concepts (nothing links to them) into related concepts and fixes broken links. Run periodically to counter drift. No-op when the graph is already healthy.",
+        "Health-check and repair memory: an internal agent wires orphaned concepts, fixes broken links, and consolidates duplicate sections or content. Run periodically to counter drift. No-op when memory is healthy.",
       inputSchema: {},
     },
     async (_args, extra) => {
@@ -231,7 +233,7 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
           content: [
             {
               type: "text",
-              text: `Memory is healthy — ${before.conceptCount} concepts, ${before.linkCount} links, no orphans, no broken links. Nothing to repair.`,
+              text: `Memory is healthy — ${before.conceptCount} concepts, ${before.linkCount} links, no orphans, broken links, or duplicate content. Nothing to repair.`,
             },
           ],
         };
@@ -243,8 +245,19 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
       const brokenList =
         before.brokenLinks.map((b) => `- ${b.path} → ${b.target} (missing)`).join("\n") ||
         "(none)";
+      const duplicateSectionList =
+        before.duplicateSectionTitles
+          .map(
+            (d) =>
+              `- ${d.path}: ${d.title} (lines ${d.occurrences.map((o) => o.line).join(", ")})`
+          )
+          .join("\n") || "(none)";
+      const duplicateContentList =
+        before.duplicateContentBlocks
+          .map((d) => `- ${d.path}: lines ${d.lines.join(", ")} — ${d.excerpt}`)
+          .join("\n") || "(none)";
       const instruction =
-        `Repair the knowledge graph. This is a maintenance task — use the write tools.\n\n` +
+        `Repair memory health. This is a maintenance task — use the write tools.\n\n` +
         `ORPHANED CONCEPTS (no other concept links to them). For each, read it and the ` +
         `concepts it relates to, then wire it in: patch a genuinely related concept to ` +
         `reference it, and/or add outbound links from it to related concepts. Do NOT ` +
@@ -252,6 +265,12 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
         `nothing, leave it.\n${orphanList}\n\n` +
         `BROKEN LINKS (target does not exist). Fix the path if the target was renamed/moved, ` +
         `or remove the link if the target is gone.\n${brokenList}\n\n` +
+        `DUPLICATE SECTION TITLES. Read each affected concept and verify whether repetition ` +
+        `is accidental. Merge genuinely repeated sections under one heading without losing ` +
+        `distinct information; leave intentional repetition unchanged.\n${duplicateSectionList}\n\n` +
+        `DUPLICATE CONTENT BLOCKS. Read each affected concept and verify the repeated blocks ` +
+        `are redundant. Remove accidental copies while preserving one copy and distinct ` +
+        `surrounding context; leave intentional repetition unchanged.\n${duplicateContentList}\n\n` +
         `Follow the enrich / link-both-ways rules. Read concepts before editing.`;
 
       const outcome = await runMutation(kb, instruction, {
@@ -267,8 +286,11 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
             type: "text",
             text:
               `${summary}\n\n` +
-              `Graph health: orphans ${before.orphans.length} → ${after.orphans.length}, ` +
-              `broken links ${before.brokenLinks.length} → ${after.brokenLinks.length}.\n` +
+              `Memory health: orphans ${before.orphans.length} → ${after.orphans.length}, ` +
+              `broken links ${before.brokenLinks.length} → ${after.brokenLinks.length}, ` +
+              `duplicate section titles ${before.duplicateSectionTitles.length} → ` +
+              `${after.duplicateSectionTitles.length}, duplicate content blocks ` +
+              `${before.duplicateContentBlocks.length} → ${after.duplicateContentBlocks.length}.\n` +
               `Files changed:\n${filesChanged.map((f) => `- ${f}`).join("\n") || "- none"}`,
           },
         ],

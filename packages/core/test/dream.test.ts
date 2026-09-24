@@ -54,6 +54,29 @@ describe("runDream", () => {
     expect(instruction).toContain("/stray.md");
   });
 
+  it("feeds duplicate sections into the consolidation instruction", async () => {
+    await kb.writeConcept(
+      "/a.md",
+      { type: "T", title: "Alpha topic", description: "first subject" },
+      "# Details\n\none\n\n# details\n\ntwo\n\nSee [B](/b.md).",
+      "add a"
+    );
+    await kb.writeConcept(
+      "/b.md",
+      { type: "T", title: "Beta subject", description: "second matter" },
+      "See [A](/a.md).",
+      "add b"
+    );
+    const runner = vi.fn(async () => ({ summary: "merged sections", filesChanged: ["/a.md"] }));
+
+    const report = await runDream(kb, {}, runner as never);
+
+    expect(report.ran).toBe(true);
+    const instruction = runner.mock.calls[0][1] as unknown as string;
+    expect(instruction).toContain("DUPLICATE SECTION TITLES");
+    expect(instruction).toContain("/a.md: Details");
+  });
+
   it("normalizes the PR#5 MutationOutcome shape too", async () => {
     await kb.writeConcept("/only.md", { type: "T", title: "Only one", description: "solo" }, "x", "add");
     const runner = vi.fn(async () => ({ ok: true, result: { summary: "done", filesChanged: ["/only.md"], steps: 1, traceId: "t" } }));
