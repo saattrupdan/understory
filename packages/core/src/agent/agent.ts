@@ -616,7 +616,9 @@ export async function runMutation(
     throwIfAborted(options.signal);
     assertSynthesised(result.steps);
     let summary = result.text;
-    let allSteps = [...result.steps];
+    const allSteps: Array<{
+      usage?: { inputTokens?: number; outputTokens?: number };
+    }> = [...result.steps];
     if (isMalformedAnswer(summary)) {
       console.error(`[understory] mutation summary rejected: ${MALFORMED_ANSWER_MESSAGE}`);
       const evidence = safeRepairEvidence(
@@ -651,7 +653,7 @@ export async function runMutation(
         throw new Error(MALFORMED_ANSWER_MESSAGE);
       }
       summary = repair.text;
-      allSteps = [...allSteps, ...repair.steps];
+      allSteps.push(...repair.steps);
     }
     const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, sumStepsUsage(allSteps));
     await traceStore(kb).save(trace);

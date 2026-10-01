@@ -567,6 +567,7 @@ describe("deep agent answer validation", () => {
 });
 
 describe("mutation answer validation", () => {
+  const step = { toolCalls: [] as unknown[] };
   const readEvidence = {
     messages: [{
       role: "tool",
