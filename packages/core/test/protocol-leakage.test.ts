@@ -568,81 +568,79 @@ describe("deep agent answer validation", () => {
 
 describe("mutation answer validation", () => {
   const step = { toolCalls: [] as unknown[] };
-  const readEvidence = {
-    messages: [{
-      role: "tool",
-      content: [{
-        type: "tool-result",
-        toolCallId: "read-1",
-        toolName: "read_concept",
-        output: { type: "json", value: { path: "/facts/new.md", body: "written once" } },
-      }],
-    }],
+  const malformed = "[write_concept(path='/facts/new.md')";
+  const write = async (request: {
+    tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
+  }, pathName: string, body: string) => request.tools?.write_concept?.execute?.({
+    path: pathName,
+    frontmatter: { type: "Fact" },
+    body,
+    log_summary: "create test fact",
+  });
+  const useFallback = () => {
+    vi.stubEnv("LLM_FALLBACK_API_BASE_URL", "http://localhost:2/v1");
+    vi.stubEnv("LLM_FALLBACK_API_KEY", "test");
+    vi.stubEnv("LLM_FALLBACK_MODEL", "fallback-model");
   };
 
-  it("repairs a malformed summary without re-executing writes", async () => {
-    generateTextMock
-      .mockImplementationOnce(async (request: {
-        tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
-      }) => {
-        await request.tools?.write_concept?.execute?.({
-          path: "/facts/new.md",
-          frontmatter: { type: "Fact" },
-          body: "written once",
-          log_summary: "create test fact",
-        });
-        return { text: "[write_concept(path='/facts/new.md')", steps: [step], response: readEvidence };
-      })
-      .mockResolvedValueOnce({ text: "Created /facts/new.md.", steps: [step] });
-
-    const result = await runMutation(kb, "Create the test fact.");
-    expect(result).toMatchObject({ ok: true, result: { summary: "Created /facts/new.md." } });
-    expect(generateTextMock).toHaveBeenCalledTimes(2);
-    expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
-    expect(JSON.stringify(generateTextMock.mock.calls[1][0].messages)).toContain("/facts/new.md");
-    expect((await kb.readConcept("/facts/new.md")).body).toBe("written once\n");
-    const traces = await new TraceStore(root).list();
-    expect(traces).toHaveLength(1);
-    expect(traces[0]).toMatchObject({ outcome: "success" });
+  it("keeps multiple writes partial when the final answer is malformed", async () => {
+    generateTextMock.mockImplementationOnce(async (request: Parameters<typeof write>[0]) => {
+      await write(request, "/facts/one.md", "one");
+      await write(request, "/facts/two.md", "two");
+      return { text: malformed, steps: [step] };
+    });
+    const result = await runMutation(kb, "Create two facts.");
+    expect(result).toMatchObject({ ok: false, status: "partial", filesChanged: ["/facts/one.md", "/facts/two.md"] });
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    expect((await new TraceStore(root).list())[0]).toMatchObject({ outcome: "partial" });
   });
 
-  it("preserves partial-write status when summary repair is malformed", async () => {
+  it("replays the original no-write loop once on the configured raw fallback", async () => {
+    useFallback();
     generateTextMock
-      .mockImplementationOnce(async (request: {
-        tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
-      }) => {
-        await request.tools?.write_concept?.execute?.({
-          path: "/facts/new.md",
-          frontmatter: { type: "Fact" },
-          body: "written once",
-          log_summary: "create test fact",
-        });
-        return { text: "[write_concept(path='/facts/new.md')", steps: [step], response: readEvidence };
-      })
-      .mockResolvedValueOnce({ text: "[write_concept(path='/facts/new.md')", steps: [step] });
-
-    const result = await runMutation(kb, "Create the test fact.");
-    expect(result).toMatchObject({ ok: false, status: "partial", filesChanged: ["/facts/new.md"] });
+      .mockResolvedValueOnce({ text: "[read_concept(path='x')", steps: [step] })
+      .mockImplementationOnce(async (request: Parameters<typeof write>[0]) => {
+        await write(request, "/facts/replayed.md", "replayed");
+        return { text: "Created /facts/replayed.md.", steps: [step] };
+      });
+    const result = await runMutation(kb, "Create a fact.");
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/facts/replayed.md"] } });
     expect(generateTextMock).toHaveBeenCalledTimes(2);
-    expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
-    const traces = await new TraceStore(root).list();
-    expect(traces).toHaveLength(1);
-    expect(traces[0]).toMatchObject({ outcome: "partial" });
-    expect(traces[0].answer).not.toContain("write_concept(");
+    expect(generateTextMock.mock.calls[1][0].prompt).toBe("Create a fact.");
+    expect(generateTextMock.mock.calls[1][0].model.modelId).toBe("fallback-model");
+    expect(generateTextMock.mock.calls[1][0].tools.write_concept).toBeDefined();
   });
 
-  it("fails when summary repair is malformed and no writes occurred", async () => {
-    generateTextMock
-      .mockResolvedValueOnce({ text: "[read_concept(path='x')", steps: [step], response: readEvidence })
-      .mockResolvedValueOnce({ text: "[write_concept(path='x')", steps: [step] });
+  it("fails closed without retry when no fallback is configured", async () => {
+    generateTextMock.mockResolvedValueOnce({ text: "[read_concept(path='x')", steps: [step] });
+    const result = await runMutation(kb, "Create a fact.");
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
+  });
 
-    const result = await runMutation(kb, "Create the test fact.");
+  it("fails after one malformed fallback response", async () => {
+    useFallback();
+    generateTextMock
+      .mockResolvedValueOnce({ text: "[read_concept(path='x')", steps: [step] })
+      .mockResolvedValueOnce({ text: malformed, steps: [step] });
+    const result = await runMutation(kb, "Create a fact.");
     expect(result).toMatchObject({ ok: false, status: "failed" });
     expect(generateTextMock).toHaveBeenCalledTimes(2);
-    expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
-    const traces = await new TraceStore(root).list();
-    expect(traces).toHaveLength(1);
-    expect(traces[0]).toMatchObject({ outcome: "failed" });
+    expect(generateTextMock.mock.calls[1][0].tools.write_concept).toBeDefined();
+  });
+
+  it("reports writes from a malformed fallback execution as partial", async () => {
+    useFallback();
+    generateTextMock
+      .mockResolvedValueOnce({ text: "[read_concept(path='x')", steps: [step] })
+      .mockImplementationOnce(async (request: Parameters<typeof write>[0]) => {
+        await write(request, "/facts/partial.md", "partial");
+        return { text: malformed, steps: [step] };
+      });
+    const result = await runMutation(kb, "Create a fact.");
+    expect(result).toMatchObject({ ok: false, status: "partial", filesChanged: ["/facts/partial.md"] });
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect((await new TraceStore(root).list())[0]).toMatchObject({ outcome: "partial" });
   });
 });
 
