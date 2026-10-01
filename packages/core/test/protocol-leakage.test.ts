@@ -567,32 +567,81 @@ describe("deep agent answer validation", () => {
 });
 
 describe("mutation answer validation", () => {
-  it("does not replay a write when its final summary is malformed", async () => {
-    generateTextMock.mockImplementation(async (request: {
-      tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
-    }) => {
-      const writeTool = request.tools?.write_concept;
-      await writeTool?.execute?.({
-        path: "/facts/new.md",
-        frontmatter: { type: "Fact" },
-        body: "written once",
-        log_summary: "create test fact",
-      });
-      return { text: "[write_concept(path='/facts/new.md')", steps: [step] };
-    });
+  const readEvidence = {
+    messages: [{
+      role: "tool",
+      content: [{
+        type: "tool-result",
+        toolCallId: "read-1",
+        toolName: "read_concept",
+        output: { type: "json", value: { path: "/facts/new.md", body: "written once" } },
+      }],
+    }],
+  };
+
+  it("repairs a malformed summary without re-executing writes", async () => {
+    generateTextMock
+      .mockImplementationOnce(async (request: {
+        tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
+      }) => {
+        await request.tools?.write_concept?.execute?.({
+          path: "/facts/new.md",
+          frontmatter: { type: "Fact" },
+          body: "written once",
+          log_summary: "create test fact",
+        });
+        return { text: "[write_concept(path='/facts/new.md')", steps: [step], response: readEvidence };
+      })
+      .mockResolvedValueOnce({ text: "Created /facts/new.md.", steps: [step] });
 
     const result = await runMutation(kb, "Create the test fact.");
-    expect(result).toMatchObject({
-      ok: false,
-      status: "partial",
-      filesChanged: ["/facts/new.md"],
-    });
-    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true, result: { summary: "Created /facts/new.md." } });
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
+    expect(JSON.stringify(generateTextMock.mock.calls[1][0].messages)).toContain("/facts/new.md");
     expect((await kb.readConcept("/facts/new.md")).body).toBe("written once\n");
+    const traces = await new TraceStore(root).list();
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({ outcome: "success" });
+  });
+
+  it("preserves partial-write status when summary repair is malformed", async () => {
+    generateTextMock
+      .mockImplementationOnce(async (request: {
+        tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
+      }) => {
+        await request.tools?.write_concept?.execute?.({
+          path: "/facts/new.md",
+          frontmatter: { type: "Fact" },
+          body: "written once",
+          log_summary: "create test fact",
+        });
+        return { text: "[write_concept(path='/facts/new.md')", steps: [step], response: readEvidence };
+      })
+      .mockResolvedValueOnce({ text: "[write_concept(path='/facts/new.md')", steps: [step] });
+
+    const result = await runMutation(kb, "Create the test fact.");
+    expect(result).toMatchObject({ ok: false, status: "partial", filesChanged: ["/facts/new.md"] });
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
     const traces = await new TraceStore(root).list();
     expect(traces).toHaveLength(1);
     expect(traces[0]).toMatchObject({ outcome: "partial" });
     expect(traces[0].answer).not.toContain("write_concept(");
+  });
+
+  it("fails when summary repair is malformed and no writes occurred", async () => {
+    generateTextMock
+      .mockResolvedValueOnce({ text: "[read_concept(path='x')", steps: [step], response: readEvidence })
+      .mockResolvedValueOnce({ text: "[write_concept(path='x')", steps: [step] });
+
+    const result = await runMutation(kb, "Create the test fact.");
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
+    const traces = await new TraceStore(root).list();
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({ outcome: "failed" });
   });
 });
 
