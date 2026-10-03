@@ -51,6 +51,12 @@ function usageLabel(usage?: { inputTokens: number; outputTokens: number }): stri
   return `${fmtTokens(usage.inputTokens)}→${fmtTokens(usage.outputTokens)} tok`;
 }
 
+function recallUsageLabel(usage?: { completionTokens?: number; reasoningTokens?: number }): string | null {
+  if (!usage) return null;
+  const tokens = [usage.completionTokens, usage.reasoningTokens].filter((n): n is number => n !== undefined);
+  return tokens.length ? `recall ${tokens.map(fmtTokens).join("+")} tok` : null;
+}
+
 /** The traversal chain: concept visits in step order (reads + writes), deduped consecutively. */
 function traceVisits(trace: QueryTrace): { path: string; seq: number; write: boolean }[] {
   const visits: { path: string; seq: number; write: boolean }[] = [];
@@ -359,6 +365,11 @@ export function GraphView({
                 {usageLabel(activeTrace.usage)}
               </span>
             )}
+            {recallUsageLabel(activeTrace.recallUsage) && (
+              <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
+                {recallUsageLabel(activeTrace.recallUsage)}
+              </span>
+            )}
             <button
               onClick={closeTrace}
               className="ml-auto shrink-0 rounded px-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
@@ -624,6 +635,12 @@ export function GraphView({
                 <span className="truncate font-mono text-[10px] text-zinc-500">{t.notation}</span>
                 {usageLabel(t.usage) && (
                   <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{usageLabel(t.usage)}</span>
+                )}
+                {recallUsageLabel(t.recallUsage) && (
+                  <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{recallUsageLabel(t.recallUsage)}</span>
+                )}
+                {t.recallOutcome && t.recallOutcome !== "success" && (
+                  <span className="shrink-0 font-mono text-[10px] text-amber-600">{t.recallOutcome}</span>
                 )}
               </div>
             </button>

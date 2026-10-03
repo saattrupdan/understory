@@ -72,6 +72,9 @@ export interface TraceSummary {
   notation: string;
   stepCount: number;
   usage?: { inputTokens: number; outputTokens: number };
+  recallUsage?: { completionTokens?: number; reasoningTokens?: number; visibleOutputTokens?: number };
+  recallOutcome?: "success" | "declined_cap" | "declined";
+  outcome?: "success" | "partial" | "failed";
 }
 
 export interface QueryTrace extends TraceSummary {
