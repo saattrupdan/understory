@@ -211,27 +211,73 @@ describe("runRecall", () => {
     }
   });
 
-  it("declines conflicting fixture facts when generation cannot resolve them", async () => {
+  it("blocks same-title conflicting facts before a confident accelerated generation", async () => {
     await kb.writeConcept(
       "/facts/deploy-a.md",
       { type: "Fact", title: "Deploy schedule" },
-      "The current deployment day is Monday.",
+      "Deprecated 2023-01-01: deploy on Monday.",
       "add"
     );
     await kb.writeConcept(
       "/facts/deploy-b.md",
-      { type: "Fact", title: "Deploy schedule" },
-      "The current deployment day is Friday.",
+      { type: "Fact", title: " deploy   schedule " },
+      "Current 2024-02-01: deploy on Friday.",
       "add"
     );
     vi.stubEnv("RECALL_ACCELERATED", "true");
-    const generate = vi.fn(async () => ({ text: "UNKNOWN", finishReason: "stop" as const }));
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nDeployments happen on Friday.\nSources: /facts/deploy-b.md",
+      finishReason: "stop" as const,
+    }));
 
     const result = await runRecall(kb, "current deployment schedule day?", {}, generate);
 
     expect(result.answer).toBeNull();
-    expect(result.paths.length).toBeGreaterThan(0);
-    expect(generate).toHaveBeenCalledTimes(1);
+    expect(result.paths).toContain("/facts/deploy-a.md");
+    expect(result.paths).toContain("/facts/deploy-b.md");
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("answers non-conflicting multi-concept questions in accelerated mode", async () => {
+    await kb.writeConcept("/facts/deploy.md", { type: "Fact", title: "Deploy cadence" }, "Deployments happen on Fridays.", "add");
+    await kb.writeConcept("/facts/backup.md", { type: "Fact", title: "Backup cadence" }, "Backups run nightly.", "add");
+    vi.stubEnv("RECALL_ACCELERATED", "true");
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nDeployments happen Fridays and backups run nightly.\nSources: /facts/deploy.md /facts/backup.md",
+      finishReason: "stop" as const,
+    }));
+
+    const result = await runRecall(kb, "deploy backup cadence schedule?", {}, generate);
+
+    expect(result.answer).toContain("Fridays");
+    expect(result.paths).toContain("/facts/deploy.md");
+    expect(result.paths).toContain("/facts/backup.md");
+  });
+
+  it("shares the accelerated excerpt budget across late selected candidates", async () => {
+    vi.stubEnv("RECALL_ACCELERATED", "true");
+    vi.stubEnv("RECALL_CANDIDATES", "12");
+    for (let i = 0; i < 8; i++) {
+      await kb.writeConcept(
+        `/facts/policy-${i}.md`,
+        { type: "Fact", title: `Policy ${i} deployment` },
+        `Deployment policy ${i} includes rollout planning. ${"Operational deployment guidance. ".repeat(300)}`,
+        "add"
+      );
+    }
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nThe policies cover rollout planning.\nSources: /facts/policy-7.md",
+      finishReason: "stop" as const,
+    }));
+
+    const result = await runRecall(kb, "deployment policy rollout planning?", {}, generate);
+
+    expect(result.paths).toContain("/facts/policy-7.md");
+    const prompt = generate.mock.calls[0][1] as string;
+    expect(prompt).toContain("CONCEPT /facts/policy-7.md");
+    const excerptChars = [...prompt.matchAll(/CONCEPT \/facts\/policy-\d+\.md[^\n]*\n([\s\S]*?)(?=\n\n---|\n\nQUESTION:)/g)]
+      .reduce((sum, match) => sum + match[1].length, 0);
+    expect(excerptChars).toBeLessThanOrEqual(36_000);
   });
 
   it("declines when the model reports the excerpts are not enough", async () => {
