@@ -72,20 +72,196 @@ function patchRequest(request: MutationRequest, body = newBody) {
 }
 
 describe("mutation owner preflight", () => {
+  const staged = () => vi.stubEnv("MUTATION_STAGED", "true");
+  const baseProposal = {
+    path: "/apis/billing-api.md", old_text: "", new_text: "", body: "",
+    frontmatter: { type: "", title: "", description: "" }, claim: "", reason: "",
+  };
+
+  it("requires a verified claim matching the requested knowledge for a no-op", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "noop", claim: oldBody.slice(0, 37),
+    } });
+    const unrelated = await runMutation(kb, "Remember that QA enables Beta on Tuesdays.");
+    expect(unrelated).toMatchObject({ ok: false, status: "failed" });
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "noop", claim: oldBody,
+    } });
+    const duplicate = await runMutation(kb, `Remember that ${oldBody}`);
+    expect(duplicate).toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
+  it("rejects a no-op if the observed body changes before final verification", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockImplementationOnce(async () => {
+      await kb.writeConcept("/apis/billing-api.md", { type: "API Endpoint", title: "Billing API" }, "External revision.", "external");
+      return { object: { ...baseProposal, action: "noop", claim: oldBody } };
+    });
+    expect(await runMutation(kb, `Remember that ${oldBody}`)).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept("/apis/billing-api.md")).body.trim()).toBe("External revision.");
+  });
+
+  it("appends an independently approved fact without changing prior claims", async () => {
+    await billingFixture(); staged();
+    const newFact = "The Billing API logs a request ID for each charge created by support tooling.";
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "append", new_text: newFact,
+    } }).mockResolvedValueOnce({ object: { safe: true, reason: "No conflicting statement in the owner." } });
+    const result = await runMutation(kb, `Remember that ${newFact} This is a detail of the existing Billing API.`);
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    const body = (await kb.readConcept("/apis/billing-api.md")).body;
+    expect(body).toContain(oldBody);
+    expect(body).toContain(newFact);
+  });
+
+  it("rejects a contradictory append even if the model's verifier would approve it", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "append", new_text: "Billing API support tooling creates ad-hoc charges only after an approval check.",
+    } });
+    const result = await runMutation(kb, updateInstruction);
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
+  it("defers append when an independent check finds a conflict", async () => {
+    await billingFixture(); staged();
+    const newFact = "The Billing API logs a request ID for each charge created by support tooling.";
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "append", new_text: newFact,
+    } }).mockResolvedValueOnce({ object: { safe: false, reason: "Conflicting owner assertion." } });
+    const result = await runMutation(kb, `Remember that ${newFact} This is a detail of the existing Billing API.`);
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).not.toContain(newFact);
+  });
+
+  it("creates a distinct concept without modifying a merely mentioned unrelated owner", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "create", path: "/policies/qa-beta-toggle.md",
+      frontmatter: { type: "Policy", title: "QA Beta Feature Toggle", description: "QA Beta schedule" },
+      body: "QA enables the Beta feature toggle on Tuesdays. It is unrelated to the Billing API.",
+    } });
+    const result = await runMutation(kb, "Record a distinct policy: QA enables the Beta feature toggle on Tuesdays. It is unrelated to the Billing API.");
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/policies/qa-beta-toggle.md"] } });
+    expect((await kb.readConcept("/policies/qa-beta-toggle.md")).body).toContain("Tuesdays");
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
+  it("rejects creating a duplicate claim under a different title", async () => {
+    await billingFixture(); staged();
+    await kb.writeConcept("/policies/rollout-schedule.md", { type: "Policy", title: "Rollout Schedule" }, "QA enables the Beta feature toggle on Tuesdays.", "add");
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "create", path: "/policies/qa-beta-toggle.md",
+      frontmatter: { type: "Policy", title: "QA Beta Feature Toggle", description: "QA Beta schedule" },
+      body: "QA enables the Beta feature toggle on Tuesdays. It is unrelated to the Billing API.",
+    } });
+    expect(await runMutation(kb, "Record a distinct policy: QA enables the Beta feature toggle on Tuesdays. It is unrelated to the Billing API.")).toMatchObject({ ok: false, status: "failed" });
+    await expect(kb.readConcept("/policies/qa-beta-toggle.md")).rejects.toThrow("not found");
+  });
+
+  it("does not claim a failed exclusive create wrote an already-existing identical body", async () => {
+    await billingFixture(); staged();
+    const body = "QA enables the Beta feature toggle on Tuesdays. It is unrelated to the Billing API.";
+    await kb.writeConcept("/policies/qa-beta-toggle.md", { type: "Policy", title: "Misc" }, body, "external");
+    vi.spyOn(kb, "search").mockResolvedValue([]);
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "create", path: "/policies/qa-beta-toggle.md",
+      frontmatter: { type: "Policy", title: "QA Beta Feature Toggle", description: "QA Beta schedule" }, body,
+    } });
+    const result = await runMutation(kb, "Record a distinct policy: QA enables the Beta feature toggle on Tuesdays. It is unrelated to the Billing API.");
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept("/policies/qa-beta-toggle.md")).body).toContain(body);
+  });
+
+  it("reports a partial write when post-write indexing fails", async () => {
+    await billingFixture(); staged();
+    const original = kb.patchConcept.bind(kb);
+    vi.spyOn(kb, "patchConcept").mockImplementation(async (...args) => {
+      await original(...args);
+      throw new Error("indexing failed after write");
+    });
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "replace", old_text: oldBody,
+      new_text: "Monthly charges are scheduled; support tooling creates ad-hoc charges only after approval.",
+    } }).mockResolvedValueOnce({ object: { safe: true, reason: "Correction supported." } });
+    const result = await runMutation(kb, updateInstruction);
+    expect(result).toMatchObject({ ok: false, status: "partial", filesChanged: ["/apis/billing-api.md"] });
+  });
+
+  it("defers a replacement rejected by the independent consistency check", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "replace", old_text: oldBody,
+      new_text: "Monthly charges are scheduled; support tooling creates ad-hoc charges only after approval.",
+    } }).mockResolvedValueOnce({ object: { safe: false, reason: "Contradicts a different assertion." } });
+    expect(await runMutation(kb, updateInstruction)).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
+  it("does not accept a negated request as an unrelated exact no-op", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "noop", claim: oldBody } });
+    const result = await runMutation(kb, "Remember that monthly charges are not scheduled and ad-hoc charges come from support tooling.");
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+  });
+
+  it("honours the configured evidence budget before generating", async () => {
+    await billingFixture(); staged();
+    vi.stubEnv("AGENT_MAX_TOOL_RESULT_CHARS", "260");
+    const result = await runMutation(kb, updateInstruction);
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale exact replacement after the owner changed", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockImplementationOnce(async () => {
+      await kb.writeConcept("/apis/billing-api.md", { type: "API Endpoint", title: "Billing API" }, "External revision.", "external");
+      return { object: { ...baseProposal, action: "replace", old_text: oldBody, new_text: newBody } };
+    }).mockResolvedValueOnce({ object: { safe: true, reason: "Proposed correction is supported." } });
+    const result = await runMutation(kb, updateInstruction);
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept("/apis/billing-api.md")).body.trim()).toBe("External revision.");
+  });
+
+  it("defers an oversized owner before asking the model", async () => {
+    await billingFixture(); staged();
+    await kb.writeConcept("/apis/billing-api.md", { type: "API Endpoint", title: "Billing API" }, `${oldBody}${" more details".repeat(1300)}`, "expand");
+    const result = await runMutation(kb, updateInstruction);
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("does not write after invalid structured output or cancellation", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockRejectedValueOnce(new Error("No object generated"));
+    expect(await runMutation(kb, updateInstruction)).toMatchObject({ ok: false, status: "failed" });
+    const controller = new AbortController();
+    vi.spyOn(kb, "search").mockImplementationOnce(async () => {
+      controller.abort(new DOMException("cancelled", "AbortError")); return [];
+    });
+    await expect(runMutation(kb, updateInstruction, { signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
   it("stages an exact correction and removes the old claim", async () => {
     await billingFixture();
     vi.stubEnv("MUTATION_STAGED", "true");
-    generateObjectMock.mockResolvedValue({ object: {
+    generateObjectMock.mockResolvedValueOnce({ object: {
       action: "replace", path: "/apis/billing-api.md",
       old_text: "ad-hoc charges come from support tooling.",
       new_text: "support tooling creates ad-hoc charges only after approval.",
-    } });
+    } }).mockResolvedValueOnce({ object: { safe: true, reason: "Correction supported." } });
     const result = await runMutation(kb, updateInstruction);
     expect(result.ok).toBe(true);
     const concept = await kb.readConcept("/apis/billing-api.md");
     expect(concept.body).not.toContain("ad-hoc charges come from support tooling.");
     expect(concept.body).toContain("only after approval");
-    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
   it("pre-reads a dominant owner and authorizes an unchanged complete-body replacement", async () => {
     await billingFixture();

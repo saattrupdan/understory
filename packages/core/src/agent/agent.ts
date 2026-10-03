@@ -662,6 +662,27 @@ export async function runQuery(
   }
 }
 
+/** Distinct words used only as a conservative support check, never as proof of meaning. */
+function stagedWords(text: string): string[] {
+  const stop = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "about", "record", "remember", "concept", "knowledge", "policy", "distinct", "unrelated", "existing", "only"]);
+  return [...new Set(text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]{2,}/gu)?.filter((word) => !stop.has(word)) ?? [])];
+}
+
+function stagedOverlap(text: string, evidence: string): number {
+  const words = stagedWords(text);
+  const supported = new Set(stagedWords(evidence));
+  return words.length ? words.filter((word) => supported.has(word)).length / words.length : 0;
+}
+
+function stagedCorrection(input: string): boolean {
+  return /\b(?:correct|correction|update|replace|supersede|instead|formerly|previously|no longer|only after|now|rather than|don['’]t|doesn['’]t)\b/i.test(input);
+}
+
+function stagedTitleMention(input: string, title: string): boolean {
+  return title.length >= 4 && input.toLowerCase().includes(title.toLowerCase()) &&
+    !new RegExp(`\\b(?:unrelated to|rather than changing|do not change)\\s+(?:the\\s+)?${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(input);
+}
+
 /** Knowledge add/update — full toolset, low temperature. */
 async function runStagedMutation(
   kb: KnowledgeBase,
@@ -674,7 +695,6 @@ async function runStagedMutation(
   const providerCalls: NonNullable<TraceTiming["providerCalls"]> = [];
   let modelChain: string[] = [];
   let changed: string[] = [];
-  let attemptedWrite: { path: string; body: string } | undefined;
   try {
     const raw = options.preflightInput ?? instruction;
     const query = mutationSearchQuery(raw);
@@ -685,14 +705,16 @@ async function runStagedMutation(
     state.checkCancellation();
     const first = hits[0];
     const second = hits[1];
+    const named = hits.filter((hit) => hit.title && stagedTitleMention(raw, hit.title));
+    const explicitOwner = named.length === 1 ? named[0] : undefined;
     const dominant = first && first.confidenceQualified === true && (!second ||
       (first.confidence ?? 0) >= (second.confidence ?? 0) + 20 &&
       (first.confidence ?? 0) >= (second.confidence ?? 0) * 1.5);
-    const candidates: Array<{ path: string; frontmatter: unknown; body: string }> = [];
-    if (dominant) {
-      const concept = await kb.readConcept(first.path);
+    const candidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> = [];
+    if (explicitOwner || dominant) {
+      const concept = await kb.readConcept((explicitOwner ?? first).path);
       recorder.record("read_concept", concept.path, [concept.path]);
-      if (concept.body.length > 12_000) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
+      if (concept.body.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
     } else if (hits.length > 0) {
       // Ambiguous ownership is not evidence for either patching or creating.
@@ -702,72 +724,129 @@ async function runStagedMutation(
       for (const hit of hits.slice(0, 3)) {
         const concept = await kb.readConcept(hit.path);
         recorder.record("read_concept", concept.path, [concept.path]);
-        if (concept.body.length > 12_000) throw new Error("Staged mutation deferred: candidate body exceeds evidence limit.");
+        if (concept.body.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: candidate body exceeds evidence limit.");
         candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
       }
     }
     const evidence = JSON.stringify(candidates);
-    if (evidence.length + raw.length > 20_000) throw new Error("Staged mutation deferred: evidence exceeds prompt budget.");
+    if (evidence.length + raw.length > Math.min(20_000, state.payloadBudget ?? 20_000)) {
+      throw new Error("Staged mutation deferred: evidence exceeds prompt budget.");
+    }
     state.checkCancellation();
     const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
     modelChain = resolved.modelChain;
     const proposalSchema = z.object({
       action: z.enum(["replace", "append", "create", "noop", "defer"]),
-      path: z.string().optional(),
-      old_text: z.string().optional(),
-      new_text: z.string().optional(),
-      body: z.string().optional(),
-      frontmatter: z.object({ type: z.string().min(1), title: z.string().optional(), description: z.string().optional() }).optional(),
-      claim: z.string().optional(),
-      reason: z.string().optional(),
+      path: z.string(),
+      old_text: z.string(),
+      new_text: z.string(),
+      body: z.string(),
+      frontmatter: z.object({ type: z.string(), title: z.string(), description: z.string() }).strict(),
+      claim: z.string(),
+      reason: z.string(),
     }).strict();
     const proposal = await generateObject({
       model: resolved.model,
       schema: proposalSchema,
       temperature: 0,
       abortSignal: options.signal,
-      prompt: `Propose exactly one safe knowledge-base mutation from this instruction and complete observed candidate evidence. Choose replace only for a correction, with exact old_text and replacement new_text that removes the old claim. Append only when non-conflicting. Create only a distinct concept, never when an existing candidate may own it; path must be new and frontmatter must be valid. No unrelated backlinks. noop requires the exact claim already present. Otherwise defer. Never invent evidence.\nINSTRUCTION:\n${raw}\nCANDIDATES:\n${evidence}`,
+      prompt: `Propose exactly one safe knowledge-base mutation from this instruction and complete observed candidate evidence. Fill EVERY JSON field: unused strings must be empty and unused frontmatter must have empty type/title/description. For replace, supply candidate path, an exact old_text substring, and new_text that removes the old claim. For append, supply candidate path and the complete new fact in new_text only if genuinely non-conflicting. For create, supply a new path, nonempty body and frontmatter type/title/description; never create a duplicate owner or an unrelated backlink. For noop, quote a nonempty exact substring of an observed body in claim that establishes the requested knowledge. Otherwise defer and explain why. Never invent evidence.\nINSTRUCTION:\n${raw}\nCANDIDATES:\n${evidence}`,
     });
     state.checkCancellation();
     const p = proposal.object;
-    if (p.action === "defer" || p.action === "append") throw new Error(`Staged mutation deferred: ${p.reason ?? "proposal is not safely actionable"}`);
+    if (p.action === "defer") throw new Error(`Staged mutation deferred: ${p.reason || "proposal is not safely actionable"}`);
     if (p.action === "noop") {
-      const claim = p.claim?.trim();
-      if (!claim || !candidates.some((candidate) => candidate.body.includes(claim))) throw new Error("Staged mutation rejected: no-op claim was not verified.");
+      const claim = p.claim.trim();
+      const requestedClaim = raw.trim().replace(/^(?:remember|record|persist)\s+(?:that\s+)?/i, "").trim();
+      const normalise = (text: string) => text.replace(/[.!?]+$/, "").replace(/\s+/g, " ").trim().toLowerCase();
+      const target = candidates.find((candidate) => candidate.path === p.path);
+      if (!claim || claim.length < 20 || stagedCorrection(raw) || !target ||
+          normalise(requestedClaim) !== normalise(claim) || !target.body.includes(claim)) {
+        throw new Error("Staged mutation rejected: no-op claim was not verified against the request.");
+      }
+      state.checkCancellation();
+      const current = await kb.readConcept(target.path);
+      if (current.body !== target.body || !current.body.includes(claim)) {
+        throw new Error("Staged mutation rejected: no-op evidence changed before verification.");
+      }
       const trace = recorder.finalize("mutation", instruction, "Verified exact no-op.", "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
       await traceStore(kb).save(trace);
       return { ok: true, result: { summary: "No change needed; exact claim verified.", filesChanged: [], steps: 1, traceId: trace.id } };
     }
-    if (p.action === "replace") {
+    if (p.action === "append") {
       const target = candidates.find((c) => c.path === p.path);
-      if (!target || !p.old_text || !p.new_text || target.body.split(p.old_text).length !== 2) throw new Error("Staged mutation rejected: replacement target or exact old text is invalid.");
-      const replacement = target.body.replace(p.old_text, p.new_text);
-      if (replacement === target.body || replacement.length > 12_000) throw new Error("Staged mutation rejected: replacement is empty or oversized.");
+      const title = target?.frontmatter.title;
+      if (!target || !title || !stagedTitleMention(raw, title) || stagedCorrection(raw) ||
+          p.new_text.length < 20 || p.new_text.length > 4_000 ||
+          stagedOverlap(p.new_text, raw) < 0.8 || stagedOverlap(raw, p.new_text) < 0.6 ||
+          target.body.toLowerCase().includes(p.new_text.trim().toLowerCase())) {
+        throw new Error("Staged mutation deferred: append owner or factual support is uncertain.");
+      }
+      // The proposer may overlook a contradiction. A separate, tool-free
+      // judgement sees the unchanged owner and must explicitly approve it.
+      const judgement = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent safety check. Is the proposed addition fully supported by the instruction, truly about this exact owner, not already present, and consistent with every existing assertion? Answer safe=false on uncertainty, changed values, or an unrelated backlink.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nPROPOSED ADDITION:\n${p.new_text}`,
+      });
       state.checkCancellation();
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: append failed independent consistency check.");
+      const appended = `${target.body.trimEnd()}\n\n${p.new_text.trim()}\n`;
+      if (appended.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: appended body exceeds evidence limit.");
       const current = await kb.readConcept(target.path);
       if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
-      attemptedWrite = { path: target.path, body: replacement };
-      await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: replace verified claim", sha256(target.body), options.signal);
-      changed = [target.path];
-    } else if (p.action === "create") {
-      if (candidates.length > 0 || !p.path || !p.body || !p.frontmatter || !/^\/[a-z0-9_/-]+\.md$/.test(p.path) || p.path.split("/").includes("..") || p.body.length > 12_000) throw new Error("Staged mutation rejected: create is not distinct or valid.");
       state.checkCancellation();
-      attemptedWrite = { path: p.path, body: p.body };
-      const created = await kb.createConcept(p.path, p.frontmatter, p.body, "Staged mutation: create distinct concept", options.signal);
-      changed = [created.path];
+      await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
+    } else if (p.action === "replace") {
+      const target = candidates.find((c) => c.path === p.path);
+      if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
+          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65) throw new Error("Staged mutation rejected: replacement target or exact old text is invalid.");
+      const replacement = target.body.replace(p.old_text, p.new_text);
+      if (replacement === target.body || replacement.length > (state.maxDocumentChars ?? 12_000)) {
+        throw new Error("Staged mutation rejected: replacement is empty or oversized.");
+      }
+      const judgement = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent safety check. Does the exact proposed replacement faithfully apply the instruction to the observed owner, remove the superseded claim, preserve unrelated claims, and avoid a new contradiction? If uncertain, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nOLD TEXT:\n${p.old_text}\nNEW TEXT:\n${p.new_text}`,
+      });
+      state.checkCancellation();
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: replacement failed independent consistency check.");
+      const current = await kb.readConcept(target.path);
+      if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+      await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: replace verified claim", sha256(target.body), options.signal, (path) => { changed = [path]; });
+    } else if (p.action === "create") {
+      const explicitlyDistinct = /\b(?:distinct|standalone|stand-alone|new concept|new policy|unrelated)\b/i.test(raw);
+      if ((candidates.length > 0 && !explicitlyDistinct) || !p.path || !p.body || !p.frontmatter.type || !p.frontmatter.title ||
+          !/^\/[a-z0-9_/-]+\.md$/.test(p.path) || p.path.split("/").includes("..") || p.body.length > (state.maxDocumentChars ?? 12_000) ||
+          stagedOverlap(p.frontmatter.title, raw) < 0.7 || stagedOverlap(p.body, raw) < 0.65 ||
+          stagedOverlap(raw, p.body) < 0.8 ||
+          !(raw.includes(p.body.trim()) || p.body.includes(raw.trim()))) {
+        throw new Error("Staged mutation rejected: create is not distinct or valid.");
+      }
+      const mainClaim = p.body.trim().split(/[.!?]\s+/)[0]?.trim() ?? "";
+      if (mainClaim.length >= 20 && candidates.some((candidate) => candidate.body.includes(mainClaim))) {
+        throw new Error("Staged mutation deferred: requested claim already belongs to an observed concept.");
+      }
+      const similar = await kb.search(p.frontmatter.title);
+      state.checkCancellation();
+      if (similar.some((hit) => hit.title && stagedOverlap(p.frontmatter.title, hit.title) >= 0.75 && hit.confidenceQualified)) {
+        throw new Error("Staged mutation deferred: a similarly named concept already exists.");
+      }
+      state.checkCancellation();
+      await kb.createConcept(p.path, p.frontmatter, p.body, "Staged mutation: create distinct concept", options.signal, (path) => { changed = [path]; });
     }
+    if (!changed.length) throw new Error("Staged mutation rejected: no verified write occurred.");
     const summary = `Staged mutation changed ${changed.join(", ")}.`;
     const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
     await traceStore(kb).save(trace);
     return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
   } catch (err) {
     const message = errorMessage(err);
-    if (!changed.length && attemptedWrite) {
-      try {
-        const landed = await kb.readConcept(attemptedWrite.path);
-        if (landed.body === attemptedWrite.body) changed = [attemptedWrite.path];
-      } catch { /* A failed create/patch did not leave a readable written concept. */ }
-    }
     if (changed.length) {
       const trace = recorder.finalize("mutation", instruction, `Partial mutation: ${changed.length} file(s) changed before failure. Error: ${message}`, "partial", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
       await traceStore(kb).save(trace);

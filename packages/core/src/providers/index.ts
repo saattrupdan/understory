@@ -339,6 +339,10 @@ export async function createModel(
         name: "custom",
         baseURL: normalizeV1(cfg.baseURL),
         apiKey: cfg.apiKey,
+        // llama.cpp accepts OpenAI-compatible JSON-schema response_format.
+        // This only affects callers requesting structured output; ordinary
+        // chat/tool calls continue using their existing request bodies.
+        supportsStructuredOutputs: true,
         ...(cfg.extraBody && Object.keys(cfg.extraBody).length
           ? {
               transformRequestBody: (args: Record<string, unknown>) => ({

@@ -87,7 +87,8 @@ export class KnowledgeBase {
     frontmatter: ConceptFrontmatter,
     body: string,
     logSummary: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onWritten?: (path: string) => void
   ): Promise<Concept> {
     return this.enqueue(async () => {
       throwIfAborted(signal);
@@ -108,6 +109,9 @@ export class KnowledgeBase {
         }
         throw error;
       }
+      // Record the physical write before indexing/logging/committing: those
+      // later steps can fail even though the concept has already landed.
+      onWritten?.(concept.path);
       await this.afterMutation(concept.path, "Creation", logSummary);
       return concept;
     }, signal);
@@ -135,7 +139,8 @@ export class KnowledgeBase {
     changes: Parameters<Bundle["patchConcept"]>[1],
     logSummary: string,
     expectedBodyHash?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onWritten?: (path: string) => void
   ): Promise<Concept> {
     return this.enqueue(async () => {
       throwIfAborted(signal);
@@ -165,6 +170,7 @@ export class KnowledgeBase {
       }
       throwIfAborted(signal);
       const concept = await this.bundle.writeConcept(existing.path, fm, body);
+      onWritten?.(concept.path);
       await this.afterMutation(concept.path, "Update", logSummary);
       return concept;
     }, signal);
