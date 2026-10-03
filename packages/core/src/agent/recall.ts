@@ -21,7 +21,7 @@ import type { RecallTokenUsage } from "./trace.js";
  * Tunables (all optional):
  * - RECALL=false                disable the layer entirely
  * - RECALL_SEEDS                search hits to seed graph expansion (default 3)
- * - RECALL_CANDIDATES           concepts to read after expansion (default 6; max 12)
+ * - RECALL_CANDIDATES           concepts to read after expansion (default 6; accelerated max 12)
  * - RECALL_ACCELERATED          opt in to broader, stricter one-generation recall (default false)
  * - RECALL_MIN_SCORE            top-hit confidence needed to trust literal search (default 20)
  * - RECALL_EXCERPT_CHARS        body characters per concept (default 6000)
@@ -56,6 +56,7 @@ const DEFAULT_MIN_SCORE = 20;
 const DEFAULT_EXCERPT_CHARS = 6000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
 const DEFAULT_THINKING_BUDGET = 128;
+const MAX_ACCELERATED_EXCERPT_CHARS = 36_000;
 
 export interface RecallOutcome {
   /** The answer, or null when this layer declined and the caller must escalate. */
@@ -556,6 +557,20 @@ async function neighboursOf(kb: KnowledgeBase): Promise<Map<string, string[]>> {
   return map;
 }
 
+function hasSameTitleBodyConflicts(concepts: Array<{ title: string; body: string }>): boolean {
+  const bodiesByTitle = new Map<string, Set<string>>();
+  for (const concept of concepts) {
+    const title = concept.title.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+    if (!title) continue;
+    const body = concept.body.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+    const bodies = bodiesByTitle.get(title) ?? new Set<string>();
+    bodies.add(body);
+    bodiesByTitle.set(title, bodies);
+    if (bodies.size > 1) return true;
+  }
+  return false;
+}
+
 export async function runRecall(
   kb: KnowledgeBase,
   question: string,
@@ -569,10 +584,8 @@ export async function runRecall(
 
   const seeds = intEnv(process.env.RECALL_SEEDS, DEFAULT_SEEDS);
   const accelerated = process.env.RECALL_ACCELERATED === "true";
-  const maxCandidates = Math.min(
-    accelerated ? 12 : DEFAULT_CANDIDATES,
-    intEnv(process.env.RECALL_CANDIDATES, accelerated ? 12 : DEFAULT_CANDIDATES)
-  );
+  const configuredCandidates = intEnv(process.env.RECALL_CANDIDATES, accelerated ? 12 : DEFAULT_CANDIDATES);
+  const maxCandidates = accelerated ? Math.min(12, configuredCandidates) : configuredCandidates;
   const minScore = intEnv(process.env.RECALL_MIN_SCORE, DEFAULT_MIN_SCORE);
   const excerptChars = intEnv(process.env.RECALL_EXCERPT_CHARS, DEFAULT_EXCERPT_CHARS);
 
@@ -643,19 +656,21 @@ export async function runRecall(
 
   const sections: string[] = [];
   const paths: string[] = [];
-  let excerptBudget = accelerated ? Math.min(24_000, excerptChars * maxCandidates) : Number.POSITIVE_INFINITY;
+  const concepts: Array<{ path: string; title: string; body: string }> = [];
+  const perCandidateBudget = accelerated && ordered.length > 0
+    ? Math.floor(MAX_ACCELERATED_EXCERPT_CHARS / ordered.length)
+    : Number.POSITIVE_INFINITY;
   for (const p of ordered) {
     throwIfAborted(options.signal);
-    if (excerptBudget <= 0) break;
     try {
       const c = await kb.readConcept(p); // fresh read — never stale
       const fm = c.frontmatter;
-      const body = c.body.slice(0, Math.min(excerptChars, excerptBudget));
+      const body = c.body.slice(0, Math.min(excerptChars, perCandidateBudget));
+      concepts.push({ path: c.path, title: fm.title ?? "", body: c.body });
       sections.push(
         `CONCEPT ${c.path}${fm.title ? ` — ${fm.title}` : ""}${fm.description ? ` (${fm.description})` : ""}\n` +
           body
       );
-      excerptBudget -= body.length;
       paths.push(c.path);
     } catch (error) {
       if (isAbortError(error, options.signal)) throw error;
@@ -663,6 +678,14 @@ export async function runRecall(
     }
   }
   if (sections.length === 0) return { answer: null, paths };
+
+  // This intentionally catches only deterministic duplicates: matching titles
+  // after case/whitespace normalization with non-identical bodies. It is not a
+  // general semantic conflict detector; uncertain/synonymous titles still rely
+  // on the model's UNKNOWN verdict and the deep agent fallback.
+  if (accelerated && hasSameTitleBodyConflicts(concepts)) {
+    return { answer: null, paths, outcome: "declined", timing: { retrievalMs: Date.now() - retrievalStarted } };
+  }
 
   const system =
     `You answer questions using ONLY the knowledge-base excerpts provided. ` +
