@@ -31,6 +31,71 @@ afterEach(async () => {
 });
 
 describe("runRecall", () => {
+  async function savedRecallTrace() {
+    const files = await fs.readdir(path.join(root, ".traces"));
+    return JSON.parse(await fs.readFile(path.join(root, ".traces", files[0]), "utf8"));
+  }
+
+  async function searchableKb() {
+    await kb.writeConcept("/facts/deploy.md", { type: "Fact", title: "Deploy cadence" }, "We deploy on Fridays.", "add");
+  }
+
+  it("persists provider token accounting without generation or excerpt text", async () => {
+    await searchableKb();
+    await runRecall(kb, "when deploy cadence?", {}, async () => ({
+      text: "SUFFICIENT\nFridays.", finishReason: "stop", reasoningText: "private reasoning",
+      usage: { completionTokens: 42, reasoningTokens: 12 },
+    }));
+    const trace = await savedRecallTrace();
+    expect(trace).toMatchObject({ recallOutcome: "success", recallUsage: {
+      completionTokens: 42, reasoningTokens: 12, reasoningTokenSource: "provider", visibleOutputTokens: 30,
+    }});
+    const serialized = JSON.stringify(trace);
+    expect(serialized).not.toContain("private reasoning");
+    expect(serialized).not.toContain("We deploy on Fridays");
+  });
+
+  it("records output-cap declines and tokenizer-estimated reasoning separately", async () => {
+    await searchableKb();
+    vi.stubEnv("RECALL_TOKENIZER_URL", "http://tokenizer.test/tokenize");
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: "local-model", add_special: false, content: "thinking" });
+      return new Response(JSON.stringify({ tokens: [1, 2, 3] }), { status: 200 });
+    }));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await runRecall(kb, "when deploy cadence?", { model: "local-model" }, async () => ({
+      text: "partial", finishReason: "length", reasoningText: "thinking", usage: { completionTokens: 20 },
+    }));
+    const trace = await savedRecallTrace();
+    expect(result.answer).toBeNull();
+    expect(trace).toMatchObject({ outcome: "partial", recallOutcome: "declined_cap", recallUsage: {
+      completionTokens: 20, reasoningTokens: 3, reasoningTokenSource: "tokenizer_estimate", visibleOutputTokens: 17,
+    }});
+    expect(error).toHaveBeenCalled();
+  });
+
+  it("tolerates absent provider accounting and tokenizer failures", async () => {
+    await searchableKb();
+    vi.stubEnv("RECALL_TOKENIZER_URL", "http://tokenizer.test/tokenize");
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    await runRecall(kb, "when deploy cadence?", { model: "local-model" }, async () => ({
+      text: "SUFFICIENT\nFridays.", finishReason: "stop", reasoningText: "thinking",
+    }));
+    const trace = await savedRecallTrace();
+    expect(trace.recallUsage).toBeUndefined();
+    expect(trace.recallOutcome).toBe("success");
+  });
+  it("does not call the tokenizer when no reasoning text is returned", async () => {
+    await searchableKb();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await runRecall(kb, "when deploy cadence?", {}, async () => ({
+      text: "SUFFICIENT\nFridays.", finishReason: "stop",
+    }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await savedRecallTrace()).recallUsage).toBeUndefined();
+  });
+
   it("answers from retrieved concepts in a single generation", async () => {
     await kb.writeConcept(
       "/facts/deploy.md",

@@ -3,6 +3,7 @@ import { capEnv } from "../util/env.js";
 import type { AgentOptions } from "./agent.js";
 import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
 import { isAbortError, throwIfAborted } from "../util/abort.js";
+import { TraceRecorder, TraceStore, type RecallTokenUsage } from "./trace.js";
 
 /**
  * Recall fast path: deterministic retrieval (keyword search plus a one-hop walk
@@ -80,6 +81,9 @@ export type RecallFinish = "stop" | "length" | "other";
 export interface RecallGeneration {
   text: string;
   finishReason: RecallFinish;
+  usage?: { completionTokens?: number; reasoningTokens?: number };
+  /** Used only transiently for local token estimation; never persisted or logged. */
+  reasoningText?: string;
 }
 
 export type RecallGenerate = (
@@ -667,8 +671,16 @@ export async function runRecall(
   // retry loop is the backstop, and a null answer makes the caller write no
   // cache entry — that is the whole point of declining here. This warning is
   // unconditional and is the only signal the layer ever dropped an answer for
-  // this reason: a decline writes no trace at all, because the TraceRecorder
-  // built in query-cache.ts is discarded when the answer comes back null.
+  // this reason. A separate privacy-preserving trace is written for every
+  // generation, including this declined attempt; the query-cache trace remains
+  // responsible for the subsequent deep run.
+  const recallUsage = await accountRecallTokens(generation, options);
+  const finishOutcome = generation.finishReason === "length" ? "declined_cap" :
+    isMalformedAnswer(text) || /^\s*UNKNOWN\b/i.test(text) || !text.replace(/^\s*SUFFICIENT\s*\n?/i, "").trim()
+      ? "declined"
+      : "success";
+  await saveRecallTrace(kb, question, paths, recallUsage, finishOutcome, options);
+
   if (generation.finishReason === "length") {
     console.error(
       `[understory] recall declined: the generation hit its ${maxOutputTokens}-token output cap ` +
@@ -700,6 +712,87 @@ export async function runRecall(
     );
   }
   return { answer, paths };
+}
+
+async function accountRecallTokens(
+  generation: RecallGeneration,
+  options: AgentOptions
+): Promise<RecallTokenUsage | undefined> {
+  const completionTokens = finiteTokenCount(generation.usage?.completionTokens);
+  let reasoningTokens = finiteTokenCount(generation.usage?.reasoningTokens);
+  let reasoningTokenSource: RecallTokenUsage["reasoningTokenSource"];
+  if (reasoningTokens !== undefined) {
+    reasoningTokenSource = "provider";
+  } else if (generation.reasoningText) {
+    const estimate = await estimateReasoningTokens(generation.reasoningText, options);
+    if (estimate !== undefined) {
+      reasoningTokens = estimate;
+      reasoningTokenSource = "tokenizer_estimate";
+    }
+  }
+  if (completionTokens === undefined && reasoningTokens === undefined) return undefined;
+  return {
+    ...(completionTokens !== undefined ? { completionTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens, reasoningTokenSource } : {}),
+    ...(completionTokens !== undefined && reasoningTokens !== undefined
+      ? { visibleOutputTokens: Math.max(0, completionTokens - reasoningTokens) }
+      : {}),
+  };
+}
+
+function finiteTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+async function estimateReasoningTokens(content: string, options: AgentOptions): Promise<number | undefined> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 500);
+  try {
+    const { resolveModelConfig } = await import("../providers/index.js");
+    const model = options.model ?? resolveModelConfig(process.env).model;
+    const response = await fetch(process.env.RECALL_TOKENIZER_URL ?? "http://host.docker.internal:8080/tokenize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, content, add_special: false }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    const body = await response.json() as { tokens?: unknown; count?: unknown };
+    if (Array.isArray(body.tokens)) return body.tokens.length;
+    return finiteTokenCount(body.count);
+  } catch {
+    // A local tokenizer is an optional estimator; provider output remains usable.
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function extractReasoningContent(result: unknown): string | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  const response = (result as { response?: { body?: unknown } }).response;
+  const body = response?.body;
+  if (!body || typeof body !== "object") return undefined;
+  const choices = (body as { choices?: { message?: { reasoning_content?: unknown } }[] }).choices;
+  const reasoning = choices?.[0]?.message?.reasoning_content;
+  return typeof reasoning === "string" && reasoning.length ? reasoning : undefined;
+}
+
+async function saveRecallTrace(
+  kb: KnowledgeBase,
+  question: string,
+  paths: string[],
+  usage: RecallTokenUsage | undefined,
+  outcome: "success" | "declined_cap" | "declined",
+  options: AgentOptions
+): Promise<void> {
+  const recorder = new TraceRecorder();
+  recorder.record("recall", question, paths);
+  const trace = recorder.finalize(
+    "query", question, "", outcome === "success" ? "success" : "partial",
+    options.model ? [options.model] : [], undefined, usage, outcome
+  );
+  await new TraceStore(kb.bundle.root).save(trace);
 }
 
 const defaultGenerate: RecallGenerate = async (system, prompt, options, controls) => {
@@ -741,8 +834,18 @@ const defaultGenerate: RecallGenerate = async (system, prompt, options, controls
     maxOutputTokens: controls.maxOutputTokens,
     abortSignal: options.signal,
   });
+  const sdkUsage = result.usage as { outputTokens?: number; totalTokens?: number; reasoningTokens?: number } | undefined;
+  const resultUsage = sdkUsage ? {
+    completionTokens: sdkUsage.outputTokens,
+    reasoningTokens: sdkUsage.reasoningTokens,
+  } : undefined;
+  const reasoningText = typeof result.reasoningText === "string"
+    ? result.reasoningText
+    : extractReasoningContent(result);
   return {
     text: result.text,
+    ...(reasoningText ? { reasoningText } : {}),
+    ...(resultUsage ? { usage: resultUsage } : {}),
     finishReason:
       result.finishReason === "stop" || result.finishReason === "length"
         ? result.finishReason
