@@ -146,6 +146,7 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
       const outcome = await runMutation(kb, instruction, {
         signal: extra.signal,
         preflightInput: content,
+        ownerHint: suggested_path,
       });
       // A partial write remains reportable even when cancellation prevents the
       // best-effort seed refresh from running.

@@ -86,6 +86,24 @@ describe("MCP cancellation", () => {
     );
   });
 
+  it("forwards a suggested existing owner as a non-authoritative staged hint", async () => {
+    runMutationMock.mockResolvedValue({
+      ok: true,
+      result: { summary: "done", filesChanged: [], steps: 1, traceId: "trace" },
+    });
+    const registered = await registeredTools();
+    const controller = new AbortController();
+    await registered.memory_add.handler(
+      { content: "Billing API logs request IDs.", suggested_path: "/apis/billing-api.md" },
+      { signal: controller.signal }
+    );
+    expect(runMutationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining("KNOWLEDGE TO RECORD:\nBilling API logs request IDs."),
+      { signal: controller.signal, preflightInput: "Billing API logs request IDs.", ownerHint: "/apis/billing-api.md" }
+    );
+  });
+
   it("returns a partial write as an MCP error so async clients cannot mark it applied", async () => {
     runMutationMock.mockResolvedValue({
       ok: false,

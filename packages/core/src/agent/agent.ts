@@ -42,6 +42,8 @@ export interface AgentOptions {
   signal?: AbortSignal;
   /** Raw caller-provided facts, excluding server-added mutation instructions. */
   preflightInput?: string;
+  /** Caller-suggested existing owner; never authoritative without search evidence. */
+  ownerHint?: string;
 }
 
 export interface QueryResult {
@@ -697,6 +699,9 @@ async function runStagedMutation(
   let changed: string[] = [];
   try {
     const raw = options.preflightInput ?? instruction;
+    if (options.ownerHint && options.ownerHint.length > 512) {
+      throw new Error("Staged mutation deferred: owner hint exceeds path limit.");
+    }
     const query = mutationSearchQuery(raw);
     if (!query) throw new Error("Staged mutation deferred: no bounded search terms.");
     state.checkCancellation();
@@ -705,14 +710,17 @@ async function runStagedMutation(
     state.checkCancellation();
     const first = hits[0];
     const second = hits[1];
+    const hinted = options.ownerHint
+      ? hits.find((hit) => hit.path === options.ownerHint && hit.confidenceQualified)
+      : undefined;
     const named = hits.filter((hit) => hit.title && stagedTitleMention(raw, hit.title));
     const explicitOwner = named.length === 1 ? named[0] : undefined;
     const dominant = first && first.confidenceQualified === true && (!second ||
       (first.confidence ?? 0) >= (second.confidence ?? 0) + 20 &&
       (first.confidence ?? 0) >= (second.confidence ?? 0) * 1.5);
     const candidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> = [];
-    if (explicitOwner || dominant) {
-      const concept = await kb.readConcept((explicitOwner ?? first).path);
+    if (hinted || explicitOwner || dominant) {
+      const concept = await kb.readConcept((hinted || explicitOwner || first).path);
       recorder.record("read_concept", concept.path, [concept.path]);
       if (concept.body.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
@@ -750,7 +758,7 @@ async function runStagedMutation(
       schema: proposalSchema,
       temperature: 0,
       abortSignal: options.signal,
-      prompt: `Propose exactly one safe knowledge-base mutation from this instruction and complete observed candidate evidence. Fill EVERY JSON field: unused strings must be empty and unused frontmatter must have empty type/title/description. For replace, supply candidate path, an exact old_text substring, and new_text that removes the old claim. For append, supply candidate path and the complete new fact in new_text only if genuinely non-conflicting. For create, supply a new path, nonempty body and frontmatter type/title/description; never create a duplicate owner or an unrelated backlink. For noop, quote a nonempty exact substring of an observed body in claim that establishes the requested knowledge. Otherwise defer and explain why. Never invent evidence.\nINSTRUCTION:\n${raw}\nCANDIDATES:\n${evidence}`,
+      prompt: `Propose exactly one safe knowledge-base mutation from this instruction and complete observed candidate evidence. Fill EVERY JSON field: unused strings must be empty and unused frontmatter must have empty type/title/description. For replace, supply candidate path, an exact old_text substring, and new_text that removes the old claim. For append, supply candidate path and the complete new fact in new_text only if genuinely non-conflicting. For create, supply a new path, nonempty body and frontmatter type/title/description; never create a duplicate owner or an unrelated backlink. For noop, quote a nonempty exact substring of an observed body in claim that establishes the requested knowledge. Otherwise defer and explain why. Never invent evidence. A suggested path is not proof of ownership; defer if it does not fit.\nINSTRUCTION:\n${raw}\nSUGGESTED EXISTING OWNER:\n${options.ownerHint ?? "none"}\nCANDIDATES:\n${evidence}`,
     });
     state.checkCancellation();
     const p = proposal.object;
@@ -776,7 +784,7 @@ async function runStagedMutation(
     if (p.action === "append") {
       const target = candidates.find((c) => c.path === p.path);
       const title = target?.frontmatter.title;
-      if (!target || !title || !stagedTitleMention(raw, title) || stagedCorrection(raw) ||
+      if (!target || !title || !(stagedTitleMention(raw, title) || (hinted?.path === target.path)) || stagedCorrection(raw) ||
           p.new_text.length < 20 || p.new_text.length > 4_000 ||
           stagedOverlap(p.new_text, raw) < 0.8 || stagedOverlap(raw, p.new_text) < 0.6 ||
           target.body.toLowerCase().includes(p.new_text.trim().toLowerCase())) {

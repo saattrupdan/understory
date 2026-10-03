@@ -227,8 +227,10 @@ agent's multi-step tool loop. It gathers bounded search evidence, asks the model
 a schema-constrained proposal, then checks exact old text, owner, content overlap,
 and the unchanged body before writing. Appends and replacements also require an
 independent consistency check; uncertain proposals fail without a write. This can
-be slower than the old path and is not a bulk-retry switch. Leave the background
-write queue paused until real writes have been canaried and partial writes
-reconciled.
+be slower than the old path and is not a bulk-retry switch. For `memory_add`, an
+existing `suggested_path` can act as an owner hint only if a confidence-qualified
+search hit corroborates it; it never authorizes a write on its own. Leave the
+background write queue paused until real writes have been canaried and partial
+writes reconciled.
 
 Agent context bounds are configurable with positive-integer settings: `AGENT_MAX_STEPS` (default 8 model/tool rounds per query or mutation; the final allowed generation is reserved for synthesis and values below 2 become 2), `AGENT_MAX_DOCUMENT_CHARS` (default 12000 characters per `read_concept` body page), `AGENT_MAX_TOOL_RESULT_CHARS` (default 24000 deterministic characters across JSON-serialised tool results for one run), `AGENT_MAX_SYSTEM_CONTEXT_CHARS` (default 24000 characters for the dynamic compact tree and existing concept types in the system prompt), `AGENT_MAX_INPUT_CHARS` (default 32000 characters for caller strings and cumulative model-generated write arguments). Interactive chat has no separate application-level model/tool round limit; it follows the AI SDK/model interaction while retaining the unlimited application-level chat history and body handling. Tool results reserve the JSON-serialised exhaustion notice, exactly 32 characters of fixed SDK framing headroom, and 64 characters for a visible truncation marker before fitting payloads; this is an accounting bound, not an absolute wire-byte ceiling. Tool budgets below that safe minimum and system-context budgets below 240 are clamped. Static system instructions are outside the system-context bound, and the tool-result budget never pays for the dynamic system context. Invalid or non-positive values use the defaults. Large bodies return structurally complete metadata and `next_offset` based on the body actually returned, so the agent can page safely while the run budget remains; it must not use a truncated page for `replace_body`. Directory/search/lint listings may be explicitly incomplete without a paging offset because search remains available.

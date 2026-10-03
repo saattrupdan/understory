@@ -248,6 +248,27 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
   });
 
+  it("uses a corroborated owner hint but never an unsearched path", async () => {
+    await billingFixture(); staged();
+    const searchHit = (path: string, score: number) => ({
+      path, type: "Fact", title: path, score, confidence: 50,
+      confidenceQualified: true, matchedGroups: 2, contentGroups: 2,
+      distinctiveGroups: 2, exactCompoundGroups: 0,
+    });
+    vi.spyOn(kb, "search").mockResolvedValue([
+      searchHit("/apis/billing-api.md", 100),
+      searchHit("/playbooks/oncall-billing.md", 99),
+    ]);
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain('"path":"/playbooks/oncall-billing.md"');
+      expect(request.prompt).not.toContain('"path":"/apis/billing-api.md"');
+      return { object: { ...baseProposal, action: "defer", reason: "No safe edit." } };
+    });
+    expect(await runMutation(kb, "Remember a billing incident response fact.", { ownerHint: "/playbooks/oncall-billing.md" })).toMatchObject({ ok: false, status: "failed" });
+    expect(await runMutation(kb, "Remember a billing incident response fact.", { ownerHint: "/other/unsearched.md" })).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
   it("stages an exact correction and removes the old claim", async () => {
     await billingFixture();
     vi.stubEnv("MUTATION_STAGED", "true");
