@@ -51,10 +51,13 @@ function usageLabel(usage?: { inputTokens: number; outputTokens: number }): stri
   return `${fmtTokens(usage.inputTokens)}→${fmtTokens(usage.outputTokens)} tok`;
 }
 
-function recallUsageLabel(usage?: { completionTokens?: number; reasoningTokens?: number }): string | null {
+function recallUsageLabel(usage?: { completionTokens?: number; reasoningTokens?: number; reasoningTokenSource?: "provider" | "tokenizer_estimate" | "inferred" }): string | null {
   if (!usage) return null;
   const tokens = [usage.completionTokens, usage.reasoningTokens].filter((n): n is number => n !== undefined);
-  return tokens.length ? `recall ${tokens.map(fmtTokens).join("+")} tok` : null;
+  if (!tokens.length) return null;
+  const provenance = usage.reasoningTokenSource === "inferred" ? " (reasoning inferred)" :
+    usage.reasoningTokenSource === "tokenizer_estimate" ? " (reasoning estimated)" : "";
+  return `recall ${tokens.map(fmtTokens).join("+")} tok${provenance}`;
 }
 
 /** The traversal chain: concept visits in step order (reads + writes), deduped consecutively. */
