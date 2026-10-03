@@ -695,12 +695,17 @@ export async function runMutation(
         const hits = await kb.search(query);
         recorder.record("search_knowledge", query, hits.slice(0, 5).map((hit) => hit.path));
         state.checkCancellation();
-        // Preflight is deliberately conservative: only one confidence-qualified
-        // owner can seed the whole-body write guard. Ambiguous matches go through
-        // the normal model-directed search/read flow instead.
+        // Only a unique or clearly dominant content-backed hit may seed the
+        // whole-body write guard. Related but weaker hits remain available to
+        // the agent through its normal search tools; close matches stay ambiguous.
         const candidates = hits.filter((hit) => hit.confidenceQualified === true);
-        if (candidates.length === 1) {
-          const concept = await kb.readConcept(candidates[0].path);
+        const first = candidates[0];
+        const second = candidates[1];
+        const clearOwner = first && (!second ||
+          ((first.confidence ?? 0) >= (second.confidence ?? 0) + 20 &&
+            (first.confidence ?? 0) >= (second.confidence ?? 0) * 1.5));
+        if (clearOwner) {
+          const concept = await kb.readConcept(first.path);
           state.checkCancellation();
           recorder.record("read_concept", concept.path, [concept.path]);
           const page = {
@@ -717,7 +722,8 @@ export async function runMutation(
           const heading = `\n\nDETERMINISTIC PREFLIGHT (one confidence-qualified candidate; complete body follows):\n- ${concept.path}\n`;
           // Never cut the evidence: only mark a body as read if its complete,
           // unchanged contents are actually present in the prompt.
-          if (heading.length + evidence.length <= 12_000) {
+          if (concept.body.length <= (state.maxDocumentChars ?? Number.POSITIVE_INFINITY) &&
+              heading.length + evidence.length <= Math.min(12_000, state.payloadBudget ?? 12_000)) {
             preflightHint = heading + evidence;
             state.recordBodyPage(concept.path, 0, concept.body, concept.body, concept.body);
           }

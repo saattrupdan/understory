@@ -665,7 +665,7 @@ describe("mutation answer validation", () => {
     const trace = (await new TraceStore(root).list())[0];
     expect(trace.timing).toMatchObject({
       generationMs: expect.any(Number),
-      providerCalls: [{ model: "test-model", durationMs: expect.any(Number), inputTokens: 7, outputTokens: 3 }],
+      providerCalls: [{ model: "openai:test-model", durationMs: expect.any(Number), inputTokens: 7, outputTokens: 3 }],
     });
     expect(JSON.stringify(trace.timing)).not.toContain("provider response");
   });
@@ -683,7 +683,7 @@ describe("mutation answer validation", () => {
       outcome: "partial",
       timing: {
         generationMs: expect.any(Number),
-        providerCalls: [{ model: "test-model", durationMs: expect.any(Number), inputTokens: 7, outputTokens: 3 }],
+        providerCalls: [{ model: "openai:test-model", durationMs: expect.any(Number), inputTokens: 7, outputTokens: 3 }],
       },
     });
     expect(JSON.stringify(trace.timing)).not.toContain("private details");
