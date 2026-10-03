@@ -79,15 +79,39 @@ async function promptContext(
   };
 }
 
-async function resolveAgentModel(
+export async function resolveAgentModel(
   options: AgentOptions,
   mode: "query" | "mutate" | "chat",
   env: NodeJS.ProcessEnv = process.env
 ): Promise<ResolvedAgentModel> {
-  const primaryConfig = withModelOverride(resolveModelConfig(env), options.model);
+  // This setting is deliberately scoped to deep read-only queries. The same
+  // resolved models serve the full query loop and synthesis repairs, while
+  // mutation and interactive chat retain their configured thinking behavior.
+  const queryConfig = (config: ModelConfig | undefined): ModelConfig | undefined => {
+    if (mode !== "query" || env.QUERY_ENABLE_THINKING !== "false" || !config) {
+      return config;
+    }
+    const extraBody = config.extraBody ?? {};
+    const templateKwargs = extraBody.chat_template_kwargs;
+    return {
+      ...config,
+      extraBody: {
+        ...extraBody,
+        chat_template_kwargs: {
+          ...(templateKwargs && typeof templateKwargs === "object"
+            ? templateKwargs
+            : {}),
+          enable_thinking: false,
+        },
+      },
+    };
+  };
+  const primaryConfig = queryConfig(
+    withModelOverride(resolveModelConfig(env), options.model)
+  )!;
   throwIfAborted(options.signal);
   const primary = await createModel(primaryConfig, options.signal);
-  const fallbackConfig = resolveFallbackConfig(env);
+  const fallbackConfig = queryConfig(resolveFallbackConfig(env));
 
   if (!fallbackConfig) {
     return {
