@@ -86,6 +86,25 @@ describe("MCP cancellation", () => {
     );
   });
 
+  it("returns a partial write as an MCP error so async clients cannot mark it applied", async () => {
+    runMutationMock.mockResolvedValue({
+      ok: false,
+      status: "partial",
+      filesChanged: ["/facts/example.md"],
+      error: "Malformed model answer",
+      traceId: "trace",
+    });
+    const registered = await registeredTools();
+    const response = await registered.memory_update.handler(
+      { instruction: "update the example" },
+      { signal: new AbortController().signal }
+    ) as { isError?: boolean; content: Array<{ text: string }> };
+
+    expect(response.isError).toBe(true);
+    expect(response.content[0].text).toContain("Partial mutation: 1 file(s)");
+    expect(response.content[0].text).toContain("/facts/example.md");
+  });
+
   it("routes an SDK cancellation notification to the original HTTP handler", async () => {
     let started!: () => void;
     let aborted!: () => void;

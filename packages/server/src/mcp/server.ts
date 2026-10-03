@@ -100,6 +100,8 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
             text: `⚠ Partial mutation: ${outcome.filesChanged.length} file(s) written before failure.\nFiles: ${outcome.filesChanged.join(", ")}\nError: ${outcome.error}`,
           },
         ],
+        // Incomplete writes must not be acknowledged as applied by async clients.
+        isError: true,
       };
     }
     return {
