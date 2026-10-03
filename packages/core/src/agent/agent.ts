@@ -87,7 +87,7 @@ export async function resolveAgentModel(
   // This setting is deliberately scoped to deep read-only queries. The same
   // resolved models serve the full query loop and synthesis repairs, while
   // mutation and interactive chat retain their configured thinking behavior.
-  const queryConfig = (config: ModelConfig | undefined): ModelConfig | undefined => {
+  const queryConfig = (config: ModelConfig | null | undefined): ModelConfig | null | undefined => {
     if (mode !== "query" || env.QUERY_ENABLE_THINKING !== "false" || !config) {
       return config;
     }
