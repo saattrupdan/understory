@@ -143,6 +143,7 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
         (suggested_path ? `\n\nIf it fits, place new content at ${suggested_path}.` : "");
       const outcome = await runMutation(kb, instruction, {
         signal: extra.signal,
+        preflightInput: content,
       });
       // A partial write remains reportable even when cancellation prevents the
       // best-effort seed refresh from running.
