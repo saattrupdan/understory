@@ -70,11 +70,13 @@ describe("runRecall", () => {
   it("tolerates absent provider accounting and tokenizer failures", async () => {
     await searchableKb();
     vi.stubEnv("RECALL_TOKENIZER_URL", "http://tokenizer.test/tokenize");
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
-    await runRecall(kb, "when deploy cadence?", { model: "local-model" }, async () => ({
+    const fetchMock = vi.fn(async () => { throw new Error("offline"); });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await runRecall(kb, "when deploy cadence?", { model: "local-model" }, async () => ({
       text: "SUFFICIENT\nFridays.", finishReason: "stop", reasoningText: "thinking",
     }));
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.usage).toBeUndefined();
   });
   it("does not send reasoning to a tokenizer when it is not configured", async () => {
     await searchableKb();
