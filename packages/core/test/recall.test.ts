@@ -257,11 +257,13 @@ describe("runRecall", () => {
   it("shares the accelerated excerpt budget across late selected candidates", async () => {
     vi.stubEnv("RECALL_ACCELERATED", "true");
     vi.stubEnv("RECALL_CANDIDATES", "12");
+    vi.stubEnv("RECALL_MIN_SCORE", "0");
     for (let i = 0; i < 8; i++) {
       await kb.writeConcept(
         `/facts/policy-${i}.md`,
         { type: "Fact", title: `Policy ${i} deployment` },
-        `Deployment policy ${i} includes rollout planning. ${"Operational deployment guidance. ".repeat(300)}`,
+        `Deployment policy ${i} includes rollout planning. ${"Operational deployment guidance. ".repeat(300)}\n\n` +
+          Array.from({ length: 8 }, (_, j) => j === i ? "" : `[Policy ${j}](/facts/policy-${j}.md)`).join(" "),
         "add"
       );
     }
