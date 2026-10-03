@@ -233,12 +233,16 @@ describe("mutation owner preflight", () => {
     expect(result).toMatchObject({ ok: false, status: "failed" });
   });
 
-  it("honours the configured evidence budget before generating", async () => {
+  it("keeps complete staged evidence independent of the generic tool-result cap", async () => {
     await billingFixture(); staged();
     vi.stubEnv("AGENT_MAX_TOOL_RESULT_CHARS", "260");
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(oldBody);
+      return { object: { ...baseProposal, action: "defer", reason: "No safe edit." } };
+    });
     const result = await runMutation(kb, updateInstruction);
     expect(result).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).not.toHaveBeenCalled();
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a stale exact replacement after the owner changed", async () => {
@@ -254,7 +258,7 @@ describe("mutation owner preflight", () => {
 
   it("defers an oversized owner before asking the model", async () => {
     await billingFixture(); staged();
-    await kb.writeConcept("/apis/billing-api.md", { type: "API Endpoint", title: "Billing API" }, `${oldBody}${" more details".repeat(1300)}`, "expand");
+    await kb.writeConcept("/apis/billing-api.md", { type: "API Endpoint", title: "Billing API" }, `${oldBody}${" more details".repeat(5_500)}`, "expand");
     const result = await runMutation(kb, updateInstruction);
     expect(result).toMatchObject({ ok: false, status: "failed" });
     expect(generateObjectMock).not.toHaveBeenCalled();
@@ -270,6 +274,24 @@ describe("mutation owner preflight", () => {
     });
     await expect(runMutation(kb, updateInstruction, { signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
+  it("checks the complete body of a large hinted owner before appending", async () => {
+    await billingFixture(); staged();
+    const tail = "Last section: billing request IDs remain meaningful for support.";
+    await kb.patchConcept("/apis/billing-api.md", {
+      replaceBody: `${oldBody}\n\n${"Background billing details. ".repeat(750)}\n\n${tail}\n`,
+    }, "expand");
+    const fact = "Billing API records an audit request ID for each support-created charge.";
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(tail);
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, `Remember that ${fact}`, { ownerHint: "/apis/billing-api.md", preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    const body = (await kb.readConcept("/apis/billing-api.md")).body;
+    expect(body).toContain(tail);
+    expect(body).toContain(fact);
   });
 
   it("reads an existing owner hint outside ranked search results but never a missing path", async () => {

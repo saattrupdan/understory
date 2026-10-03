@@ -666,6 +666,11 @@ export async function runQuery(
   }
 }
 
+// The staged path sends complete owner bodies, never a truncated page. The
+// model's context accommodates these bounds; larger evidence fails closed.
+const STAGED_MAX_OWNER_CHARS = 64_000;
+const STAGED_MAX_EVIDENCE_CHARS = 80_000;
+
 /** Distinct words used only as a conservative support check, never as proof of meaning. */
 function stagedWords(text: string): string[] {
   const stop = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "about", "record", "remember", "concept", "knowledge", "policy", "distinct", "unrelated", "existing", "only"]);
@@ -744,7 +749,7 @@ async function runStagedMutation(
     if (hintedPath || explicitOwner || dominant) {
       const concept = await kb.readConcept(hintedPath ?? (explicitOwner ?? first).path);
       recorder.record("read_concept", concept.path, [concept.path]);
-      if (concept.body.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
+      if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
     } else if (hits.length > 0) {
       // Give the proposer complete bodies for up to three competing owners.
@@ -752,12 +757,12 @@ async function runStagedMutation(
       for (const hit of hits.slice(0, 3)) {
         const concept = await kb.readConcept(hit.path);
         recorder.record("read_concept", concept.path, [concept.path]);
-        if (concept.body.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: candidate body exceeds evidence limit.");
+        if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: candidate body exceeds evidence limit.");
         candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
       }
     }
     const evidence = JSON.stringify(candidates);
-    if (evidence.length + raw.length > Math.min(20_000, state.payloadBudget ?? 20_000)) {
+    if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
       throw new Error("Staged mutation deferred: evidence exceeds prompt budget.");
     }
     state.checkCancellation();
@@ -801,7 +806,7 @@ async function runStagedMutation(
         state.checkCancellation();
         if (!judgement.object.safe) throw new Error("Staged mutation deferred: exact-fact append failed consistency check.");
         const appended = `${target.body.trimEnd()}\n\n${fact}\n`;
-        if (appended.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: appended body exceeds evidence limit.");
+        if (appended.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: appended body exceeds evidence limit.");
         const current = await kb.readConcept(target.path);
         if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
         state.checkCancellation();
@@ -891,7 +896,7 @@ async function runStagedMutation(
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: append failed independent consistency check.");
       const appended = `${target.body.trimEnd()}\n\n${p.new_text.trim()}\n`;
-      if (appended.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: appended body exceeds evidence limit.");
+      if (appended.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: appended body exceeds evidence limit.");
       const current = await kb.readConcept(target.path);
       if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
       state.checkCancellation();
@@ -912,7 +917,7 @@ async function runStagedMutation(
         throw new Error("Staged mutation rejected: an added negation was not requested.");
       }
       const replacement = target.body.replace(p.old_text, p.new_text);
-      if (replacement === target.body || replacement.length > (state.maxDocumentChars ?? 12_000)) {
+      if (replacement === target.body || replacement.length > STAGED_MAX_OWNER_CHARS) {
         throw new Error("Staged mutation rejected: replacement is empty or oversized.");
       }
       const judgement = await generateObject({
