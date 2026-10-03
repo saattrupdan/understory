@@ -37,6 +37,8 @@ import {
 export interface AgentOptions {
   model?: string;
   signal?: AbortSignal;
+  /** Raw caller-provided facts, excluding server-added mutation instructions. */
+  preflightInput?: string;
 }
 
 export interface QueryResult {
@@ -658,6 +660,15 @@ export async function runQuery(
 }
 
 /** Knowledge add/update — full toolset, low temperature. */
+function mutationSearchQuery(input: string): string {
+  const words = input
+    .replace(/https?:\/\/\S+/gi, " ")
+    .toLowerCase()
+    .match(/[\p{L}\p{N}][\p{L}\p{N}_-]{2,}/gu) ?? [];
+  const stop = new Set(["the", "and", "for", "with", "that", "this", "into", "from", "about", "existing", "concept", "knowledge", "base", "update", "change", "please", "persist", "following"]);
+  return [...new Set(words.filter((word) => !stop.has(word)))].slice(0, 10).join(" ").slice(0, 500);
+}
+
 export async function runMutation(
   kb: KnowledgeBase,
   instruction: string,
@@ -674,6 +685,35 @@ export async function runMutation(
   const ctx = await promptContext(kb, "mutate", state);
   throwIfAborted(options.signal);
   const recorder = new TraceRecorder();
+  let preflightHint = "";
+  if (process.env.MUTATION_PREFLIGHT === "true") {
+    try {
+      const raw = options.preflightInput ?? instruction;
+      const query = mutationSearchQuery(raw);
+      if (query) {
+        state.checkCancellation();
+        const hits = await kb.search(query);
+        recorder.record("search_knowledge", query, hits.slice(0, 5).map((hit) => hit.path));
+        state.checkCancellation();
+        const candidates = hits
+          .filter((hit) => hit.confidenceQualified === true)
+          .slice(0, 5);
+        if (candidates.length) {
+          const readTools = buildReadTools(kb, recorder, state) as any;
+          const result = await readTools.read_concepts.execute({ paths: candidates.map((hit: { path: string }) => hit.path) });
+          state.checkCancellation();
+          if (result && typeof result === "object" && result.truncated === false && Array.isArray(result.read)) {
+            preflightHint = `\n\nDETERMINISTIC PREFLIGHT (candidate evidence only; independently verify before writing):\n` +
+              candidates.map((hit: { path: string; confidence?: number }) => `- ${hit.path} (confidence ${hit.confidence ?? "qualified"})`).join("\n") +
+              `\n${JSON.stringify(result.read).slice(0, 12_000)}`;
+          }
+        }
+      }
+    } catch {
+      // Preflight is advisory. The regular agent search/read path remains authoritative.
+    }
+    throwIfAborted(options.signal);
+  }
   const maxSteps = limits.maxSteps;
   const filesChanged = new Set<string>();
   const providerCalls: NonNullable<TraceTiming["providerCalls"]> = [];
@@ -690,7 +730,7 @@ export async function runMutation(
     const mutationRequest = (model: LanguageModel) => generateText({
       model,
       system: buildSystemPrompt(ctx),
-      prompt: instruction,
+      prompt: instruction + preflightHint,
       tools: {
         ...buildReadTools(kb, recorder, state),
         ...buildWriteTools(kb, filesChanged, recorder, state),
