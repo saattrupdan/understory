@@ -174,13 +174,25 @@ export async function runQueryCached(
     // Traced like any other query, with the retrieval it did as its single
     // step — this is how a slow query is attributed to a layer later.
     recorder.record("recall", question, recalled.paths);
-    const trace = recorder.finalize("query", question, recalled.answer, "success");
+    const trace = recorder.finalize(
+      "query", question, recalled.answer, "success", [], undefined, recalled.usage, recalled.outcome ?? "success"
+    );
     await traceStore(kb).save(trace).catch(() => {
       /* a failed trace must not lose an answer */
     });
     const result: QueryResult = { answer: recalled.answer, steps: 1, traceId: trace.id };
     store(key, result, ttl);
     return { ...result, cached: false, source: "recall" };
+  }
+
+  if (recalled.outcome) {
+    recorder.record("recall", question, recalled.paths);
+    const trace = recorder.finalize(
+      "query", question, "", "partial", [], undefined, recalled.usage, recalled.outcome
+    );
+    await traceStore(kb).save(trace).catch(() => {
+      /* a partial trace must not lose the deep answer */
+    });
   }
 
   // Layer 4: deep memory — the full agent loop. Its answer is stored only in

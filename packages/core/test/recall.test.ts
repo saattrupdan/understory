@@ -31,28 +31,21 @@ afterEach(async () => {
 });
 
 describe("runRecall", () => {
-  async function savedRecallTrace() {
-    const files = await fs.readdir(path.join(root, ".traces"));
-    return JSON.parse(await fs.readFile(path.join(root, ".traces", files[0]), "utf8"));
-  }
-
   async function searchableKb() {
     await kb.writeConcept("/facts/deploy.md", { type: "Fact", title: "Deploy cadence" }, "We deploy on Fridays.", "add");
   }
 
-  it("persists provider token accounting without generation or excerpt text", async () => {
+  it("returns provider token accounting without persisting a standalone trace", async () => {
     await searchableKb();
-    await runRecall(kb, "when deploy cadence?", {}, async () => ({
+    const result = await runRecall(kb, "when deploy cadence?", {}, async () => ({
       text: "SUFFICIENT\nFridays.", finishReason: "stop", reasoningText: "private reasoning",
       usage: { completionTokens: 42, reasoningTokens: 12 },
     }));
-    const trace = await savedRecallTrace();
-    expect(trace).toMatchObject({ recallOutcome: "success", recallUsage: {
+    expect(result.usage).toMatchObject({
       completionTokens: 42, reasoningTokens: 12, reasoningTokenSource: "provider", visibleOutputTokens: 30,
-    }});
-    const serialized = JSON.stringify(trace);
-    expect(serialized).not.toContain("private reasoning");
-    expect(serialized).not.toContain("We deploy on Fridays");
+    });
+    const traceDir = path.join(root, ".traces");
+    await expect(fs.readdir(traceDir)).rejects.toThrow();
   });
 
   it("records output-cap declines and tokenizer-estimated reasoning separately", async () => {
@@ -66,11 +59,11 @@ describe("runRecall", () => {
     const result = await runRecall(kb, "when deploy cadence?", { model: "local-model" }, async () => ({
       text: "partial", finishReason: "length", reasoningText: "thinking", usage: { completionTokens: 20 },
     }));
-    const trace = await savedRecallTrace();
     expect(result.answer).toBeNull();
-    expect(trace).toMatchObject({ outcome: "partial", recallOutcome: "declined_cap", recallUsage: {
+    expect(result.outcome).toBe("declined_cap");
+    expect(result.usage).toMatchObject({
       completionTokens: 20, reasoningTokens: 3, reasoningTokenSource: "tokenizer_estimate", visibleOutputTokens: 17,
-    }});
+    });
     expect(error).toHaveBeenCalled();
   });
 
@@ -81,19 +74,18 @@ describe("runRecall", () => {
     await runRecall(kb, "when deploy cadence?", { model: "local-model" }, async () => ({
       text: "SUFFICIENT\nFridays.", finishReason: "stop", reasoningText: "thinking",
     }));
-    const trace = await savedRecallTrace();
-    expect(trace.recallUsage).toBeUndefined();
-    expect(trace.recallOutcome).toBe("success");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
-  it("does not call the tokenizer when no reasoning text is returned", async () => {
+  it("does not send reasoning to a tokenizer when it is not configured", async () => {
     await searchableKb();
+    vi.stubEnv("RECALL_TOKENIZER_URL", "");
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    await runRecall(kb, "when deploy cadence?", {}, async () => ({
-      text: "SUFFICIENT\nFridays.", finishReason: "stop",
+    const result = await runRecall(kb, "when deploy cadence?", {}, async () => ({
+      text: "SUFFICIENT\nFridays.", finishReason: "stop", reasoningText: "do not send me",
     }));
     expect(fetchMock).not.toHaveBeenCalled();
-    expect((await savedRecallTrace()).recallUsage).toBeUndefined();
+    expect(result.usage).toBeUndefined();
   });
 
   it("answers from retrieved concepts in a single generation", async () => {
@@ -667,8 +659,9 @@ describe("runQueryCached layer order", () => {
     );
     const runner = deep("should not run");
     const generate = vi.fn(async () => ({
-      text: "Fridays. Sources: /facts/deploy.md",
+      text: "SUFFICIENT\nFridays.",
       finishReason: "stop" as const,
+      usage: { completionTokens: 31, reasoningTokens: 8 },
     }));
 
     const result = await runQueryCached(
@@ -683,6 +676,10 @@ describe("runQueryCached layer order", () => {
     expect(result.source).toBe("recall");
     const stored = await new (await import("../src/agent/trace.js")).TraceStore(root).list();
     const trace = stored.find((t) => t.id === result.traceId);
+    expect(stored).toHaveLength(1);
+    expect(trace).toMatchObject({ outcome: "success", recallOutcome: "success", recallUsage: {
+      completionTokens: 31, reasoningTokens: 8, visibleOutputTokens: 23,
+    }});
     expect(trace?.notation).toContain("recall");
     expect(runner).not.toHaveBeenCalled();
   });
@@ -699,6 +696,7 @@ describe("runQueryCached layer order", () => {
     const generate = vi.fn(async () => ({
       text: "SUFFICIENT\nWe deploy on Fridays, after the review meeting and then the",
       finishReason: "length" as const,
+      usage: { completionTokens: 20, reasoningTokens: 5 },
     }));
     const question = "deploy cadence day?";
 
@@ -708,6 +706,11 @@ describe("runQueryCached layer order", () => {
 
     // The fragment is neither the answer nor cached: the deep run answers.
     expect(result.source).toBe("deep");
+    const traces = await new (await import("../src/agent/trace.js")).TraceStore(root).list();
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({ outcome: "partial", recallOutcome: "declined_cap", recallUsage: {
+      completionTokens: 20, reasoningTokens: 5, visibleOutputTokens: 15,
+    }});
     expect(result.answer).toContain("migration runs");
     expect(runner).toHaveBeenCalledTimes(1);
     expect(runner.mock.calls[0][1]).toContain("/facts/deploy.md");

@@ -3,7 +3,7 @@ import { capEnv } from "../util/env.js";
 import type { AgentOptions } from "./agent.js";
 import { isMalformedAnswer, MALFORMED_ANSWER_MESSAGE } from "./answer-validation.js";
 import { isAbortError, throwIfAborted } from "../util/abort.js";
-import { TraceRecorder, TraceStore, type RecallTokenUsage } from "./trace.js";
+import type { RecallTokenUsage } from "./trace.js";
 
 /**
  * Recall fast path: deterministic retrieval (keyword search plus a one-hop walk
@@ -64,6 +64,9 @@ export interface RecallOutcome {
    * the deep agent should start from them instead of rediscovering them.
    */
   paths: string[];
+  /** Token accounting is attached to the encompassing query trace by the caller. */
+  usage?: RecallTokenUsage;
+  outcome?: "success" | "declined_cap" | "declined";
 }
 
 /**
@@ -671,15 +674,13 @@ export async function runRecall(
   // retry loop is the backstop, and a null answer makes the caller write no
   // cache entry — that is the whole point of declining here. This warning is
   // unconditional and is the only signal the layer ever dropped an answer for
-  // this reason. A separate privacy-preserving trace is written for every
-  // generation, including this declined attempt; the query-cache trace remains
-  // responsible for the subsequent deep run.
+  // this reason. The token counts and decline classification are returned to
+  // the query-cache layer, which writes one partial trace before deep fallback.
   const recallUsage = await accountRecallTokens(generation, options);
   const finishOutcome = generation.finishReason === "length" ? "declined_cap" :
     isMalformedAnswer(text) || /^\s*UNKNOWN\b/i.test(text) || !text.replace(/^\s*SUFFICIENT\s*\n?/i, "").trim()
       ? "declined"
       : "success";
-  await saveRecallTrace(kb, question, paths, recallUsage, finishOutcome, options);
 
   if (generation.finishReason === "length") {
     console.error(
@@ -687,18 +688,18 @@ export async function runRecall(
         `(RECALL_MAX_OUTPUT_TOKENS) and would have been a truncated answer: ` +
         `"${question.slice(0, 80)}"`
     );
-    return { answer: null, paths };
+    return { answer: null, paths, usage: recallUsage, outcome: finishOutcome };
   }
 
   // The verdict leads so that declining costs a couple of tokens, not an answer
   // the caller will throw away.
   if (isMalformedAnswer(text)) {
     console.error(`[understory] recall declined: ${MALFORMED_ANSWER_MESSAGE}`);
-    return { answer: null, paths };
+    return { answer: null, paths, usage: recallUsage, outcome: finishOutcome };
   }
-  if (/^\s*UNKNOWN\b/i.test(text)) return { answer: null, paths };
+  if (/^\s*UNKNOWN\b/i.test(text)) return { answer: null, paths, usage: recallUsage, outcome: finishOutcome };
   const answer = text.replace(/^\s*SUFFICIENT\s*\n?/i, "").trim();
-  if (!answer) return { answer: null, paths };
+  if (!answer) return { answer: null, paths, usage: recallUsage, outcome: finishOutcome };
   // An unrecognised finish reason with usable text: answer it, loudly.
   // Declining here would be the mirror image of the truncation bug above.
   // "other" is also where a provider that never reports a finish reason at all
@@ -711,7 +712,7 @@ export async function runRecall(
         `answering with the text it did produce: "${question.slice(0, 80)}"`
     );
   }
-  return { answer, paths };
+  return { answer, paths, usage: recallUsage, outcome: finishOutcome };
 }
 
 async function accountRecallTokens(
@@ -723,7 +724,7 @@ async function accountRecallTokens(
   let reasoningTokenSource: RecallTokenUsage["reasoningTokenSource"];
   if (reasoningTokens !== undefined) {
     reasoningTokenSource = "provider";
-  } else if (generation.reasoningText) {
+  } else if (generation.reasoningText && process.env.RECALL_TOKENIZER_URL) {
     const estimate = await estimateReasoningTokens(generation.reasoningText, options);
     if (estimate !== undefined) {
       reasoningTokens = estimate;
@@ -750,7 +751,7 @@ async function estimateReasoningTokens(content: string, options: AgentOptions): 
   try {
     const { resolveModelConfig } = await import("../providers/index.js");
     const model = options.model ?? resolveModelConfig(process.env).model;
-    const response = await fetch(process.env.RECALL_TOKENIZER_URL ?? "http://host.docker.internal:8080/tokenize", {
+    const response = await fetch(process.env.RECALL_TOKENIZER_URL!, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model, content, add_special: false }),
@@ -776,23 +777,6 @@ function extractReasoningContent(result: unknown): string | undefined {
   const choices = (body as { choices?: { message?: { reasoning_content?: unknown } }[] }).choices;
   const reasoning = choices?.[0]?.message?.reasoning_content;
   return typeof reasoning === "string" && reasoning.length ? reasoning : undefined;
-}
-
-async function saveRecallTrace(
-  kb: KnowledgeBase,
-  question: string,
-  paths: string[],
-  usage: RecallTokenUsage | undefined,
-  outcome: "success" | "declined_cap" | "declined",
-  options: AgentOptions
-): Promise<void> {
-  const recorder = new TraceRecorder();
-  recorder.record("recall", question, paths);
-  const trace = recorder.finalize(
-    "query", question, "", outcome === "success" ? "success" : "partial",
-    options.model ? [options.model] : [], undefined, usage, outcome
-  );
-  await new TraceStore(kb.bundle.root).save(trace);
 }
 
 const defaultGenerate: RecallGenerate = async (system, prompt, options, controls) => {
