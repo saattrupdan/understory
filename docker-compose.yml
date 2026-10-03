@@ -15,6 +15,7 @@ services:
       BUNDLE_ROOT: /bundle
       AUTH_TOKEN: ${AUTH_TOKEN:-}
       RECALL_TOKENIZER_URL: ${RECALL_TOKENIZER_URL:-}
+      RECALL_ENABLE_THINKING: ${RECALL_ENABLE_THINKING:-true}
       # Primary model
       LLM_API_BASE_URL: ${LLM_API_BASE_URL}
       LLM_API_KEY: ${LLM_API_KEY}

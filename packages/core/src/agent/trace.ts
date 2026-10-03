@@ -27,7 +27,7 @@ export interface RecallTokenUsage {
   completionTokens?: number;
   /** Reasoning tokens, with their provenance made explicit. */
   reasoningTokens?: number;
-  reasoningTokenSource?: "provider" | "tokenizer_estimate";
+  reasoningTokenSource?: "provider" | "tokenizer_estimate" | "inferred";
   /** Visible completion tokens = completion minus reasoning when both are known. */
   visibleOutputTokens?: number;
 }

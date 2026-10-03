@@ -94,7 +94,7 @@ export type RecallGenerate = (
   prompt: string,
   options: AgentOptions,
   /** Extra generation controls a tool-free call should honour. */
-  controls: { maxOutputTokens: number; thinkingBudget: number }
+  controls: { maxOutputTokens: number; thinkingBudget: number; enableThinking: boolean }
 ) => Promise<RecallGeneration>;
 
 function intEnv(value: string | undefined, fallback: number): number {
@@ -665,6 +665,7 @@ export async function runRecall(
   const generation = await generate(system, prompt, options, {
     maxOutputTokens,
     thinkingBudget: intEnv(process.env.RECALL_THINKING_BUDGET, DEFAULT_THINKING_BUDGET),
+    enableThinking: process.env.RECALL_ENABLE_THINKING !== "false",
   });
   throwIfAborted(options.signal);
   const text = generation.text.trim();
@@ -676,7 +677,11 @@ export async function runRecall(
   // unconditional and is the only signal the layer ever dropped an answer for
   // this reason. The token counts and decline classification are returned to
   // the query-cache layer, which writes one partial trace before deep fallback.
-  const recallUsage = await accountRecallTokens(generation, options);
+  const recallUsage = await accountRecallTokens(
+    generation,
+    options,
+    process.env.RECALL_ENABLE_THINKING === "false"
+  );
   const finishOutcome = generation.finishReason === "length" ? "declined_cap" :
     isMalformedAnswer(text) || /^\s*UNKNOWN\b/i.test(text) || !text.replace(/^\s*SUFFICIENT\s*\n?/i, "").trim()
       ? "declined"
@@ -717,7 +722,8 @@ export async function runRecall(
 
 async function accountRecallTokens(
   generation: RecallGeneration,
-  options: AgentOptions
+  options: AgentOptions,
+  noThinkingRequested = false
 ): Promise<RecallTokenUsage | undefined> {
   const completionTokens = finiteTokenCount(generation.usage?.completionTokens);
   let reasoningTokens = finiteTokenCount(generation.usage?.reasoningTokens);
@@ -730,6 +736,10 @@ async function accountRecallTokens(
       reasoningTokens = estimate;
       reasoningTokenSource = "tokenizer_estimate";
     }
+  }
+  if (reasoningTokens === undefined && noThinkingRequested && !generation.reasoningText) {
+    reasoningTokens = 0;
+    reasoningTokenSource = "inferred";
   }
   if (completionTokens === undefined && reasoningTokens === undefined) return undefined;
   return {
@@ -794,7 +804,9 @@ const defaultGenerate: RecallGenerate = async (system, prompt, options, controls
         // chain of thought, and decoding thinking tokens is what makes these
         // calls slow. Ignored by providers that do not support it.
         extraBody: {
-          ...(providers.thinkingBudgetBody?.(controls.thinkingBudget) ?? {}),
+          ...(controls.enableThinking
+            ? providers.thinkingBudgetBody?.(controls.thinkingBudget) ?? {}
+            : { chat_template_kwargs: { enable_thinking: false } }),
           max_tokens: controls.maxOutputTokens,
         },
       },

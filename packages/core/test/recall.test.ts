@@ -25,7 +25,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   for (const k of ["RECALL", "RECALL_SEEDS", "RECALL_CANDIDATES", "RECALL_MIN_SCORE",
-    "RECALL_MAX_OUTPUT_TOKENS", "LLM_THINKING_BUDGET"]) {
+    "RECALL_MAX_OUTPUT_TOKENS", "LLM_THINKING_BUDGET", "RECALL_ENABLE_THINKING"]) {
     delete process.env[k];
   }
 });
@@ -751,6 +751,37 @@ describe("withCandidateHint", () => {
 });
 
 describe("thinking budget wiring", () => {
+  it("requests no-thinking for recall only when explicitly configured and infers zero reasoning tokens", async () => {
+    await kb.writeConcept("/facts/deploy.md", { type: "Fact", title: "Deploy cadence" }, "We deploy on Fridays.", "add");
+    process.env.RECALL_ENABLE_THINKING = "false";
+    let controls: { enableThinking: boolean; maxOutputTokens: number } | undefined;
+    const answered = await runRecall(kb, "when deploy cadence?", {}, async (_system, _prompt, _options, value) => {
+      controls = value;
+      return { text: "SUFFICIENT\nFridays.", finishReason: "stop", usage: { completionTokens: 8 } };
+    });
+    expect(controls).toMatchObject({ enableThinking: false, maxOutputTokens: expect.any(Number) });
+    expect(answered.answer).toContain("Fridays");
+    expect(answered.usage).toMatchObject({
+      completionTokens: 8, reasoningTokens: 0, reasoningTokenSource: "inferred", visibleOutputTokens: 8,
+    });
+
+    const unknown = await runRecall(kb, "when deploy cadence?", {}, async () => ({
+      text: "UNKNOWN", finishReason: "stop", usage: { completionTokens: 2 },
+    }));
+    expect(unknown.answer).toBeNull();
+    expect(unknown.usage).toMatchObject({ reasoningTokens: 0, reasoningTokenSource: "inferred", visibleOutputTokens: 2 });
+  });
+
+  it("keeps thinking enabled by default", async () => {
+    await kb.writeConcept("/facts/deploy.md", { type: "Fact", title: "Deploy cadence" }, "We deploy on Fridays.", "add");
+    let enabled: boolean | undefined;
+    await runRecall(kb, "when deploy cadence?", {}, async (_system, _prompt, _options, controls) => {
+      enabled = controls.enableThinking;
+      return { text: "UNKNOWN", finishReason: "stop" };
+    });
+    expect(enabled).toBe(true);
+  });
+
   it("builds the vLLM request body for a reasoning budget", () => {
     expect(thinkingBudgetBody(256)).toEqual({
       chat_template_kwargs: { thinking: true, thinking_budget: 256 },
