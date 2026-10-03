@@ -86,13 +86,11 @@ export async function resolveAgentModel(
   env: NodeJS.ProcessEnv = process.env,
   onProviderCall?: (call: NonNullable<TraceTiming["providerCalls"]>[number]) => void
 ): Promise<ResolvedAgentModel> {
-  // This setting is deliberately scoped to deep read-only queries. The same
-  // resolved models serve the full query loop and synthesis repairs, while
-  // mutation and interactive chat retain their configured thinking behavior.
-  const queryConfig = (config: ModelConfig | null | undefined): ModelConfig | null | undefined => {
-    if (mode !== "query" || env.QUERY_ENABLE_THINKING !== "false" || !config) {
-      return config;
-    }
+  const scopedConfig = (config: ModelConfig | null | undefined): ModelConfig | null | undefined => {
+    const disableThinking =
+      (mode === "query" && env.QUERY_ENABLE_THINKING === "false") ||
+      (mode === "mutate" && env.MUTATION_ENABLE_THINKING === "false");
+    if (!disableThinking || !config) return config;
     const extraBody = config.extraBody ?? {};
     const templateKwargs = extraBody.chat_template_kwargs;
     return {
@@ -100,15 +98,13 @@ export async function resolveAgentModel(
       extraBody: {
         ...extraBody,
         chat_template_kwargs: {
-          ...(templateKwargs && typeof templateKwargs === "object"
-            ? templateKwargs
-            : {}),
+          ...(templateKwargs && typeof templateKwargs === "object" ? templateKwargs : {}),
           enable_thinking: false,
         },
       },
     };
   };
-  const primaryConfig = queryConfig(
+  const primaryConfig = scopedConfig(
     withModelOverride(resolveModelConfig(env), options.model)
   )!;
   throwIfAborted(options.signal);
@@ -116,7 +112,7 @@ export async function resolveAgentModel(
   const primary = onProviderCall
     ? withProviderTiming(primaryModel, modelLabel(primaryConfig), onProviderCall)
     : primaryModel;
-  const fallbackConfig = queryConfig(resolveFallbackConfig(env));
+  const fallbackConfig = scopedConfig(resolveFallbackConfig(env));
 
   if (!fallbackConfig) {
     return {
@@ -680,9 +676,16 @@ export async function runMutation(
   const recorder = new TraceRecorder();
   const maxSteps = limits.maxSteps;
   const filesChanged = new Set<string>();
+  const providerCalls: NonNullable<TraceTiming["providerCalls"]> = [];
+  const generationStarted = Date.now();
   let modelChain: string[] = [];
   try {
-    const resolved = await resolveAgentModel(options, "mutate");
+    const resolved = await resolveAgentModel(
+      options,
+      "mutate",
+      process.env,
+      (call) => providerCalls.push(call)
+    );
     modelChain = resolved.modelChain;
     const mutationRequest = (model: LanguageModel) => generateText({
       model,
@@ -719,7 +722,17 @@ export async function runMutation(
       }
     }
     const summary = result.text;
-    const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, sumStepsUsage(allSteps));
+    const trace = recorder.finalize(
+      "mutation",
+      instruction,
+      summary,
+      "success",
+      modelChain,
+      sumStepsUsage(allSteps),
+      undefined,
+      undefined,
+      { providerCalls, generationMs: Date.now() - generationStarted }
+    );
     await traceStore(kb).save(trace);
     return {
       ok: true,
@@ -737,7 +750,10 @@ export async function runMutation(
     // callers do not mistake it for a completed agent response. Once a write has
     // landed, retain the existing partial-mutation report instead.
     if (files.length === 0 && isAbortError(err, options.signal)) {
-      const trace = recorder.finalize("mutation", instruction, message, "failed", modelChain);
+      const trace = recorder.finalize("mutation", instruction, message, "failed", modelChain, undefined, undefined, undefined, {
+        providerCalls,
+        generationMs: Date.now() - generationStarted,
+      });
       await traceStore(kb).save(trace).catch(() => {
         // Preserve the provider cancellation even if trace persistence also fails.
       });
@@ -745,11 +761,17 @@ export async function runMutation(
     }
     if (files.length > 0) {
       const summary = `Partial mutation: ${files.length} file(s) changed before failure. Error: ${message}`;
-      const trace = recorder.finalize("mutation", instruction, summary, "partial", modelChain);
+      const trace = recorder.finalize("mutation", instruction, summary, "partial", modelChain, undefined, undefined, undefined, {
+        providerCalls,
+        generationMs: Date.now() - generationStarted,
+      });
       await traceStore(kb).save(trace);
       return { ok: false, status: "partial", filesChanged: files, error: message, traceId: trace.id };
     }
-    const trace = recorder.finalize("mutation", instruction, message, "failed", modelChain);
+    const trace = recorder.finalize("mutation", instruction, message, "failed", modelChain, undefined, undefined, undefined, {
+      providerCalls,
+      generationMs: Date.now() - generationStarted,
+    });
     await traceStore(kb).save(trace);
     return { ok: false, status: "failed", error: message };
   }

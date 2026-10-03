@@ -4,6 +4,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
+const createModelMock = vi.hoisted(() => vi.fn());
+vi.mock("../src/providers/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/providers/index.js")>(
+    "../src/providers/index.js"
+  );
+  return { ...actual, createModel: createModelMock };
+});
 vi.mock("ai", async () => {
   const actual = await vi.importActual<typeof import("ai")>("ai");
   return { ...actual, generateText: generateTextMock };
@@ -34,11 +41,21 @@ beforeEach(async () => {
   vi.stubEnv("LLM_API_BASE_URL", "http://localhost:1/v1");
   vi.stubEnv("LLM_API_KEY", "test");
   vi.stubEnv("LLM_MODEL", "test-model");
+  createModelMock.mockImplementation((config: { model: string }) => Promise.resolve({
+    specificationVersion: "v1",
+    provider: "test-provider",
+    modelId: config.model,
+    doGenerate: async () => ({
+      content: [{ type: "text", text: "provider response must not enter telemetry" }],
+      usage: { inputTokens: 7, outputTokens: 3 },
+    }),
+  }));
 });
 
 afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
   generateTextMock.mockReset();
+  createModelMock.mockReset();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
@@ -624,6 +641,7 @@ describe("mutation answer validation", () => {
   const step = { toolCalls: [] as unknown[] };
   const malformed = "[write_concept(path='/facts/new.md')";
   const write = async (request: {
+    model?: { doGenerate?: (options: never) => Promise<unknown> };
     tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> }>;
   }, pathName: string, body: string) => request.tools?.write_concept?.execute?.({
     path: pathName,
@@ -636,6 +654,40 @@ describe("mutation answer validation", () => {
     vi.stubEnv("LLM_FALLBACK_API_KEY", "test");
     vi.stubEnv("LLM_FALLBACK_MODEL", "fallback-model");
   };
+
+  it("records numeric provider timing and usage on successful mutations", async () => {
+    generateTextMock.mockImplementationOnce(async (request: Parameters<typeof write>[0]) => {
+      await request.model?.doGenerate?.({} as never);
+      return { text: "Done.", steps: [step] };
+    });
+    const result = await runMutation(kb, "Create a fact.");
+    expect(result).toMatchObject({ ok: true });
+    const trace = (await new TraceStore(root).list())[0];
+    expect(trace.timing).toMatchObject({
+      generationMs: expect.any(Number),
+      providerCalls: [{ model: "test-model", durationMs: expect.any(Number), inputTokens: 7, outputTokens: 3 }],
+    });
+    expect(JSON.stringify(trace.timing)).not.toContain("provider response");
+  });
+
+  it("retains provider timing on partial mutations", async () => {
+    generateTextMock.mockImplementationOnce(async (request: Parameters<typeof write>[0]) => {
+      await write(request, "/facts/partial.md", "partial");
+      await request.model?.doGenerate?.({} as never);
+      throw new Error("provider failure with private details");
+    });
+    const result = await runMutation(kb, "Create a fact.");
+    expect(result).toMatchObject({ ok: false, status: "partial" });
+    const trace = (await new TraceStore(root).list())[0];
+    expect(trace).toMatchObject({
+      outcome: "partial",
+      timing: {
+        generationMs: expect.any(Number),
+        providerCalls: [{ model: "test-model", durationMs: expect.any(Number), inputTokens: 7, outputTokens: 3 }],
+      },
+    });
+    expect(JSON.stringify(trace.timing)).not.toContain("private details");
+  });
 
   it("keeps multiple writes partial when the final answer is malformed", async () => {
     generateTextMock.mockImplementationOnce(async (request: Parameters<typeof write>[0]) => {
@@ -665,11 +717,12 @@ describe("mutation answer validation", () => {
     expect(generateTextMock.mock.calls[1][0].tools.write_concept).toBeDefined();
   });
 
-  it("fails closed without retry when no fallback is configured", async () => {
+  it("fails closed without retry or writes when no fallback is configured", async () => {
     generateTextMock.mockResolvedValueOnce({ text: "[read_concept(path='x')", steps: [step] });
     const result = await runMutation(kb, "Create a fact.");
     expect(result).toMatchObject({ ok: false, status: "failed" });
     expect(generateTextMock).toHaveBeenCalledTimes(1);
+    await expect(fs.access(path.join(root, "facts", "new.md"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("fails after one malformed fallback response", async () => {
