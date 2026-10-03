@@ -175,7 +175,8 @@ export async function runQueryCached(
     // step — this is how a slow query is attributed to a layer later.
     recorder.record("recall", question, recalled.paths);
     const trace = recorder.finalize(
-      "query", question, recalled.answer, "success", [], undefined, recalled.usage, recalled.outcome ?? "success"
+      "query", question, recalled.answer, "success", [], undefined, recalled.usage, recalled.outcome ?? "success",
+      recalled.timing ? { recallRetrievalMs: recalled.timing.retrievalMs, recallGenerationMs: recalled.timing.generationMs } : undefined
     );
     await traceStore(kb).save(trace).catch(() => {
       /* a failed trace must not lose an answer */
@@ -188,7 +189,8 @@ export async function runQueryCached(
   if (recalled.outcome) {
     recorder.record("recall", question, recalled.paths);
     const trace = recorder.finalize(
-      "query", question, "", "partial", [], undefined, recalled.usage, recalled.outcome
+      "query", question, "", "partial", [], undefined, recalled.usage, recalled.outcome,
+      recalled.timing ? { recallRetrievalMs: recalled.timing.retrievalMs, recallGenerationMs: recalled.timing.generationMs } : undefined
     );
     await traceStore(kb).save(trace).catch(() => {
       /* a partial trace must not lose the deep answer */

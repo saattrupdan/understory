@@ -67,6 +67,8 @@ export interface RecallOutcome {
   /** Token accounting is attached to the encompassing query trace by the caller. */
   usage?: RecallTokenUsage;
   outcome?: "success" | "declined_cap" | "declined";
+  /** Numeric-only coarse stage timings for trace attribution. */
+  timing?: { retrievalMs: number; generationMs?: number };
 }
 
 /**
@@ -561,6 +563,7 @@ export async function runRecall(
   generate: RecallGenerate = defaultGenerate
 ): Promise<RecallOutcome> {
   throwIfAborted(options.signal);
+  const retrievalStarted = Date.now();
   if (process.env.RECALL === "false") return { answer: null, paths: [] };
 
   const seeds = intEnv(process.env.RECALL_SEEDS, DEFAULT_SEEDS);
@@ -661,6 +664,8 @@ export async function runRecall(
     `else at all.`;
   const prompt = `CONCEPTS:\n\n${sections.join("\n\n---\n\n")}\n\nQUESTION: ${question}`;
 
+  const retrievalMs = Date.now() - retrievalStarted;
+  const generationStarted = Date.now();
   const maxOutputTokens = capEnv(process.env.RECALL_MAX_OUTPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS);
   const generation = await generate(system, prompt, options, {
     maxOutputTokens,
@@ -668,6 +673,8 @@ export async function runRecall(
     enableThinking: process.env.RECALL_ENABLE_THINKING !== "false",
   });
   throwIfAborted(options.signal);
+  const generationMs = Date.now() - generationStarted;
+  const timing = { retrievalMs, generationMs };
   const text = generation.text.trim();
 
   // Ran out of output tokens: the reply is cut off mid-sentence and reads like
@@ -693,18 +700,18 @@ export async function runRecall(
         `(RECALL_MAX_OUTPUT_TOKENS) and would have been a truncated answer: ` +
         `"${question.slice(0, 80)}"`
     );
-    return { answer: null, paths, usage: recallUsage, outcome: finishOutcome };
+    return { answer: null, paths, usage: recallUsage, outcome: finishOutcome, timing };
   }
 
   // The verdict leads so that declining costs a couple of tokens, not an answer
   // the caller will throw away.
   if (isMalformedAnswer(text)) {
     console.error(`[understory] recall declined: ${MALFORMED_ANSWER_MESSAGE}`);
-    return { answer: null, paths, usage: recallUsage, outcome: finishOutcome };
+    return { answer: null, paths, usage: recallUsage, outcome: finishOutcome, timing };
   }
-  if (/^\s*UNKNOWN\b/i.test(text)) return { answer: null, paths, usage: recallUsage, outcome: finishOutcome };
+  if (/^\s*UNKNOWN\b/i.test(text)) return { answer: null, paths, usage: recallUsage, outcome: finishOutcome, timing };
   const answer = text.replace(/^\s*SUFFICIENT\s*\n?/i, "").trim();
-  if (!answer) return { answer: null, paths, usage: recallUsage, outcome: finishOutcome };
+  if (!answer) return { answer: null, paths, usage: recallUsage, outcome: finishOutcome, timing };
   // An unrecognised finish reason with usable text: answer it, loudly.
   // Declining here would be the mirror image of the truncation bug above.
   // "other" is also where a provider that never reports a finish reason at all
@@ -717,7 +724,7 @@ export async function runRecall(
         `answering with the text it did produce: "${question.slice(0, 80)}"`
     );
   }
-  return { answer, paths, usage: recallUsage, outcome: finishOutcome };
+  return { answer, paths, usage: recallUsage, outcome: finishOutcome, timing };
 }
 
 async function accountRecallTokens(
