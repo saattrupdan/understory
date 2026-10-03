@@ -674,7 +674,11 @@ const STAGED_MAX_EVIDENCE_CHARS = 80_000;
 /** Distinct words used only as a conservative support check, never as proof of meaning. */
 function stagedWords(text: string): string[] {
   const stop = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "about", "record", "remember", "concept", "knowledge", "policy", "distinct", "unrelated", "existing", "only"]);
-  return [...new Set(text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]{2,}/gu)?.filter((word) => !stop.has(word)) ?? [])];
+  const compounds = text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]{2,}/gu) ?? [];
+  // Entity names such as "Memory-Async" must match the "async" component
+  // of a concept slug, without losing exact compound matches elsewhere.
+  return [...new Set(compounds.flatMap((word) => [word, ...word.split(/[-_]/)])
+    .filter((word) => word.length >= 3 && !stop.has(word)))];
 }
 
 function stagedOverlap(text: string, evidence: string): number {

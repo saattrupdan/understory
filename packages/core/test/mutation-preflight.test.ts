@@ -344,6 +344,19 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
+  it("matches a hyphenated entity to its owner slug on an unhinted add", async () => {
+    staged();
+    const owner = "/repos/pi-agent/understory-async-write-feasibility.md";
+    await kb.writeConcept(owner, { type: "Concept", title: "Understory Async Write Feasibility" },
+      "Pi Memory-Async has a persistent write queue and a paused worker.", "fixture");
+    const fact = "Pi Memory-Async canary-once pauses the worker after one MCP attempt.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: owner } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, `Persist this knowledge: ${fact}`, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+  });
+
   it("verifies an identical hinted fact without a duplicate write", async () => {
     await billingFixture(); staged();
     const fact = "Billing API logs request IDs for support-created charges.";
