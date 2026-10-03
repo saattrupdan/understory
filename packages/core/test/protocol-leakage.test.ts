@@ -366,7 +366,22 @@ describe("deep agent answer validation", () => {
     const leaked =
       "Let me try reading at offset 6000 to skip any large initial section.\n\n<tool_call>\n<function=read_concept>\n<parameter=offset>\n6000\n</parameter>\n<parameter=path>\ngotchas/example\n</parameter>\n</function>\n</tool_call>";
     generateTextMock
-      .mockResolvedValueOnce({ text: leaked, steps: [step], response: { messages: [] } })
+      .mockResolvedValueOnce({
+        text: leaked,
+        steps: [step],
+        response: {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "tool-call", toolCallId: "call-1", toolName: "read_concept", input: { path: "x" } }],
+            },
+            {
+              role: "tool",
+              content: [{ type: "tool-result", toolCallId: "call-1", toolName: "read_concept", output: { type: "json", value: { body: "alpha" } } }],
+            },
+          ],
+        },
+      })
       .mockResolvedValueOnce({ text: "The answer is alpha.", steps: [step] });
 
     const result = await runQuery(kb, "What is alpha?");
