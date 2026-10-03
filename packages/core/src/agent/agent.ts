@@ -42,8 +42,10 @@ export interface AgentOptions {
   signal?: AbortSignal;
   /** Raw caller-provided facts, excluding server-added mutation instructions. */
   preflightInput?: string;
-  /** Caller-suggested existing owner; never authoritative without search evidence. */
+  /** Caller-suggested owner; it must be read and independently checked. */
   ownerHint?: string;
+  /** Only memory_add may append the caller's exact fact without a generated edit. */
+  directAdd?: boolean;
 }
 
 export interface QueryResult {
@@ -676,8 +678,24 @@ function stagedOverlap(text: string, evidence: string): number {
   return words.length ? words.filter((word) => supported.has(word)).length / words.length : 0;
 }
 
+function stagedChangedClauses(before: string, after: string): number {
+  // A model can approve a correct change to one assertion while missing an
+  // unrelated change to another. Preserve all other sentence/semicolon clauses.
+  const split = (text: string) => text.split(/;\s*|(?<=[.!?])\s+|\n+/).map((part) => part.trim()).filter(Boolean);
+  const oldClauses = split(before);
+  const newClauses = split(after);
+  if (oldClauses.length !== newClauses.length) return Infinity;
+  return oldClauses.filter((clause, index) => clause !== newClauses[index]).length;
+}
+
 function stagedCorrection(input: string): boolean {
   return /\b(?:correct|correction|update|replace|supersede|instead|formerly|previously|no longer|only after|now|rather than|don['’]t|doesn['’]t)\b/i.test(input);
+}
+
+function stagedOwnerAnchor(input: string, conceptPath: string): boolean {
+  const slug = conceptPath.split("/").pop()?.replace(/\.md$/, "").replace(/[-_]/g, " ") ?? "";
+  const words = new Set(stagedWords(input));
+  return stagedWords(slug).some((word) => words.has(word));
 }
 
 function stagedTitleMention(input: string, title: string): boolean {
@@ -699,8 +717,9 @@ async function runStagedMutation(
   let changed: string[] = [];
   try {
     const raw = options.preflightInput ?? instruction;
-    if (options.ownerHint && options.ownerHint.length > 512) {
-      throw new Error("Staged mutation deferred: owner hint exceeds path limit.");
+    if (options.ownerHint && (options.ownerHint.length > 512 ||
+        !/^\/[a-z0-9_/-]+\.md$/.test(options.ownerHint) || options.ownerHint.split("/").includes(".."))) {
+      throw new Error("Staged mutation deferred: owner hint is not a bounded concept path.");
     }
     const query = mutationSearchQuery(raw);
     if (!query) throw new Error("Staged mutation deferred: no bounded search terms.");
@@ -710,25 +729,26 @@ async function runStagedMutation(
     state.checkCancellation();
     const first = hits[0];
     const second = hits[1];
-    const hinted = options.ownerHint
-      ? hits.find((hit) => hit.path === options.ownerHint && hit.confidenceQualified)
-      : undefined;
+    // A caller-supplied path is a locator, not a search-ranking requirement.
+    // Read it only when it already exists, then subject it to the same complete
+    // evidence, independent consistency and stale-body checks as any other owner.
+    // A missing hint may still be the desired path of a distinct new concept.
+    const hintedPath = options.ownerHint && await kb.bundle.exists(options.ownerHint)
+      ? options.ownerHint : undefined;
     const named = hits.filter((hit) => hit.title && stagedTitleMention(raw, hit.title));
     const explicitOwner = named.length === 1 ? named[0] : undefined;
     const dominant = first && first.confidenceQualified === true && (!second ||
       (first.confidence ?? 0) >= (second.confidence ?? 0) + 20 &&
       (first.confidence ?? 0) >= (second.confidence ?? 0) * 1.5);
     const candidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> = [];
-    if (hinted || explicitOwner || dominant) {
-      const concept = await kb.readConcept((hinted || explicitOwner || first).path);
+    if (hintedPath || explicitOwner || dominant) {
+      const concept = await kb.readConcept(hintedPath ?? (explicitOwner ?? first).path);
       recorder.record("read_concept", concept.path, [concept.path]);
       if (concept.body.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
     } else if (hits.length > 0) {
-      // Ambiguous ownership is not evidence for either patching or creating.
-      if (hits.length > 1 && hits[0].confidenceQualified && hits[1].confidenceQualified) {
-        throw new Error("Staged mutation deferred: ambiguous existing owner.");
-      }
+      // Give the proposer complete bodies for up to three competing owners.
+      // Its choice is checked again against the alternative titles below.
       for (const hit of hits.slice(0, 3)) {
         const concept = await kb.readConcept(hit.path);
         recorder.record("read_concept", concept.path, [concept.path]);
@@ -743,6 +763,73 @@ async function runStagedMutation(
     state.checkCancellation();
     const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
     modelChain = resolved.modelChain;
+    // For memory_add, preserve the caller's exact fact rather than generating
+    // replacement prose. A fast read-only selector handles unhinted candidates;
+    // one thinking-model check must still independently approve the chosen owner
+    // and consistency. memory_update keeps the conservative edit proposal below.
+    let directPath = hintedPath;
+    if (!directPath && options.directAdd && options.preflightInput && !stagedCorrection(raw) &&
+        candidates.length > 0 && raw.trim().length >= 30 && raw.trim().length <= 4_000) {
+      const selector = await resolveAgentModel(options, "mutate", { ...process.env, MUTATION_ENABLE_THINKING: "false" }, (call) => providerCalls.push(call));
+      const selection = await generateObject({
+        model: selector.model,
+        schema: z.object({ path: z.string() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Choose the ONE existing concept whose topic is directly about the FACT. Use only an exact candidate path. If the fact is unrelated to all candidates, or ownership is truly ambiguous, return an empty path. A mere mention or negative reference is not ownership. Do not create or change any content. JSON only.\nFACT:\n${raw}\nCANDIDATES:\n${evidence}`,
+      });
+      state.checkCancellation();
+      if (candidates.some((candidate) => candidate.path === selection.object.path)) directPath = selection.object.path;
+    }
+    if (directPath && options.directAdd && options.preflightInput && !stagedCorrection(raw) &&
+        raw.trim().length >= 30 && raw.trim().length <= 4_000) {
+      const target = candidates.find((candidate) => candidate.path === directPath)!;
+      const fact = raw.trim();
+      if (!stagedOwnerAnchor(fact, target.path) ||
+          (target.frontmatter.title && fact.toLowerCase().includes(target.frontmatter.title.toLowerCase()) &&
+            !stagedTitleMention(fact, target.frontmatter.title))) {
+        throw new Error("Staged mutation deferred: suggested owner lacks a positive entity anchor.");
+      }
+      if (!target.body.includes(fact)) {
+        const judgement = await generateObject({
+          model: resolved.model,
+          schema: z.object({ safe: z.boolean() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Independent safety check for appending the caller's EXACT fact, without rewriting it. Is every assertion supported by the caller, truly about this owner rather than a more specific alternative, not already recorded, and consistent with the full existing body? The suggested path is not proof. If uncertain, safe=false.\nFACT:\n${fact}\nOWNER ${target.path} (${target.frontmatter.title ?? "untitled"}):\n${target.body}\nOTHER SEARCH HITS (titles and paths only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}`,
+        });
+        state.checkCancellation();
+        if (!judgement.object.safe) throw new Error("Staged mutation deferred: exact-fact append failed consistency check.");
+        const appended = `${target.body.trimEnd()}\n\n${fact}\n`;
+        if (appended.length > (state.maxDocumentChars ?? 12_000)) throw new Error("Staged mutation deferred: appended body exceeds evidence limit.");
+        const current = await kb.readConcept(target.path);
+        if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+        state.checkCancellation();
+        await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append exact verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
+      } else {
+        // A substring may be quoted only to retract it later in the body. Do
+        // not equate textual presence with a currently supported assertion.
+        const following = target.body.slice(target.body.indexOf(fact) + fact.length, target.body.indexOf(fact) + fact.length + 160);
+        if (/^\s*(?:[,;:-]\s*)?(?:but|however|although|no longer|not|never)\b/i.test(following)) {
+          throw new Error("Staged mutation deferred: matching text is immediately qualified or negated.");
+        }
+        const judgement = await generateObject({
+          model: resolved.model,
+          schema: z.object({ supported: z.boolean() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Does the full existing body affirm the caller's EXACT fact as presently true, without a later correction, negation, or contradictory qualification? If the words are quoted only to retract them, supported=false. If uncertain, supported=false. Return JSON only.\nFACT:\n${fact}\nOWNER ${target.path}:\n${target.body}`,
+        });
+        state.checkCancellation();
+        if (!judgement.object.supported) throw new Error("Staged mutation deferred: matching text does not establish the requested fact.");
+        const current = await kb.readConcept(target.path);
+        if (current.body !== target.body || !current.body.includes(fact)) throw new Error("Staged mutation rejected: no-op evidence changed before verification.");
+      }
+      const summary = changed.length ? `Staged mutation changed ${changed.join(", ")}.` : "No change needed; exact fact verified.";
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+    }
     const proposalSchema = z.object({
       action: z.enum(["replace", "append", "create", "noop", "defer"]),
       path: z.string(),
@@ -784,7 +871,9 @@ async function runStagedMutation(
     if (p.action === "append") {
       const target = candidates.find((c) => c.path === p.path);
       const title = target?.frontmatter.title;
-      if (!target || !title || !(stagedTitleMention(raw, title) || (hinted?.path === target.path)) || stagedCorrection(raw) ||
+      const titleNegated = !!title && raw.toLowerCase().includes(title.toLowerCase()) && !stagedTitleMention(raw, title);
+      if (!target || !title || titleNegated ||
+          !(stagedTitleMention(raw, title) || hintedPath === target.path || stagedOwnerAnchor(raw, target.path)) || stagedCorrection(raw) ||
           p.new_text.length < 20 || p.new_text.length > 4_000 ||
           stagedOverlap(p.new_text, raw) < 0.8 || stagedOverlap(raw, p.new_text) < 0.6 ||
           target.body.toLowerCase().includes(p.new_text.trim().toLowerCase())) {
@@ -797,7 +886,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent safety check. Is the proposed addition fully supported by the instruction, truly about this exact owner, not already present, and consistent with every existing assertion? Answer safe=false on uncertainty, changed values, or an unrelated backlink.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nPROPOSED ADDITION:\n${p.new_text}`,
+        prompt: `Independent safety check. Is the proposed addition fully supported by the instruction, truly about this exact owner rather than a better-matching alternative, not already present, and consistent with every existing assertion? A suggested owner path is not proof. Answer safe=false on uncertainty, changed values, or an unrelated backlink.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nPROPOSED ADDITION:\n${p.new_text}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: append failed independent consistency check.");
@@ -810,7 +899,18 @@ async function runStagedMutation(
     } else if (p.action === "replace") {
       const target = candidates.find((c) => c.path === p.path);
       if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
-          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65) throw new Error("Staged mutation rejected: replacement target or exact old text is invalid.");
+          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ||
+          stagedChangedClauses(p.old_text, p.new_text) !== 1) throw new Error("Staged mutation rejected: replacement is not one supported local change.");
+      const oldWords = new Set(stagedWords(p.old_text));
+      const requestedWords = new Set(stagedWords(raw));
+      if (stagedWords(p.new_text).some((word) => !oldWords.has(word) && !requestedWords.has(word))) {
+        throw new Error("Staged mutation rejected: replacement introduces facts absent from the request.");
+      }
+      const addedNegations = ["not", "never", "without", "cannot", "doesn't", "don't"].filter((word) =>
+        stagedWords(p.new_text).includes(word) && !stagedWords(p.old_text).includes(word));
+      if (addedNegations.some((word) => !stagedWords(raw).includes(word))) {
+        throw new Error("Staged mutation rejected: an added negation was not requested.");
+      }
       const replacement = target.body.replace(p.old_text, p.new_text);
       if (replacement === target.body || replacement.length > (state.maxDocumentChars ?? 12_000)) {
         throw new Error("Staged mutation rejected: replacement is empty or oversized.");

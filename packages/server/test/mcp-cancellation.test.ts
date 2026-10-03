@@ -100,7 +100,7 @@ describe("MCP cancellation", () => {
     expect(runMutationMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining("KNOWLEDGE TO RECORD:\nBilling API logs request IDs."),
-      { signal: controller.signal, preflightInput: "Billing API logs request IDs.", ownerHint: "/apis/billing-api.md" }
+      { signal: controller.signal, preflightInput: "Billing API logs request IDs.", ownerHint: "/apis/billing-api.md", directAdd: true }
     );
   });
 

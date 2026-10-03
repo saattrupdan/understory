@@ -222,15 +222,16 @@ See [.env.example](.env.example). `BUNDLE_ROOT` is required; `GIT_AUTOCOMMIT=tru
 
 `QUERY_ENABLE_THINKING=false` opts deep `memory_query` calls out of reasoning, while `MUTATION_ENABLE_THINKING=false` independently does the same for mutation model calls (including fallback and retry calls). Both default to `true`, use llama.cpp's `chat_template_kwargs.enable_thinking=false`, and leave chat behavior unchanged. `MUTATION_PREFLIGHT=true` experimentally pre-reads one clearly dominant keyword-search candidate before mutation generation. Only a complete body that fits intact in the prompt seeds the `replace_body` precondition; no tool-result budget is consumed. Missed, ambiguous, or oversized candidates leave normal agent search/read behavior in control, and stale bodies are still rejected at write time. It defaults to `false`; keep it disabled until its correctness and latency improve on representative writes.
 
-`MUTATION_STAGED=true` is an experimental, default-off alternative to the mutation
-agent's multi-step tool loop. It gathers bounded search evidence, asks the model for
-a schema-constrained proposal, then checks exact old text, owner, content overlap,
-and the unchanged body before writing. Appends and replacements also require an
-independent consistency check; uncertain proposals fail without a write. This can
-be slower than the old path and is not a bulk-retry switch. For `memory_add`, an
-existing `suggested_path` can act as an owner hint only if a confidence-qualified
-search hit corroborates it; it never authorizes a write on its own. Leave the
-background write queue paused until real writes have been canaried and partial
-writes reconciled.
+`MUTATION_STAGED=true` is a default-off alternative to the mutation agent's
+multi-step tool loop. For `memory_add` with an existing owner, it appends the
+caller's exact fact only after an independent Qwen consistency check. A supplied
+`suggested_path` locates the full body even when broad search misses it; without
+a hint, a fast read-only owner selection chooses among bounded, complete search
+results. Entity anchors, body hashes, owner consistency and stale-read checks
+still guard the write. A hint alone never authorizes an edit. Corrections and
+new concepts use schema-constrained proposals with exact-text, duplicate and
+multi-clause guards; replacements require a separate consistency check. Weak
+or ambiguous evidence fails without a write. This is not a bulk-retry switch:
+keep the background queue paused until historical partial jobs are reconciled.
 
 Agent context bounds are configurable with positive-integer settings: `AGENT_MAX_STEPS` (default 8 model/tool rounds per query or mutation; the final allowed generation is reserved for synthesis and values below 2 become 2), `AGENT_MAX_DOCUMENT_CHARS` (default 12000 characters per `read_concept` body page), `AGENT_MAX_TOOL_RESULT_CHARS` (default 24000 deterministic characters across JSON-serialised tool results for one run), `AGENT_MAX_SYSTEM_CONTEXT_CHARS` (default 24000 characters for the dynamic compact tree and existing concept types in the system prompt), `AGENT_MAX_INPUT_CHARS` (default 32000 characters for caller strings and cumulative model-generated write arguments). Interactive chat has no separate application-level model/tool round limit; it follows the AI SDK/model interaction while retaining the unlimited application-level chat history and body handling. Tool results reserve the JSON-serialised exhaustion notice, exactly 32 characters of fixed SDK framing headroom, and 64 characters for a visible truncation marker before fitting payloads; this is an accounting bound, not an absolute wire-byte ceiling. Tool budgets below that safe minimum and system-context budgets below 240 are clamped. Static system instructions are outside the system-context bound, and the tool-result budget never pays for the dynamic system context. Invalid or non-positive values use the defaults. Large bodies return structurally complete metadata and `next_offset` based on the body actually returned, so the agent can page safely while the run budget remains; it must not use a truncated page for `replace_body`. Directory/search/lint listings may be explicitly incomplete without a paging offset because search remains available.

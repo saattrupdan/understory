@@ -202,6 +202,30 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
   });
 
+  it("rejects an unrelated second edit even if the model would approve it", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "replace", old_text: oldBody,
+      new_text: "Monthly charges are NOT scheduled; support tooling creates ad-hoc charges only after approval.",
+    } }).mockResolvedValueOnce({ object: { safe: true, reason: "Model overlooked the extra negation." } });
+    const result = await runMutation(kb, updateInstruction);
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
+  it("rejects an unsupported addition inside the changed clause", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      ...baseProposal, action: "replace", old_text: oldBody,
+      new_text: "Monthly charges are scheduled; support tooling creates ad-hoc charges only after approval and records customer SSNs.",
+    } }).mockResolvedValueOnce({ object: { safe: true, reason: "Model overlooked the added assertion." } });
+    const result = await runMutation(kb, updateInstruction);
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
   it("does not accept a negated request as an unrelated exact no-op", async () => {
     await billingFixture(); staged();
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "noop", claim: oldBody } });
@@ -248,7 +272,7 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
   });
 
-  it("uses a corroborated owner hint but never an unsearched path", async () => {
+  it("reads an existing owner hint outside ranked search results but never a missing path", async () => {
     await billingFixture(); staged();
     const searchHit = (path: string, score: number) => ({
       path, type: "Fact", title: path, score, confidence: 50,
@@ -260,13 +284,74 @@ describe("mutation owner preflight", () => {
       searchHit("/playbooks/oncall-billing.md", 99),
     ]);
     generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
-      expect(request.prompt).toContain('"path":"/playbooks/oncall-billing.md"');
-      expect(request.prompt).not.toContain('"path":"/apis/billing-api.md"');
-      return { object: { ...baseProposal, action: "defer", reason: "No safe edit." } };
+      expect(request.prompt).toContain("OWNER /playbooks/oncall-billing.md");
+      return { object: { safe: false, reason: "No safe edit." } };
     });
-    expect(await runMutation(kb, "Remember a billing incident response fact.", { ownerHint: "/playbooks/oncall-billing.md" })).toMatchObject({ ok: false, status: "failed" });
-    expect(await runMutation(kb, "Remember a billing incident response fact.", { ownerHint: "/other/unsearched.md" })).toMatchObject({ ok: false, status: "failed" });
+    expect(await runMutation(kb, "Remember a billing incident response fact.", { ownerHint: "/playbooks/oncall-billing.md", preflightInput: "Remember a billing incident response fact.", directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain("OWNER /tables/customers.md");
+      return { object: { safe: false, reason: "Owner does not fit." } };
+    });
+    expect(await runMutation(kb, "Remember a Customers billing incident response fact.", { ownerHint: "/tables/customers.md", preflightInput: "Remember a Customers billing incident response fact.", directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { ...baseProposal, action: "defer", reason: "No owner." } });
+    expect(await runMutation(kb, "Remember a billing incident response fact.", { ownerHint: "/other/unsearched.md", preflightInput: "Remember a billing incident response fact.", directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("appends to a relevant existing hinted owner even when broad search ranks another", async () => {
+    await billingFixture(); staged();
+    const newFact = "Billing on-call responders check the charge request ID before escalation.";
+    const search = kb.search.bind(kb);
+    vi.spyOn(kb, "search").mockImplementation(async (query, options) =>
+      (await search(query, options)).filter((hit) => hit.path !== "/playbooks/oncall-billing.md"));
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true, reason: "On-call fact belongs in this runbook." } });
+    const result = await runMutation(kb, `Remember that ${newFact}`, { ownerHint: "/playbooks/oncall-billing.md", preflightInput: newFact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/playbooks/oncall-billing.md"] } });
+    expect((await kb.readConcept("/playbooks/oncall-billing.md")).body).toContain(newFact);
+  });
+
+  it("selects an unhinted owner without rewriting the exact caller fact", async () => {
+    await billingFixture(); staged();
+    const fact = "Billing API logs a request ID for each charge created by support tooling.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "/apis/billing-api.md" } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, `Persist this knowledge: ${fact}`, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("verifies an identical hinted fact without a duplicate write", async () => {
+    await billingFixture(); staged();
+    const fact = "Billing API logs request IDs for support-created charges.";
+    await kb.patchConcept("/apis/billing-api.md", { replaceBody: `${oldBody}\n\n${fact}\n` }, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { supported: true } });
+    const result = await runMutation(kb, `Remember that ${fact}`, { ownerHint: "/apis/billing-api.md", preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [] } });
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept("/apis/billing-api.md")).body.split(fact)).toHaveLength(2);
+  });
+
+  it("does not mistake a retracted substring for an established no-op", async () => {
+    await billingFixture(); staged();
+    const fact = "Billing API logs request IDs for each support-created charge.";
+    await kb.patchConcept("/apis/billing-api.md", {
+      replaceBody: `${fact}\n\nThat statement is obsolete: request IDs are no longer logged.`,
+    }, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { supported: false } });
+    const result = await runMutation(kb, `Remember that ${fact}`, { ownerHint: "/apis/billing-api.md", preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain("no longer logged");
+  });
+
+  it("rejects a wrong hinted owner when independent evidence disapproves", async () => {
+    await billingFixture(); staged();
+    const fact = "Billing API logs a request ID for each charge created by support tooling.";
+    const result = await runMutation(kb, `Remember that ${fact}`, { ownerHint: "/tables/customers.md", preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+    expect((await kb.readConcept("/tables/customers.md")).body).not.toContain(fact);
   });
 
   it("stages an exact correction and removes the old claim", async () => {

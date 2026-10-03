@@ -147,6 +147,7 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
         signal: extra.signal,
         preflightInput: content,
         ownerHint: suggested_path,
+        directAdd: true,
       });
       // A partial write remains reportable even when cancellation prevents the
       // best-effort seed refresh from running.
