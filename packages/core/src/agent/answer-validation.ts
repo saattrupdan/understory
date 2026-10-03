@@ -133,7 +133,19 @@ function isXmlProtocolPreface(value: string): boolean {
   // Models sometimes describe the dialect explicitly ("the XML tool call").
   // Reuse the stricter prose preface grammar after removing that qualifier;
   // arbitrary explanatory sentences must not make an XML tag actionable.
-  return isProtocolPreface(value.replace(/\b(?:an?\s+)?xml\s+/gi, ""));
+  if (isProtocolPreface(value.replace(/\b(?:an?\s+)?xml\s+/gi, ""))) return true;
+
+  // Some models emit a natural-language action before switching into the XML
+  // protocol (for example, "Let me try reading ..." on its own paragraph).
+  // Restrict this to first-person action clauses; explanatory verbs such as
+  // "discuss" or "show" must not turn prose about XML syntax into a leak.
+  const action =
+    "(?:try|read|search|look|check|inspect|open|fetch|find|query|use|call|run|invoke|list|write|patch|delete)";
+  const clause = value.trim().replace(/[.!?]+$/, "").trim();
+  return new RegExp(
+    `^(?:(?:let me|let's|i(?:'ll|’ll| will)|i am going to)\\s+)(?:${action})\\b[\\s\\S]*$`,
+    "i"
+  ).test(clause);
 }
 
 function lineContaining(answer: string, index: number): string {
