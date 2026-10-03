@@ -141,11 +141,15 @@ function isXmlProtocolPreface(value: string): boolean {
   // "discuss" or "show" must not turn prose about XML syntax into a leak.
   const action =
     "(?:try|read|search|look|check|inspect|open|fetch|find|query|use|call|run|invoke|list|write|patch|delete)";
-  const clause = value.trim().replace(/[.!?]+$/, "").trim();
+  // The model may preface a tool attempt with unrelated reasoning before a
+  // final first-person action sentence. Match that final clause, not the whole
+  // answer; discussion of XML syntax without an action remains valid prose.
+  const clause = value.trim().replace(/[.!?:]+$/, "").trim();
+  const lastClause = clause.split(/(?:[.!?]\s+|\n\n+)/).at(-1)?.trim() ?? "";
   return new RegExp(
     `^(?:(?:let me|let's|i(?:'ll|’ll| will)|i am going to)\\s+)(?:${action})\\b[\\s\\S]*$`,
     "i"
-  ).test(clause);
+  ).test(lastClause);
 }
 
 function lineContaining(answer: string, index: number): string {

@@ -98,6 +98,11 @@ describe("textual tool-call answer validation", () => {
       true,
     ],
     [
+      "reasoning before a final tool-action sentence",
+      "I've used too many tokens on retries. Let me check another document and search for details:\n\n<tool_call>\n<function=read_concept>\n<parameter=path>\n/repos/example.md\n</parameter>\n</function>\n</tool_call>",
+      true,
+    ],
+    [
       "consecutive complete XML tool-call envelopes",
       "<tool_call><function=search_knowledge><parameter=query>x</parameter></function></tool_call>\n<tool_call><function=list_directory><parameter=path>/</parameter></function></tool_call>",
       true,
