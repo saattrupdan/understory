@@ -34,7 +34,7 @@ describe("deep-query thinking configuration", () => {
   });
 
   it.each(["mutate", "chat"] as const)(
-    "leaves %s model request settings unchanged",
+    "leaves %s model request settings unchanged by query opt-out",
     async (mode) => {
       createModelMock.mockResolvedValue({});
       await resolveAgentModel({}, mode, configuredEnv({ QUERY_ENABLE_THINKING: "false" }));
@@ -44,6 +44,16 @@ describe("deep-query thinking configuration", () => {
       ]);
     }
   );
+
+  it("disables thinking for mutation primary and fallback only when opted out", async () => {
+    createModelMock.mockResolvedValue({});
+    await resolveAgentModel({}, "mutate", configuredEnv({ MUTATION_ENABLE_THINKING: "false" }));
+
+    expect(createModelMock.mock.calls.map(([config]) => config.extraBody)).toEqual([
+      { max_tokens: 500, chat_template_kwargs: { enable_thinking: false } },
+      { max_tokens: 300, chat_template_kwargs: { enable_thinking: false } },
+    ]);
+  });
 
   it("keeps thinking enabled unless explicitly opted out", async () => {
     createModelMock.mockResolvedValue({});
