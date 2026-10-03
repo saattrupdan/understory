@@ -25,7 +25,7 @@ import {
 } from "./limits.js";
 import { AgentRunContext, fitText } from "./run-context.js";
 import { isAbortError, throwIfAborted } from "../util/abort.js";
-import { TraceRecorder, TraceStore, type TraceUsage } from "./trace.js";
+import { TraceRecorder, TraceStore, type TraceTiming, type TraceUsage } from "./trace.js";
 import {
   createProtocolLeakageGuard,
   isMalformedAnswer,
@@ -499,14 +499,19 @@ export async function runQuery(
   );
   const state = new AgentRunContext(limits, options.signal);
   throwIfAborted(options.signal);
+  const promptStarted = Date.now();
   const ctx = await promptContext(kb, "query", state);
+  const promptContextMs = Date.now() - promptStarted;
   throwIfAborted(options.signal);
   const recorder = new TraceRecorder();
+  const modelCalls: NonNullable<TraceTiming["modelCalls"]> = [];
+  const generationStarted = Date.now();
   const maxSteps = limits.maxSteps;
   let modelChain: string[] = [];
   try {
     const resolved = await resolveAgentModel(options, "query");
     modelChain = resolved.modelChain;
+    const callStarted = Date.now();
     const result = await generateText({
       model: resolved.model,
       system: buildSystemPrompt(ctx),
@@ -516,6 +521,7 @@ export async function runQuery(
       prepareStep: prepareFinalSynthesisStep(maxSteps),
       abortSignal: options.signal,
     });
+    modelCalls.push({ model: resolved.modelChain.join(" → "), durationMs: Date.now() - callStarted, ...sumStepsUsage(result.steps) });
     throwIfAborted(options.signal);
     assertSynthesised(result.steps);
 
@@ -533,6 +539,7 @@ export async function runQuery(
       if (!repairMessages) {
         throw new Error(MALFORMED_ANSWER_MESSAGE);
       }
+      const repairStarted = Date.now();
       const repair = await generateText({
         model: resolved.synthesisModel,
         system: buildQuerySynthesisPrompt(),
@@ -540,6 +547,7 @@ export async function runQuery(
         tools: {},
         abortSignal: options.signal,
       });
+      modelCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - repairStarted, ...sumStepsUsage(repair.steps) });
       throwIfAborted(options.signal);
       assertSynthesised(repair.steps);
       if (isMalformedAnswer(repair.text) || isUnsafeSynthesisAnswer(repair.text)) {
@@ -554,6 +562,7 @@ export async function runQuery(
         if (!evidence) {
           throw new Error(MALFORMED_ANSWER_MESSAGE);
         }
+        const secondRepairStarted = Date.now();
         const secondRepair = await generateText({
           model: resolved.synthesisModel,
           system: buildQuerySynthesisPrompt(),
@@ -570,6 +579,7 @@ export async function runQuery(
           tools: {},
           abortSignal: options.signal,
         });
+        modelCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - secondRepairStarted, ...sumStepsUsage(secondRepair.steps) });
         throwIfAborted(options.signal);
         assertSynthesised(secondRepair.steps);
         if (
@@ -592,13 +602,20 @@ export async function runQuery(
       finalText,
       "success",
       modelChain,
-      sumStepsUsage(allSteps)
+      sumStepsUsage(allSteps),
+      undefined,
+      undefined,
+      { modelCalls, promptContextMs, generationMs: Date.now() - generationStarted }
     );
-    await traceStore(kb).save(trace);
+    await traceStore(kb).save(trace).catch(() => {
+      /* telemetry persistence must not change query behavior */
+    });
     return { answer: finalText, steps: allSteps.length, traceId: trace.id };
   } catch (err) {
     const trace = recorder.finalize("query", question, errorMessage(err), "failed", modelChain);
-    await traceStore(kb).save(trace);
+    await traceStore(kb).save(trace).catch(() => {
+      /* telemetry persistence must not mask the original query failure */
+    });
     throw err;
   }
 }

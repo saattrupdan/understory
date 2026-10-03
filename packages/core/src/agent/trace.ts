@@ -32,6 +32,21 @@ export interface RecallTokenUsage {
   visibleOutputTokens?: number;
 }
 
+export interface TraceTiming {
+  /** Wall time spent in a generateText invocation; one record per invocation, including repairs. */
+  modelCalls?: Array<{
+    model: string;
+    durationMs: number;
+    inputTokens?: number;
+    outputTokens?: number;
+  }>;
+  /** Coarse deep-query setup/generation timings. */
+  promptContextMs?: number;
+  generationMs?: number;
+  recallRetrievalMs?: number;
+  recallGenerationMs?: number;
+}
+
 export interface QueryTrace {
   id: string;
   kind: "query" | "mutation" | "chat";
@@ -51,6 +66,8 @@ export interface QueryTrace {
   /** Separate from aggregate run usage; records recall even when it declines. */
   recallUsage?: RecallTokenUsage;
   recallOutcome?: "success" | "declined_cap" | "declined";
+  /** Additive, numeric-only timing telemetry; older trace readers may ignore it. */
+  timing?: TraceTiming;
 }
 
 /** Collects steps during one agent run. Thread one instance through the tools. */
@@ -70,7 +87,8 @@ export class TraceRecorder {
     modelChain: string[] = [],
     usage?: TraceUsage,
     recallUsage?: RecallTokenUsage,
-    recallOutcome?: QueryTrace["recallOutcome"]
+    recallOutcome?: QueryTrace["recallOutcome"],
+    timing?: TraceTiming
   ): QueryTrace {
     return {
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
@@ -86,6 +104,7 @@ export class TraceRecorder {
       usage,
       recallUsage,
       recallOutcome,
+      timing,
     };
   }
 }
