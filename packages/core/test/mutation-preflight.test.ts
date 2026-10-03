@@ -4,9 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
+const generateObjectMock = vi.hoisted(() => vi.fn());
 vi.mock("ai", async () => ({
   ...(await vi.importActual<typeof import("ai")>("ai")),
   generateText: generateTextMock,
+  generateObject: generateObjectMock,
 }));
 vi.mock("../src/providers/index.js", async () => ({
   ...(await vi.importActual<typeof import("../src/providers/index.js")>("../src/providers/index.js")),
@@ -48,6 +50,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
   generateTextMock.mockReset();
+  generateObjectMock.mockReset();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
@@ -69,6 +72,21 @@ function patchRequest(request: MutationRequest, body = newBody) {
 }
 
 describe("mutation owner preflight", () => {
+  it("stages an exact correction and removes the old claim", async () => {
+    await billingFixture();
+    vi.stubEnv("MUTATION_STAGED", "true");
+    generateObjectMock.mockResolvedValue({ object: {
+      action: "replace", path: "/apis/billing-api.md",
+      old_text: "ad-hoc charges come from support tooling.",
+      new_text: "support tooling creates ad-hoc charges only after approval.",
+    } });
+    const result = await runMutation(kb, updateInstruction);
+    expect(result.ok).toBe(true);
+    const concept = await kb.readConcept("/apis/billing-api.md");
+    expect(concept.body).not.toContain("ad-hoc charges come from support tooling.");
+    expect(concept.body).toContain("only after approval");
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
   it("pre-reads a dominant owner and authorizes an unchanged complete-body replacement", async () => {
     await billingFixture();
     generateTextMock.mockImplementationOnce(async (request: MutationRequest) => {

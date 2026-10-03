@@ -1,5 +1,6 @@
 import {
   generateText,
+  generateObject,
   wrapLanguageModel,
   modelMessageSchema,
   streamText,
@@ -8,6 +9,7 @@ import {
   type ModelMessage,
 } from "ai";
 import type { KnowledgeBase } from "../okf/index.js";
+import { z } from "zod";
 import {
   createModel,
   resolveFallbackConfig,
@@ -26,6 +28,7 @@ import {
 } from "./limits.js";
 import { AgentRunContext, fitText } from "./run-context.js";
 import { isAbortError, throwIfAborted } from "../util/abort.js";
+import { sha256 } from "../util/hash.js";
 import { TraceRecorder, TraceStore, type TraceTiming, type TraceUsage } from "./trace.js";
 import {
   createProtocolLeakageGuard,
@@ -660,6 +663,121 @@ export async function runQuery(
 }
 
 /** Knowledge add/update — full toolset, low temperature. */
+async function runStagedMutation(
+  kb: KnowledgeBase,
+  instruction: string,
+  options: AgentOptions,
+  state: AgentRunContext,
+  recorder: TraceRecorder,
+): Promise<MutationOutcome> {
+  const started = Date.now();
+  const providerCalls: NonNullable<TraceTiming["providerCalls"]> = [];
+  let modelChain: string[] = [];
+  let changed: string[] = [];
+  let attemptedWrite: { path: string; body: string } | undefined;
+  try {
+    const raw = options.preflightInput ?? instruction;
+    const query = mutationSearchQuery(raw);
+    if (!query) throw new Error("Staged mutation deferred: no bounded search terms.");
+    state.checkCancellation();
+    const hits = (await kb.search(query)).slice(0, 5);
+    recorder.record("search_knowledge", query, hits.map((hit) => hit.path));
+    state.checkCancellation();
+    const first = hits[0];
+    const second = hits[1];
+    const dominant = first && first.confidenceQualified === true && (!second ||
+      (first.confidence ?? 0) >= (second.confidence ?? 0) + 20 &&
+      (first.confidence ?? 0) >= (second.confidence ?? 0) * 1.5);
+    const candidates: Array<{ path: string; frontmatter: unknown; body: string }> = [];
+    if (dominant) {
+      const concept = await kb.readConcept(first.path);
+      recorder.record("read_concept", concept.path, [concept.path]);
+      if (concept.body.length > 12_000) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
+      candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
+    } else if (hits.length > 0) {
+      // Ambiguous ownership is not evidence for either patching or creating.
+      if (hits.length > 1 && hits[0].confidenceQualified && hits[1].confidenceQualified) {
+        throw new Error("Staged mutation deferred: ambiguous existing owner.");
+      }
+      for (const hit of hits.slice(0, 3)) {
+        const concept = await kb.readConcept(hit.path);
+        recorder.record("read_concept", concept.path, [concept.path]);
+        if (concept.body.length > 12_000) throw new Error("Staged mutation deferred: candidate body exceeds evidence limit.");
+        candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
+      }
+    }
+    const evidence = JSON.stringify(candidates);
+    if (evidence.length + raw.length > 20_000) throw new Error("Staged mutation deferred: evidence exceeds prompt budget.");
+    state.checkCancellation();
+    const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+    modelChain = resolved.modelChain;
+    const proposalSchema = z.object({
+      action: z.enum(["replace", "append", "create", "noop", "defer"]),
+      path: z.string().optional(),
+      old_text: z.string().optional(),
+      new_text: z.string().optional(),
+      body: z.string().optional(),
+      frontmatter: z.object({ type: z.string().min(1), title: z.string().optional(), description: z.string().optional() }).optional(),
+      claim: z.string().optional(),
+      reason: z.string().optional(),
+    }).strict();
+    const proposal = await generateObject({
+      model: resolved.model,
+      schema: proposalSchema,
+      temperature: 0,
+      abortSignal: options.signal,
+      prompt: `Propose exactly one safe knowledge-base mutation from this instruction and complete observed candidate evidence. Choose replace only for a correction, with exact old_text and replacement new_text that removes the old claim. Append only when non-conflicting. Create only a distinct concept, never when an existing candidate may own it; path must be new and frontmatter must be valid. No unrelated backlinks. noop requires the exact claim already present. Otherwise defer. Never invent evidence.\nINSTRUCTION:\n${raw}\nCANDIDATES:\n${evidence}`,
+    });
+    state.checkCancellation();
+    const p = proposal.object;
+    if (p.action === "defer" || p.action === "append") throw new Error(`Staged mutation deferred: ${p.reason ?? "proposal is not safely actionable"}`);
+    if (p.action === "noop") {
+      const claim = p.claim?.trim();
+      if (!claim || !candidates.some((candidate) => candidate.body.includes(claim))) throw new Error("Staged mutation rejected: no-op claim was not verified.");
+      const trace = recorder.finalize("mutation", instruction, "Verified exact no-op.", "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary: "No change needed; exact claim verified.", filesChanged: [], steps: 1, traceId: trace.id } };
+    }
+    if (p.action === "replace") {
+      const target = candidates.find((c) => c.path === p.path);
+      if (!target || !p.old_text || !p.new_text || target.body.split(p.old_text).length !== 2) throw new Error("Staged mutation rejected: replacement target or exact old text is invalid.");
+      const replacement = target.body.replace(p.old_text, p.new_text);
+      if (replacement === target.body || replacement.length > 12_000) throw new Error("Staged mutation rejected: replacement is empty or oversized.");
+      state.checkCancellation();
+      const current = await kb.readConcept(target.path);
+      if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+      attemptedWrite = { path: target.path, body: replacement };
+      await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: replace verified claim", sha256(target.body), options.signal);
+      changed = [target.path];
+    } else if (p.action === "create") {
+      if (candidates.length > 0 || !p.path || !p.body || !p.frontmatter || !/^\/[a-z0-9_/-]+\.md$/.test(p.path) || p.path.split("/").includes("..") || p.body.length > 12_000) throw new Error("Staged mutation rejected: create is not distinct or valid.");
+      state.checkCancellation();
+      attemptedWrite = { path: p.path, body: p.body };
+      const created = await kb.createConcept(p.path, p.frontmatter, p.body, "Staged mutation: create distinct concept", options.signal);
+      changed = [created.path];
+    }
+    const summary = `Staged mutation changed ${changed.join(", ")}.`;
+    const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+    await traceStore(kb).save(trace);
+    return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+  } catch (err) {
+    const message = errorMessage(err);
+    if (!changed.length && attemptedWrite) {
+      try {
+        const landed = await kb.readConcept(attemptedWrite.path);
+        if (landed.body === attemptedWrite.body) changed = [attemptedWrite.path];
+      } catch { /* A failed create/patch did not leave a readable written concept. */ }
+    }
+    if (changed.length) {
+      const trace = recorder.finalize("mutation", instruction, `Partial mutation: ${changed.length} file(s) changed before failure. Error: ${message}`, "partial", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: false, status: "partial", filesChanged: changed, error: message, traceId: trace.id };
+    }
+    if (isAbortError(err, options.signal)) throw err;
+    return { ok: false, status: "failed", error: message };
+  }
+}
+
 function mutationSearchQuery(input: string): string {
   const words = input
     .replace(/https?:\/\/\S+/gi, " ")
@@ -685,6 +803,9 @@ export async function runMutation(
   const ctx = await promptContext(kb, "mutate", state);
   throwIfAborted(options.signal);
   const recorder = new TraceRecorder();
+  if (process.env.MUTATION_STAGED === "true") {
+    return runStagedMutation(kb, instruction, options, state, recorder);
+  }
   let preflightHint = "";
   if (process.env.MUTATION_PREFLIGHT === "true") {
     try {
