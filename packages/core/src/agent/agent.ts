@@ -1,5 +1,6 @@
 import {
   generateText,
+  wrapLanguageModel,
   modelMessageSchema,
   streamText,
   stepCountIs,
@@ -82,7 +83,8 @@ async function promptContext(
 export async function resolveAgentModel(
   options: AgentOptions,
   mode: "query" | "mutate" | "chat",
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  onProviderCall?: (call: NonNullable<TraceTiming["providerCalls"]>[number]) => void
 ): Promise<ResolvedAgentModel> {
   // This setting is deliberately scoped to deep read-only queries. The same
   // resolved models serve the full query loop and synthesis repairs, while
@@ -110,7 +112,10 @@ export async function resolveAgentModel(
     withModelOverride(resolveModelConfig(env), options.model)
   )!;
   throwIfAborted(options.signal);
-  const primary = await createModel(primaryConfig, options.signal);
+  const primaryModel = await createModel(primaryConfig, options.signal);
+  const primary = onProviderCall
+    ? withProviderTiming(primaryModel, modelLabel(primaryConfig), onProviderCall)
+    : primaryModel;
   const fallbackConfig = queryConfig(resolveFallbackConfig(env));
 
   if (!fallbackConfig) {
@@ -130,7 +135,10 @@ export async function resolveAgentModel(
     };
   }
 
-  const fallback = await createModel(fallbackConfig, options.signal);
+  const fallbackModel = await createModel(fallbackConfig, options.signal);
+  const fallback = onProviderCall
+    ? withProviderTiming(fallbackModel, modelLabel(fallbackConfig), onProviderCall)
+    : fallbackModel;
   return {
     // The initial loop keeps the existing transport-only fallback behaviour.
     model: withFallback(primary, fallback, {
@@ -486,6 +494,38 @@ function sanitiseRepairText(value: string, maxChars = MAX_REPAIR_EVIDENCE_VALUE_
 }
 
 /** Read-only Q&A over the bundle. */
+function withProviderTiming(
+  model: LanguageModel,
+  label: string,
+  record: (call: NonNullable<TraceTiming["providerCalls"]>[number]) => void
+): LanguageModel {
+  return wrapLanguageModel({
+    model: model as Extract<LanguageModel, { doGenerate: unknown }>,
+    middleware: {
+      wrapGenerate: async ({ doGenerate }) => {
+        const started = Date.now();
+        try {
+          const result = await doGenerate();
+          const usage = result.usage;
+          try {
+            record({
+              model: label,
+              durationMs: Date.now() - started,
+              ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+              ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+            });
+          } catch { /* telemetry must never affect model behavior */ }
+          return result;
+        } catch (error) {
+          try { record({ model: label, durationMs: Date.now() - started }); }
+          catch { /* telemetry must never mask the provider error */ }
+          throw error;
+        }
+      },
+    },
+  });
+}
+
 export async function runQuery(
   kb: KnowledgeBase,
   question: string,
@@ -504,12 +544,13 @@ export async function runQuery(
   const promptContextMs = Date.now() - promptStarted;
   throwIfAborted(options.signal);
   const recorder = new TraceRecorder();
-  const modelCalls: NonNullable<TraceTiming["modelCalls"]> = [];
+  const generateTextCalls: NonNullable<TraceTiming["generateTextCalls"]> = [];
+  const providerCalls: NonNullable<TraceTiming["providerCalls"]> = [];
   const generationStarted = Date.now();
   const maxSteps = limits.maxSteps;
   let modelChain: string[] = [];
   try {
-    const resolved = await resolveAgentModel(options, "query");
+    const resolved = await resolveAgentModel(options, "query", process.env, (call) => providerCalls.push(call));
     modelChain = resolved.modelChain;
     const callStarted = Date.now();
     const result = await generateText({
@@ -521,7 +562,7 @@ export async function runQuery(
       prepareStep: prepareFinalSynthesisStep(maxSteps),
       abortSignal: options.signal,
     });
-    modelCalls.push({ model: resolved.modelChain.join(" → "), durationMs: Date.now() - callStarted, ...sumStepsUsage(result.steps) });
+    generateTextCalls.push({ model: resolved.modelChain.join(" → "), durationMs: Date.now() - callStarted, ...sumStepsUsage(result.steps) });
     throwIfAborted(options.signal);
     assertSynthesised(result.steps);
 
@@ -547,7 +588,7 @@ export async function runQuery(
         tools: {},
         abortSignal: options.signal,
       });
-      modelCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - repairStarted, ...sumStepsUsage(repair.steps) });
+      generateTextCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - repairStarted, ...sumStepsUsage(repair.steps) });
       throwIfAborted(options.signal);
       assertSynthesised(repair.steps);
       if (isMalformedAnswer(repair.text) || isUnsafeSynthesisAnswer(repair.text)) {
@@ -579,7 +620,7 @@ export async function runQuery(
           tools: {},
           abortSignal: options.signal,
         });
-        modelCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - secondRepairStarted, ...sumStepsUsage(secondRepair.steps) });
+        generateTextCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - secondRepairStarted, ...sumStepsUsage(secondRepair.steps) });
         throwIfAborted(options.signal);
         assertSynthesised(secondRepair.steps);
         if (
@@ -605,7 +646,7 @@ export async function runQuery(
       sumStepsUsage(allSteps),
       undefined,
       undefined,
-      { modelCalls, promptContextMs, generationMs: Date.now() - generationStarted }
+      { generateTextCalls, providerCalls, promptContextMs, generationMs: Date.now() - generationStarted }
     );
     await traceStore(kb).save(trace).catch(() => {
       /* telemetry persistence must not change query behavior */

@@ -33,8 +33,15 @@ export interface RecallTokenUsage {
 }
 
 export interface TraceTiming {
-  /** Wall time spent in a generateText invocation; one record per invocation, including repairs. */
-  modelCalls?: Array<{
+  /** Wall time spent in generateText invocations, including tool execution and repairs. */
+  generateTextCalls?: Array<{
+    model: string;
+    durationMs: number;
+    inputTokens?: number;
+    outputTokens?: number;
+  }>;
+  /** Individual provider doGenerate calls, including fallback attempts and repairs. */
+  providerCalls?: Array<{
     model: string;
     durationMs: number;
     inputTokens?: number;
