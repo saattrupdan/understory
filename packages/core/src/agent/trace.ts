@@ -21,6 +21,17 @@ export interface TraceUsage {
   outputTokens: number;
 }
 
+/** Privacy-preserving accounting for the independent fast-recall generation. */
+export interface RecallTokenUsage {
+  /** Provider-reported total completion tokens, when available. */
+  completionTokens?: number;
+  /** Reasoning tokens, with their provenance made explicit. */
+  reasoningTokens?: number;
+  reasoningTokenSource?: "provider" | "tokenizer_estimate";
+  /** Visible completion tokens = completion minus reasoning when both are known. */
+  visibleOutputTokens?: number;
+}
+
 export interface QueryTrace {
   id: string;
   kind: "query" | "mutation" | "chat";
@@ -37,6 +48,9 @@ export interface QueryTrace {
   modelChain: string[];
   /** Total tokens consumed across all steps of the run, when the provider reports them. */
   usage?: TraceUsage;
+  /** Separate from aggregate run usage; records recall even when it declines. */
+  recallUsage?: RecallTokenUsage;
+  recallOutcome?: "success" | "declined_cap" | "declined";
 }
 
 /** Collects steps during one agent run. Thread one instance through the tools. */
@@ -54,7 +68,9 @@ export class TraceRecorder {
     answer: string,
     outcome: TraceOutcome = "success",
     modelChain: string[] = [],
-    usage?: TraceUsage
+    usage?: TraceUsage,
+    recallUsage?: RecallTokenUsage,
+    recallOutcome?: QueryTrace["recallOutcome"]
   ): QueryTrace {
     return {
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
@@ -68,6 +84,8 @@ export class TraceRecorder {
       outcome,
       modelChain,
       usage,
+      recallUsage,
+      recallOutcome,
     };
   }
 }
