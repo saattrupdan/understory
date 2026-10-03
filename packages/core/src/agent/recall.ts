@@ -21,7 +21,8 @@ import type { RecallTokenUsage } from "./trace.js";
  * Tunables (all optional):
  * - RECALL=false                disable the layer entirely
  * - RECALL_SEEDS                search hits to seed graph expansion (default 3)
- * - RECALL_CANDIDATES           concepts to read after expansion (default 6)
+ * - RECALL_CANDIDATES           concepts to read after expansion (default 6; max 12)
+ * - RECALL_ACCELERATED          opt in to broader, stricter one-generation recall (default false)
  * - RECALL_MIN_SCORE            top-hit confidence needed to trust literal search (default 20)
  * - RECALL_EXCERPT_CHARS        body characters per concept (default 6000)
  * - RECALL_MAX_OUTPUT_TOKENS    generation cap, REASONING TOKENS INCLUDED (default 2048)
@@ -567,13 +568,18 @@ export async function runRecall(
   if (process.env.RECALL === "false") return { answer: null, paths: [] };
 
   const seeds = intEnv(process.env.RECALL_SEEDS, DEFAULT_SEEDS);
-  const maxCandidates = intEnv(process.env.RECALL_CANDIDATES, DEFAULT_CANDIDATES);
+  const accelerated = process.env.RECALL_ACCELERATED === "true";
+  const maxCandidates = Math.min(
+    accelerated ? 12 : DEFAULT_CANDIDATES,
+    intEnv(process.env.RECALL_CANDIDATES, accelerated ? 12 : DEFAULT_CANDIDATES)
+  );
   const minScore = intEnv(process.env.RECALL_MIN_SCORE, DEFAULT_MIN_SCORE);
   const excerptChars = intEnv(process.env.RECALL_EXCERPT_CHARS, DEFAULT_EXCERPT_CHARS);
 
-  // Keep the original whole-query search first. Its top hit remains the trust
-  // gate for the fast path; expansion must never turn a weak/path-only query
-  // into a generation request.
+  // Keep the original whole-query search first. By default its top hit remains
+  // the trust gate. The opt-in broadened path may proceed past a weak literal
+  // hit only when expanded searches return corpus-confidence-qualified evidence;
+  // ranking-only/path-only hits never qualify.
   const hits = await kb.search(question, { limit: Math.max(seeds, 1) });
   throwIfAborted(options.signal);
   if (hits.length === 0) return { answer: null, paths: [] };
@@ -582,7 +588,7 @@ export async function runRecall(
   // Only the corpus-aware confidence field can cross this gate. In particular,
   // a path-only hit must not fall back to its ranking score and trigger recall.
   const topConfidence = hits[0].confidence ?? 0;
-  if (topConfidence < minScore) return { answer: null, paths: [] };
+  if (topConfidence < minScore && !accelerated) return { answer: null, paths: [] };
 
   // Keep every bounded search result in a small evidence pool. Selection below
   // reserves intent coverage before using aggregate relevance to fill the budget.
@@ -590,7 +596,9 @@ export async function runRecall(
   for (const [index, hit] of hits
     .slice(0, Math.min(seeds, maxCandidates))
     .entries()) {
-    addRecallCandidate(pool, hit, index + 1);
+    if (!accelerated || (hit.confidence ?? 0) >= minScore) {
+      addRecallCandidate(pool, hit, index + 1);
+    }
   }
 
   // A compound question can contain several independent intents. Search every
@@ -635,15 +643,19 @@ export async function runRecall(
 
   const sections: string[] = [];
   const paths: string[] = [];
+  let excerptBudget = accelerated ? Math.min(24_000, excerptChars * maxCandidates) : Number.POSITIVE_INFINITY;
   for (const p of ordered) {
     throwIfAborted(options.signal);
+    if (excerptBudget <= 0) break;
     try {
       const c = await kb.readConcept(p); // fresh read — never stale
       const fm = c.frontmatter;
+      const body = c.body.slice(0, Math.min(excerptChars, excerptBudget));
       sections.push(
         `CONCEPT ${c.path}${fm.title ? ` — ${fm.title}` : ""}${fm.description ? ` (${fm.description})` : ""}\n` +
-          c.body.slice(0, excerptChars)
+          body
       );
+      excerptBudget -= body.length;
       paths.push(c.path);
     } catch (error) {
       if (isAbortError(error, options.signal)) throw error;
@@ -661,7 +673,12 @@ export async function runRecall(
     `not contain enough to answer confidently. Give the verdict first, before any ` +
     `reasoning. If SUFFICIENT, continue with a concise, factual answer citing the ` +
     `concept paths you used on a final "Sources:" line. If UNKNOWN, write nothing ` +
-    `else at all.`;
+    `else at all.` +
+    (accelerated
+      ? ` Treat dates and explicit supersession as important: do not answer from stale ` +
+        `or conflicting facts unless the excerpts clearly resolve which is current. ` +
+        `Every cited path must exactly match a CONCEPT path below; otherwise use UNKNOWN.`
+      : "");
   const prompt = `CONCEPTS:\n\n${sections.join("\n\n---\n\n")}\n\nQUESTION: ${question}`;
 
   const retrievalMs = Date.now() - retrievalStarted;
@@ -712,6 +729,13 @@ export async function runRecall(
   if (/^\s*UNKNOWN\b/i.test(text)) return { answer: null, paths, usage: recallUsage, outcome: finishOutcome, timing };
   const answer = text.replace(/^\s*SUFFICIENT\s*\n?/i, "").trim();
   if (!answer) return { answer: null, paths, usage: recallUsage, outcome: finishOutcome, timing };
+  if (accelerated) {
+    const sources = answer.match(/(?:^|\n)Sources:\s*(.+)$/i)?.[1];
+    const citedPaths = sources?.match(/\/[\w./-]+/g) ?? [];
+    if (!sources || citedPaths.length === 0 || citedPaths.some((p) => !paths.includes(p))) {
+      return { answer: null, paths, usage: recallUsage, outcome: "declined", timing };
+    }
+  }
   // An unrecognised finish reason with usable text: answer it, loudly.
   // Declining here would be the mirror image of the truncation bug above.
   // "other" is also where a provider that never reports a finish reason at all

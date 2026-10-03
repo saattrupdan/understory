@@ -24,7 +24,7 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  for (const k of ["RECALL", "RECALL_SEEDS", "RECALL_CANDIDATES", "RECALL_MIN_SCORE",
+  for (const k of ["RECALL", "RECALL_ACCELERATED", "RECALL_SEEDS", "RECALL_CANDIDATES", "RECALL_MIN_SCORE",
     "RECALL_MAX_OUTPUT_TOKENS", "LLM_THINKING_BUDGET", "RECALL_ENABLE_THINKING"]) {
     delete process.env[k];
   }
@@ -176,6 +176,62 @@ describe("runRecall", () => {
     expect((await runRecall(kb, "deploy cadence day?", {}, generate)).answer).toBeNull();
     expect(generate).toHaveBeenCalledTimes(1);
     expect(String(logged.mock.calls[0][0])).toContain("640");
+  });
+
+  it("accepts a grounded accelerated answer with an excerpt citation", async () => {
+    await searchableKb();
+    vi.stubEnv("RECALL_ACCELERATED", "true");
+    const generate = vi.fn(async () => ({
+      text: "SUFFICIENT\nWe deploy on Fridays.\nSources: /facts/deploy.md",
+      finishReason: "stop" as const,
+    }));
+
+    const result = await runRecall(kb, "when deploy cadence?", {}, generate);
+
+    expect(result.answer).toContain("Fridays");
+    expect(result.paths).toContain("/facts/deploy.md");
+    expect(result.outcome).toBe("success");
+    expect(result.timing?.generationMs).toBeGreaterThanOrEqual(0);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("declines accelerated answers with missing or non-retrieved citations", async () => {
+    await searchableKb();
+    vi.stubEnv("RECALL_ACCELERATED", "true");
+    for (const text of [
+      "SUFFICIENT\nWe deploy on Fridays.",
+      "SUFFICIENT\nWe deploy on Fridays.\nSources: /facts/not-retrieved.md",
+    ]) {
+      const result = await runRecall(kb, "when deploy cadence?", {}, async () => ({
+        text,
+        finishReason: "stop",
+      }));
+      expect(result.answer).toBeNull();
+      expect(result.paths).toContain("/facts/deploy.md");
+    }
+  });
+
+  it("declines conflicting fixture facts when generation cannot resolve them", async () => {
+    await kb.writeConcept(
+      "/facts/deploy-a.md",
+      { type: "Fact", title: "Deploy schedule" },
+      "The current deployment day is Monday.",
+      "add"
+    );
+    await kb.writeConcept(
+      "/facts/deploy-b.md",
+      { type: "Fact", title: "Deploy schedule" },
+      "The current deployment day is Friday.",
+      "add"
+    );
+    vi.stubEnv("RECALL_ACCELERATED", "true");
+    const generate = vi.fn(async () => ({ text: "UNKNOWN", finishReason: "stop" as const }));
+
+    const result = await runRecall(kb, "current deployment schedule day?", {}, generate);
+
+    expect(result.answer).toBeNull();
+    expect(result.paths.length).toBeGreaterThan(0);
+    expect(generate).toHaveBeenCalledTimes(1);
   });
 
   it("declines when the model reports the excerpts are not enough", async () => {
