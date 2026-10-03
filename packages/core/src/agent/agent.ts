@@ -742,8 +742,10 @@ async function runStagedMutation(
     // Read it only when it already exists, then subject it to the same complete
     // evidence, independent consistency and stale-body checks as any other owner.
     // A missing hint may still be the desired path of a distinct new concept.
-    const hintedPath = options.ownerHint && await kb.bundle.exists(options.ownerHint)
-      ? options.ownerHint : undefined;
+    const quotedOwner = !options.directAdd ? raw.match(/`(\/[a-z0-9_/-]+\.md)`/i)?.[1] : undefined;
+    const ownerPath = options.ownerHint ?? quotedOwner;
+    const hintedPath = ownerPath && /^\/[a-z0-9_/-]+\.md$/.test(ownerPath) && await kb.bundle.exists(ownerPath)
+      ? ownerPath : undefined;
     const named = hits.filter((hit) => hit.title && stagedTitleMention(raw, hit.title));
     const explicitOwner = named.length === 1 ? named[0] : undefined;
     const dominant = first && first.confidenceQualified === true && (!second ||
@@ -772,6 +774,41 @@ async function runStagedMutation(
     state.checkCancellation();
     const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
     modelChain = resolved.modelChain;
+    // An explicit correction supplies its own exact old/new text. Avoid a
+    // generated proposal, but still check the full owner, support, and CAS.
+    const quotedCorrection = !options.directAdd && options.preflightInput
+      ? raw.match(/\breplace\s+(?:the\s+)?(?:exact\s+)?(?:phrase|text|claim)?\s*`([^`]{12,2000})`\s+with\s+`([^`]{1,2000})`/i)
+      : null;
+    if (quotedCorrection) {
+      const [, oldText, newText] = quotedCorrection;
+      const matching = candidates.filter((candidate) => candidate.body.split(oldText).length === 2);
+      if (matching.length === 1) {
+        const target = matching[0];
+        if (oldText === newText || stagedChangedClauses(oldText, newText) !== 1 ||
+            stagedWords(newText).some((word) => !stagedWords(oldText).includes(word) && !stagedWords(raw).includes(word))) {
+          throw new Error("Staged mutation rejected: quoted replacement changes unsupported claims.");
+        }
+        const judgement = await generateObject({
+          model: resolved.model,
+          schema: z.object({ safe: z.boolean() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Independent safety check. Does the caller's exact quoted replacement faithfully apply the instruction to this observed owner, preserve every unrelated claim, and avoid a contradiction? A quoted path alone is not proof of ownership. If uncertain, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nOLD TEXT:\n${oldText}\nNEW TEXT:\n${newText}`,
+        });
+        state.checkCancellation();
+        if (!judgement.object.safe) throw new Error("Staged mutation deferred: quoted correction failed consistency check.");
+        const current = await kb.readConcept(target.path);
+        if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+        const replacement = target.body.replace(oldText, newText);
+        if (replacement.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: replacement exceeds evidence limit.");
+        state.checkCancellation();
+        await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: exact quoted correction", sha256(target.body), options.signal, (path) => { changed = [path]; });
+        const summary = `Staged mutation changed ${changed.join(", ")}.`;
+        const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+        await traceStore(kb).save(trace);
+        return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+      }
+    }
     // For memory_add, preserve the caller's exact fact rather than generating
     // replacement prose. A fast read-only selector handles unhinted candidates;
     // one thinking-model check must still independently approve the chosen owner

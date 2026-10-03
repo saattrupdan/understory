@@ -389,6 +389,32 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept("/tables/customers.md")).body).not.toContain(fact);
   });
 
+  it("applies a caller-quoted correction with one verified model call", async () => {
+    await billingFixture(); staged();
+    const instruction = "Correct `/apis/billing-api.md`: replace the exact phrase `ad-hoc charges come from support tooling.` with `ad-hoc charges come from support tooling only after approval.` Preserve monthly charges.";
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(oldBody);
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    const body = (await kb.readConcept("/apis/billing-api.md")).body;
+    expect(body).toContain("Monthly charges are scheduled");
+    expect(body).toContain("only after approval");
+  });
+
+  it("rejects a quoted correction when the owner changes before the write", async () => {
+    await billingFixture(); staged();
+    const instruction = "Correct `/apis/billing-api.md`: replace the exact phrase `ad-hoc charges come from support tooling.` with `ad-hoc charges come from support tooling only after approval.`";
+    generateObjectMock.mockImplementationOnce(async () => {
+      await kb.writeConcept("/apis/billing-api.md", { type: "API Endpoint", title: "Billing API" }, "External revision.", "external");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction })).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept("/apis/billing-api.md")).body.trim()).toBe("External revision.");
+  });
+
   it("stages an exact correction and removes the old claim", async () => {
     await billingFixture();
     vi.stubEnv("MUTATION_STAGED", "true");
