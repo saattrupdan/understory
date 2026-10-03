@@ -695,17 +695,31 @@ export async function runMutation(
         const hits = await kb.search(query);
         recorder.record("search_knowledge", query, hits.slice(0, 5).map((hit) => hit.path));
         state.checkCancellation();
-        const candidates = hits
-          .filter((hit) => hit.confidenceQualified === true)
-          .slice(0, 5);
-        if (candidates.length) {
-          const readTools = buildReadTools(kb, recorder, state) as any;
-          const result = await readTools.read_concepts.execute({ paths: candidates.map((hit: { path: string }) => hit.path) });
+        // Preflight is deliberately conservative: only one confidence-qualified
+        // owner can seed the whole-body write guard. Ambiguous matches go through
+        // the normal model-directed search/read flow instead.
+        const candidates = hits.filter((hit) => hit.confidenceQualified === true);
+        if (candidates.length === 1) {
+          const concept = await kb.readConcept(candidates[0].path);
           state.checkCancellation();
-          if (result && typeof result === "object" && result.truncated === false && Array.isArray(result.read)) {
-            preflightHint = `\n\nDETERMINISTIC PREFLIGHT (candidate evidence only; independently verify before writing):\n` +
-              candidates.map((hit: { path: string; confidence?: number }) => `- ${hit.path} (confidence ${hit.confidence ?? "qualified"})`).join("\n") +
-              `\n${JSON.stringify(result.read).slice(0, 12_000)}`;
+          recorder.record("read_concept", concept.path, [concept.path]);
+          const page = {
+            path: concept.path,
+            frontmatter: concept.frontmatter,
+            frontmatter_truncated: false,
+            body: concept.body,
+            offset: 0,
+            total_chars: concept.body.length,
+            truncated: false,
+            next_offset: null,
+          };
+          const evidence = JSON.stringify([page]);
+          const heading = `\n\nDETERMINISTIC PREFLIGHT (one confidence-qualified candidate; complete body follows):\n- ${concept.path}\n`;
+          // Never cut the evidence: only mark a body as read if its complete,
+          // unchanged contents are actually present in the prompt.
+          if (heading.length + evidence.length <= 12_000) {
+            preflightHint = heading + evidence;
+            state.recordBodyPage(concept.path, 0, concept.body, concept.body, concept.body);
           }
         }
       }
