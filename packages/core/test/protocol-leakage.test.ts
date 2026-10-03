@@ -71,6 +71,16 @@ describe("textual tool-call answer validation", () => {
       true,
     ],
     [
+      "action-prefaced XML tool-call envelope",
+      "Let me try reading at offset 6000 to skip any large initial section.\n\n<tool_call>\n<function=read_concept>\n<parameter=offset>\n6000\n</parameter>\n<parameter=path>\ngotchas/example\n</parameter>\n</function>\n</tool_call>",
+      true,
+    ],
+    [
+      "action-prefaced XML with unknown function",
+      "I will inspect the document first.\n<tool_call><function=future_tool><parameter=x>y</parameter></function></tool_call>",
+      true,
+    ],
+    [
       "consecutive complete XML tool-call envelopes",
       "<tool_call><function=search_knowledge><parameter=query>x</parameter></function></tool_call>\n<tool_call><function=list_directory><parameter=path>/</parameter></function></tool_call>",
       true,
@@ -88,6 +98,16 @@ describe("textual tool-call answer validation", () => {
     [
       "XML tool-call documentation",
       "The <tool_call> tag can contain a <function=search_knowledge> element.",
+      false,
+    ],
+    [
+      "prose discussing XML tool-call syntax",
+      "Let me explain how XML tool-call syntax works:\n<tool_call><function=search_knowledge> is the documented shape.",
+      false,
+    ],
+    [
+      "quoted XML tool-call syntax in action-prefaced prose",
+      'The sentence “Let me try reading this” is an example; the literal syntax is "<tool_call><function=read_concept></tool_call>".',
       false,
     ],
     [
@@ -340,6 +360,25 @@ describe("deep agent answer validation", () => {
     expect(generateTextMock.mock.calls[1][0].model).toBe(generateTextMock.mock.calls[0][0].model);
     const traces = await new TraceStore(root).list();
     expect(traces[0].modelChain).toEqual(["openai:test-model"]);
+  });
+
+  it("repairs action-prefaced XML tool-call leakage before returning or caching", async () => {
+    const leaked =
+      "Let me try reading at offset 6000 to skip any large initial section.\n\n<tool_call>\n<function=read_concept>\n<parameter=offset>\n6000\n</parameter>\n<parameter=path>\ngotchas/example\n</parameter>\n</function>\n</tool_call>";
+    generateTextMock
+      .mockResolvedValueOnce({ text: leaked, steps: [step], response: { messages: [] } })
+      .mockResolvedValueOnce({ text: "The answer is alpha.", steps: [step] });
+
+    const result = await runQuery(kb, "What is alpha?");
+    expect(result.answer).toBe("The answer is alpha.");
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    const traces = await new TraceStore(root).list();
+    expect(traces).toEqual(
+      expect.arrayContaining([expect.objectContaining({ outcome: "success", answer: result.answer })])
+    );
+    expect(traces).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ outcome: "success", answer: leaked })])
+    );
   });
 
   it("cannot succeed through deep repair with an apostrophe preface", async () => {
