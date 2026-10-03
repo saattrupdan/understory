@@ -1,0 +1,7 @@
+# Do not send local dependencies, build output, or secrets to Docker.
+.git
+.env
+**/node_modules
+**/dist
+**/tsconfig.tsbuildinfo
+**/.traces
