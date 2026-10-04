@@ -705,7 +705,7 @@ function stagedSingleClauseEdit(before: string, after: string): boolean {
   }
 
   const clauseAt = (offset: number): number => {
-    const boundaries = /;\\s*|(?<=[.!?])\\s+|\\n+/g;
+    const boundaries = /;\s*|(?<=[.!?])\s+|\n+/g;
     let clause = 0;
     for (const match of before.matchAll(boundaries)) {
       if (match.index! + match[0].length > offset) break;

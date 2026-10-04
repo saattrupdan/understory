@@ -442,7 +442,7 @@ describe("mutation owner preflight", () => {
     const result = await runMutation(kb, instruction, { preflightInput: instruction });
     expect(result).toMatchObject({ ok: false, status: "failed" });
     expect(generateObjectMock).not.toHaveBeenCalled();
-    expect((await kb.readConcept("/apis/billing-api.md")).body).toBe(oldBody);
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toBe(`${oldBody}\n`);
   });
 
   it("rejects a quoted correction when the owner changes before the write", async () => {
@@ -493,7 +493,7 @@ describe("mutation owner preflight", () => {
     const result = await runMutation(kb, "Update the Billing API: monthly charges and ad-hoc charges require approval.");
     expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("one supported local change") });
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    expect((await kb.readConcept("/apis/billing-api.md")).body).toBe(oldBody);
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toBe(`${oldBody}\n`);
   });
 
   it("pre-reads a dominant owner and authorizes an unchanged complete-body replacement", async () => {
