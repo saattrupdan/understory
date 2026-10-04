@@ -687,14 +687,33 @@ function stagedOverlap(text: string, evidence: string): number {
   return words.length ? words.filter((word) => supported.has(word)).length / words.length : 0;
 }
 
-function stagedChangedClauses(before: string, after: string): number {
-  // A model can approve a correct change to one assertion while missing an
-  // unrelated change to another. Preserve all other sentence/semicolon clauses.
-  const split = (text: string) => text.split(/;\s*|(?<=[.!?])\s+|\n+/).map((part) => part.trim()).filter(Boolean);
-  const oldClauses = split(before);
-  const newClauses = split(after);
-  if (oldClauses.length !== newClauses.length) return Infinity;
-  return oldClauses.filter((clause, index) => clause !== newClauses[index]).length;
+function stagedSingleClauseEdit(before: string, after: string): boolean {
+  // Compare the single contiguous changed span in the original text. New
+  // punctuation may split or merge clauses, so counting positional clauses in
+  // the replacement incorrectly rejects a localized correction. A span that
+  // crosses an original clause boundary is still rejected (including two
+  // separated edits whose common envelope covers multiple clauses).
+  let start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) start++;
+  if (start === before.length && start === after.length) return false;
+
+  let beforeEnd = before.length;
+  let afterEnd = after.length;
+  while (beforeEnd > start && afterEnd > start && before[beforeEnd - 1] === after[afterEnd - 1]) {
+    beforeEnd--;
+    afterEnd--;
+  }
+
+  const clauseAt = (offset: number): number => {
+    const boundaries = /;\\s*|(?<=[.!?])\\s+|\\n+/g;
+    let clause = 0;
+    for (const match of before.matchAll(boundaries)) {
+      if (match.index! + match[0].length > offset) break;
+      clause++;
+    }
+    return clause;
+  };
+  return clauseAt(start) === clauseAt(beforeEnd);
 }
 
 function stagedCorrectionIntent(input: string): boolean {
@@ -792,7 +811,7 @@ async function runStagedMutation(
       const matching = candidates.filter((candidate) => candidate.body.split(oldText).length === 2);
       if (matching.length === 1) {
         const target = matching[0];
-        if (oldText === newText || stagedChangedClauses(oldText, newText) !== 1 ||
+        if (oldText === newText || !stagedSingleClauseEdit(oldText, newText) ||
             stagedWords(newText).some((word) => !stagedWords(oldText).includes(word) && !stagedWords(raw).includes(word))) {
           throw new Error("Staged mutation rejected: quoted replacement changes unsupported claims.");
         }
@@ -954,7 +973,7 @@ async function runStagedMutation(
       const target = candidates.find((c) => c.path === p.path);
       if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ||
-          stagedChangedClauses(p.old_text, p.new_text) !== 1) throw new Error("Staged mutation rejected: replacement is not one supported local change.");
+          !stagedSingleClauseEdit(p.old_text, p.new_text)) throw new Error("Staged mutation rejected: replacement is not one supported local change.");
       const oldWords = new Set(stagedWords(p.old_text));
       const requestedWords = new Set(stagedWords(raw));
       if (stagedWords(p.new_text).some((word) => !oldWords.has(word) && !requestedWords.has(word))) {

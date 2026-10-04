@@ -427,6 +427,24 @@ describe("mutation owner preflight", () => {
     expect(body).toContain("only after approval");
   });
 
+  it("accepts a quoted correction that changes sentence punctuation locally", async () => {
+    await billingFixture(); staged();
+    const instruction = "Correct `/apis/billing-api.md`: replace the exact phrase `ad-hoc charges come from support tooling.` with `ad-hoc charges come from support tooling. Approval is required.` Preserve monthly charges.";
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain("support tooling. Approval is required.");
+  });
+
+  it("rejects a quoted correction that edits separated clauses", async () => {
+    await billingFixture(); staged();
+    const instruction = "Correct `/apis/billing-api.md`: replace the exact phrase `Monthly charges are scheduled; ad-hoc charges come from support tooling.` with `Monthly charges are approved; ad-hoc charges require approval.`";
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toBe(oldBody);
+  });
+
   it("rejects a quoted correction when the owner changes before the write", async () => {
     await billingFixture(); staged();
     const instruction = "Correct `/apis/billing-api.md`: replace the exact phrase `ad-hoc charges come from support tooling.` with `ad-hoc charges come from support tooling only after approval.`";
@@ -453,6 +471,31 @@ describe("mutation owner preflight", () => {
     expect(concept.body).toContain("only after approval");
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
+  it("accepts a generated replacement that changes sentence punctuation locally", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      action: "replace", path: "/apis/billing-api.md",
+      old_text: "ad-hoc charges come from support tooling.",
+      new_text: "support tooling creates ad-hoc charges. Approval is required.",
+    } }).mockResolvedValueOnce({ object: { safe: true, reason: "Correction supported." } });
+    const result = await runMutation(kb, "Update the Billing API: support tooling creates ad-hoc charges. Approval is required.");
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain("ad-hoc charges. Approval is required.");
+  });
+
+  it("rejects generated replacements that edit separated clauses", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      action: "replace", path: "/apis/billing-api.md",
+      old_text: oldBody,
+      new_text: "Monthly charges are approved; ad-hoc charges require approval.",
+    } });
+    const result = await runMutation(kb, "Update the Billing API: monthly charges and ad-hoc charges require approval.");
+    expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("one supported local change") });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toBe(oldBody);
+  });
+
   it("pre-reads a dominant owner and authorizes an unchanged complete-body replacement", async () => {
     await billingFixture();
     generateTextMock.mockImplementationOnce(async (request: MutationRequest) => {
