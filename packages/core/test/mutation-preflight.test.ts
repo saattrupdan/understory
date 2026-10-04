@@ -344,6 +344,29 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
+  it("does not confuse incidental update language in an add with correction intent", async () => {
+    await billingFixture(); staged();
+    const fact = "Billing API reporting update uses request IDs rather than log offsets for support-created charges.";
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, `Persist this knowledge: ${fact}`, {
+      ownerHint: "/apis/billing-api.md", preflightInput: fact, directAdd: true,
+    });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps explicit memory_add corrections out of the exact-append path", async () => {
+    await billingFixture(); staged();
+    const fact = "Correct Billing API: replace the unconditional support-charge statement with approval required.";
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain("Propose exactly one safe knowledge-base mutation");
+      return { object: { ...baseProposal, action: "defer", reason: "Requires exact correction." } };
+    });
+    expect(await runMutation(kb, fact, { ownerHint: "/apis/billing-api.md", preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
   it("matches a hyphenated entity to its owner slug on an unhinted add", async () => {
     staged();
     const owner = "/repos/pi-agent/understory-async-write-feasibility.md";

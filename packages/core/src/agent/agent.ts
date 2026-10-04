@@ -697,6 +697,13 @@ function stagedChangedClauses(before: string, after: string): number {
   return oldClauses.filter((clause, index) => clause !== newClauses[index]).length;
 }
 
+function stagedCorrectionIntent(input: string): boolean {
+  // Ordinary add payloads often discuss a dataset "update" or say "rather
+  // than" without asking to change an existing assertion. Treat only an
+  // explicit leading edit instruction as a correction for memory_add.
+  return /^(?:(?:please|remember|record)\s+)?(?:correct|correction|update|replace|amend|supersede|retract)\b/i.test(input.trim());
+}
+
 function stagedCorrection(input: string): boolean {
   return /\b(?:correct|correction|update|replace|supersede|instead|formerly|previously|no longer|only after|now|rather than|don['’]t|doesn['’]t)\b/i.test(input);
 }
@@ -726,6 +733,7 @@ async function runStagedMutation(
   let changed: string[] = [];
   try {
     const raw = options.preflightInput ?? instruction;
+    const correction = options.directAdd ? stagedCorrectionIntent(raw) : stagedCorrection(raw);
     if (options.ownerHint && (options.ownerHint.length > 512 ||
         !/^\/[a-z0-9_/-]+\.md$/.test(options.ownerHint) || options.ownerHint.split("/").includes(".."))) {
       throw new Error("Staged mutation deferred: owner hint is not a bounded concept path.");
@@ -814,7 +822,7 @@ async function runStagedMutation(
     // one thinking-model check must still independently approve the chosen owner
     // and consistency. memory_update keeps the conservative edit proposal below.
     let directPath = hintedPath;
-    if (!directPath && options.directAdd && options.preflightInput && !stagedCorrection(raw) &&
+    if (!directPath && options.directAdd && options.preflightInput && !correction &&
         candidates.length > 0 && raw.trim().length >= 30 && raw.trim().length <= 4_000) {
       const selector = await resolveAgentModel(options, "mutate", { ...process.env, MUTATION_ENABLE_THINKING: "false" }, (call) => providerCalls.push(call));
       const selection = await generateObject({
@@ -827,7 +835,7 @@ async function runStagedMutation(
       state.checkCancellation();
       if (candidates.some((candidate) => candidate.path === selection.object.path)) directPath = selection.object.path;
     }
-    if (directPath && options.directAdd && options.preflightInput && !stagedCorrection(raw) &&
+    if (directPath && options.directAdd && options.preflightInput && !correction &&
         raw.trim().length >= 30 && raw.trim().length <= 4_000) {
       const target = candidates.find((candidate) => candidate.path === directPath)!;
       const fact = raw.trim();
@@ -901,7 +909,7 @@ async function runStagedMutation(
       const requestedClaim = raw.trim().replace(/^(?:remember|record|persist)\s+(?:that\s+)?/i, "").trim();
       const normalise = (text: string) => text.replace(/[.!?]+$/, "").replace(/\s+/g, " ").trim().toLowerCase();
       const target = candidates.find((candidate) => candidate.path === p.path);
-      if (!claim || claim.length < 20 || stagedCorrection(raw) || !target ||
+      if (!claim || claim.length < 20 || correction || !target ||
           normalise(requestedClaim) !== normalise(claim) || !target.body.includes(claim)) {
         throw new Error("Staged mutation rejected: no-op claim was not verified against the request.");
       }
@@ -919,7 +927,7 @@ async function runStagedMutation(
       const title = target?.frontmatter.title;
       const titleNegated = !!title && raw.toLowerCase().includes(title.toLowerCase()) && !stagedTitleMention(raw, title);
       if (!target || !title || titleNegated ||
-          !(stagedTitleMention(raw, title) || hintedPath === target.path || stagedOwnerAnchor(raw, target.path)) || stagedCorrection(raw) ||
+          !(stagedTitleMention(raw, title) || hintedPath === target.path || stagedOwnerAnchor(raw, target.path)) || correction ||
           p.new_text.length < 20 || p.new_text.length > 4_000 ||
           stagedOverlap(p.new_text, raw) < 0.8 || stagedOverlap(raw, p.new_text) < 0.6 ||
           target.body.toLowerCase().includes(p.new_text.trim().toLowerCase())) {
