@@ -322,11 +322,14 @@ function xmlToolCallEnvelope(answer: string): boolean {
     if (!(atAnswerBoundary || hasProtocolPreface || protocolSeparator || standaloneLine)) {
       continue;
     }
-    // Arbitrary prose followed by an otherwise standalone XML snippet is
-    // ambiguous unless it contains an actual parameter. Keep the historical
-    // boundary, explicit-preface, and protocol-separator detection unchanged.
+    // Explicit example labels denote documentation rather than a live call.
+    // Unlabelled standalone blocks remain suspect, including no-argument tools.
     const arbitraryStandaloneLine =
       standaloneLine && !atAnswerBoundary && !hasProtocolPreface && !protocolSeparator;
+    if (
+      arbitraryStandaloneLine &&
+      /(?:^|[.!?]\s+|\n)\s*(?:for example|(?:here(?:'s| is)\s+)?an? example|example (?:syntax|xml|of (?:the|a) (?:tool )?call)|the (?:literal|documented) (?:syntax|example))\s*:\s*$/i.test(before)
+    ) continue;
 
     // Consume adjacent envelopes as one protocol sequence. Looking only at the
     // text after the first closing tag would mistake the next envelope for
@@ -343,12 +346,17 @@ function xmlToolCallEnvelope(answer: string): boolean {
       // documentation tag. Its name is intentionally not restricted to the
       // current tool set: an unrecognised call is still leaked protocol.
       if (!XML_FUNCTION_TAG.test(payload)) break;
-      // A parameter tag distinguishes an arbitrary-prose standalone-line
-      // invocation from an explanatory snippet. At answer boundary or with an
-      // explicit protocol preface, the function tag remains sufficient.
+      // A complete, terminal no-argument invocation is still a call. For an
+      // unfinished standalone block, require a parameter or a known no-arg
+      // function name so explanatory syntax fragments are not mistaken for one.
+      const hasParameter = /<parameter\s*=\s*[A-Za-z_$][\w$.-]*\s*>/i.test(payload);
+      const functionName = payload.match(XML_FUNCTION_TAG)?.[1];
+      const completeNoArgCall =
+        !!close && /<\/function\s*>/i.test(payload) &&
+        isTerminalProtocolSuffix(remaining.slice((close.index ?? 0) + close[0].length));
       if (
-        arbitraryStandaloneLine &&
-        !/<parameter\s*=\s*[A-Za-z_$][\w$.-]*\s*>/i.test(payload)
+        arbitraryStandaloneLine && !hasParameter && !completeNoArgCall &&
+        !/^(?:list_directory|lint_knowledge)$/i.test(functionName ?? "")
       ) break;
 
       // A missing closing envelope is the normal shape of a provider response

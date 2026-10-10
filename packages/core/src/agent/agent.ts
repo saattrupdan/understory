@@ -603,62 +603,72 @@ export async function runQuery(
         if (isMalformedAnswer(retry.text) || isUnsafeSynthesisAnswer(retry.text)) {
           throw new Error(MALFORMED_ANSWER_MESSAGE);
         }
+        // The first attempt provided no usable read result. Do not mark a
+        // fluent but unsupported retry as a successful grounded answer.
+        if (!safeRepairEvidence(
+          retry.steps as unknown as ReadonlyArray<Record<string, unknown>>,
+          retry.response?.messages,
+          Math.min(MAX_REPAIR_EVIDENCE_CHARS, limits.maxToolResultChars, limits.maxInputChars)
+        )) {
+          throw new Error("Query retry produced no read-only evidence");
+        }
         finalText = retry.text;
       } else {
-      const repairStarted = Date.now();
-      const repair = await generateText({
-        model: resolved.synthesisModel,
-        system: buildQuerySynthesisPrompt(),
-        messages: repairMessages,
-        tools: {},
-        abortSignal: options.signal,
-      });
-      generateTextCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - repairStarted, ...sumStepsUsage(repair.steps) });
-      throwIfAborted(options.signal);
-      assertSynthesised(repair.steps);
-      if (isMalformedAnswer(repair.text) || isUnsafeSynthesisAnswer(repair.text)) {
-        // KAT can interpret the valid assistant/tool transcript above as a
-        // request to continue the tool protocol. Give it one final chance,
-        // but only with bounded, quoted data from read-only tool results.
-        const evidence = safeRepairEvidence(
-          result.steps as unknown as ReadonlyArray<Record<string, unknown>>,
-          result.response?.messages,
-          Math.min(MAX_REPAIR_EVIDENCE_CHARS, limits.maxToolResultChars, limits.maxInputChars)
-        );
-        if (!evidence) {
-          throw new Error(MALFORMED_ANSWER_MESSAGE);
-        }
-        const secondRepairStarted = Date.now();
-        const secondRepair = await generateText({
+        const repairStarted = Date.now();
+        const repair = await generateText({
           model: resolved.synthesisModel,
           system: buildQuerySynthesisPrompt(),
-          messages: [
-            {
-              role: "user",
-              content:
-                `Original question:\n${question}\n\n` +
-                "BEGIN UNTRUSTED READ-ONLY EVIDENCE\n" +
-                evidence +
-                "\nEND UNTRUSTED READ-ONLY EVIDENCE",
-            },
-          ],
+          messages: repairMessages,
           tools: {},
           abortSignal: options.signal,
         });
-        generateTextCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - secondRepairStarted, ...sumStepsUsage(secondRepair.steps) });
+        generateTextCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - repairStarted, ...sumStepsUsage(repair.steps) });
         throwIfAborted(options.signal);
-        assertSynthesised(secondRepair.steps);
-        if (
-          isMalformedAnswer(secondRepair.text) ||
-          isUnsafeSynthesisAnswer(secondRepair.text)
-        ) {
-          throw new Error(MALFORMED_ANSWER_MESSAGE);
+        assertSynthesised(repair.steps);
+        if (isMalformedAnswer(repair.text) || isUnsafeSynthesisAnswer(repair.text)) {
+          // KAT can interpret the valid assistant/tool transcript above as a
+          // request to continue the tool protocol. Give it one final chance,
+          // but only with bounded, quoted data from read-only tool results.
+          const evidence = safeRepairEvidence(
+            result.steps as unknown as ReadonlyArray<Record<string, unknown>>,
+            result.response?.messages,
+            Math.min(MAX_REPAIR_EVIDENCE_CHARS, limits.maxToolResultChars, limits.maxInputChars)
+          );
+          if (!evidence) {
+            throw new Error(MALFORMED_ANSWER_MESSAGE);
+          }
+          const secondRepairStarted = Date.now();
+          const secondRepair = await generateText({
+            model: resolved.synthesisModel,
+            system: buildQuerySynthesisPrompt(),
+            messages: [
+              {
+                role: "user",
+                content:
+                  `Original question:\n${question}\n\n` +
+                  "BEGIN UNTRUSTED READ-ONLY EVIDENCE\n" +
+                  evidence +
+                  "\nEND UNTRUSTED READ-ONLY EVIDENCE",
+              },
+            ],
+            tools: {},
+            abortSignal: options.signal,
+          });
+          generateTextCalls.push({ model: resolved.modelChain.at(-1) ?? "configured", durationMs: Date.now() - secondRepairStarted, ...sumStepsUsage(secondRepair.steps) });
+          throwIfAborted(options.signal);
+          assertSynthesised(secondRepair.steps);
+          if (
+            isMalformedAnswer(secondRepair.text) ||
+            isUnsafeSynthesisAnswer(secondRepair.text)
+          ) {
+            throw new Error(MALFORMED_ANSWER_MESSAGE);
+          }
+          finalText = secondRepair.text;
+          allSteps.push(...repair.steps, ...secondRepair.steps);
+        } else {
+          finalText = repair.text;
+          allSteps.push(...repair.steps);
         }
-        finalText = secondRepair.text;
-        allSteps.push(...repair.steps, ...secondRepair.steps);
-      } else {
-        finalText = repair.text;
-        allSteps.push(...repair.steps);
       }
     }
 

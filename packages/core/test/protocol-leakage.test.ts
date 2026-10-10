@@ -153,6 +153,16 @@ describe("textual tool-call answer validation", () => {
       false,
     ],
     [
+      "standalone parameterless XML call after ordinary prose",
+      "That is all I found.\n<tool_call><function=list_directory></function></tool_call>",
+      true,
+    ],
+    [
+      "labelled XML invocation example in documentation",
+      "For example:\n<tool_call><function=read_concept><parameter=path>x</parameter></function></tool_call>",
+      false,
+    ],
+    [
       "quoted XML tool-call syntax in action-prefaced prose",
       'The sentence “Let me try reading this” is an example; the literal syntax is "<tool_call><function=read_concept></tool_call>".',
       false,
@@ -452,7 +462,9 @@ describe("deep agent answer validation", () => {
       })
       .mockResolvedValueOnce({
         text: "The answer is alpha.",
-        steps: [{ ...step, usage: { inputTokens: 7, outputTokens: 3 } }],
+        steps: [{ ...step, usage: { inputTokens: 7, outputTokens: 3 }, toolResults: [
+          { toolName: "read_concept", output: { path: "x", body: "alpha" } },
+        ] }],
       });
 
     const result = await runQuery(kb, "What is alpha?");
@@ -466,6 +478,17 @@ describe("deep agent answer validation", () => {
     const [trace] = await new TraceStore(root).list();
     expect(trace).toMatchObject({ outcome: "success", answer: result.answer });
     expect(trace.usage).toMatchObject({ inputTokens: 12, outputTokens: 5 });
+  });
+
+  it("fails closed when a clean retry has no read-only evidence", async () => {
+    generateTextMock
+      .mockResolvedValueOnce({ text: "<tool_call><function=read_concept></function></tool_call>", steps: [step] })
+      .mockResolvedValueOnce({ text: "The answer is alpha.", steps: [step] });
+
+    await expect(runQuery(kb, "What is alpha?")).rejects.toThrow("no read-only evidence");
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    const [trace] = await new TraceStore(root).list();
+    expect(trace.outcome).toBe("failed");
   });
 
   it("fails closed when the evidence-free read-only retry also leaks", async () => {
@@ -502,16 +525,14 @@ describe("deep agent answer validation", () => {
     expect(trace.outcome).toBe("failed");
   });
 
-  it("cannot succeed through deep repair with an apostrophe preface", async () => {
+  it("cannot succeed through a read-only retry with an apostrophe preface", async () => {
+    const leaked = "I’ll use read_concept(path='x')";
     generateTextMock
-      .mockResolvedValueOnce({
-        text: "I’ll use read_concept(path='x')",
-        steps: [step],
-        response: { messages: [] },
-      });
+      .mockResolvedValueOnce({ text: leaked, steps: [step], response: { messages: [] } })
+      .mockResolvedValueOnce({ text: leaked, steps: [step], response: { messages: [] } });
 
     await expect(runQuery(kb, "What is alpha?")).rejects.toThrow("protocol leakage");
-    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
   });
 
   it("converts the step fallback to valid v5 prompt messages", async () => {
@@ -639,13 +660,15 @@ describe("deep agent answer validation", () => {
       "The response is too large, so here is what I will do next:\n<tool_call><function=read_concept><parameter=path>`projects/fs-fotovalidering/synthetic-dataset-generation`</parameter><parameter=offset>10740</parameter>";
     generateTextMock
       .mockResolvedValueOnce({ text: leakedAnswer, steps: [step] })
-      .mockResolvedValueOnce({ text: "The answer is recovered.", steps: [step] });
+      .mockResolvedValueOnce({ text: "The answer is recovered.", steps: [{ ...step, toolResults: [
+        { toolName: "read_concept", output: { path: "x", body: "recovered" } },
+      ] }] });
 
     await expect(runQuery(kb, "What is alpha?")).resolves.toMatchObject({
       answer: "The answer is recovered.",
     });
     expect(generateTextMock).toHaveBeenCalledTimes(2);
-    expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
+    expect(generateTextMock.mock.calls[1][0].tools).toHaveProperty("read_concept");
     expect(await new TraceStore(root).list()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ outcome: "success", answer: "The answer is recovered." }),
