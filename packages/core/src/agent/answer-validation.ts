@@ -318,11 +318,15 @@ function xmlToolCallEnvelope(answer: string): boolean {
       isProtocolPreface(before) || isXmlProtocolPreface(before);
     const lineStart = answer.lastIndexOf("\n", firstStart - 1) + 1;
     const standaloneLine = !answer.slice(lineStart, firstStart).trim();
-    if (
-      !(atAnswerBoundary || hasProtocolPreface || isProtocolSeparator(before) || standaloneLine)
-    ) {
+    const protocolSeparator = isProtocolSeparator(before);
+    if (!(atAnswerBoundary || hasProtocolPreface || protocolSeparator || standaloneLine)) {
       continue;
     }
+    // Arbitrary prose followed by an otherwise standalone XML snippet is
+    // ambiguous unless it contains an actual parameter. Keep the historical
+    // boundary, explicit-preface, and protocol-separator detection unchanged.
+    const arbitraryStandaloneLine =
+      standaloneLine && !atAnswerBoundary && !hasProtocolPreface && !protocolSeparator;
 
     // Consume adjacent envelopes as one protocol sequence. Looking only at the
     // text after the first closing tag would mistake the next envelope for
@@ -339,9 +343,13 @@ function xmlToolCallEnvelope(answer: string): boolean {
       // documentation tag. Its name is intentionally not restricted to the
       // current tool set: an unrecognised call is still leaked protocol.
       if (!XML_FUNCTION_TAG.test(payload)) break;
-      // A parameter tag distinguishes an invocation from an explanatory XML
-      // snippet such as `<tool_call><function=search_knowledge> is the shape`.
-      if (!/<parameter\s*=\s*[A-Za-z_$][\w$.-]*\s*>/i.test(payload)) break;
+      // A parameter tag distinguishes an arbitrary-prose standalone-line
+      // invocation from an explanatory snippet. At answer boundary or with an
+      // explicit protocol preface, the function tag remains sufficient.
+      if (
+        arbitraryStandaloneLine &&
+        !/<parameter\s*=\s*[A-Za-z_$][\w$.-]*\s*>/i.test(payload)
+      ) break;
 
       // A missing closing envelope is the normal shape of a provider response
       // truncated during generation. Once the unambiguous function tag exists,
