@@ -98,6 +98,16 @@ describe("textual tool-call answer validation", () => {
       true,
     ],
     [
+      "reasoning followed by em-dash action and truncated XML call",
+      "The body is 18,543 chars — let me try reading smaller chunks.\n<tool_call><function=read_concept><parameter=path>projects/fs-fotovalidering/synthetic-dataset-generation</parameter><parameter=offset>10740</parameter>",
+      true,
+    ],
+    [
+      "em-dash action-prefaced truncated unknown XML call",
+      "The response is too long — I'll inspect another section.\n<tool_call><function=future_tool><parameter=path>x",
+      true,
+    ],
+    [
       "reasoning before a final tool-action sentence",
       "I've used too many tokens on retries. Let me check another document and search for details:\n\n<tool_call>\n<function=read_concept>\n<parameter=path>\n/repos/example.md\n</parameter>\n</function>\n</tool_call>",
       true,
@@ -567,7 +577,10 @@ describe("deep agent answer validation", () => {
     generateTextMock
       .mockResolvedValueOnce({ text: "[read_concept(path='x')", steps: [step], response: { messages: responseMessages } })
       .mockResolvedValueOnce({ text: "read_concepts(paths=['x'])", steps: [step] })
-      .mockResolvedValueOnce({ text: "<|tool_call_start|>[read_concept(path='x')]", steps: [step] });
+      .mockResolvedValueOnce({
+        text: "The body is 18,543 chars — let me try reading smaller chunks.\n<tool_call><function=read_concept><parameter=path>projects/fs-fotovalidering/synthetic-dataset-generation</parameter><parameter=offset>10740</parameter>",
+        steps: [step],
+      });
 
     await expect(runQuery(kb, "What is alpha?")).rejects.toThrow("protocol leakage");
     expect(generateTextMock).toHaveBeenCalledTimes(3);
@@ -759,7 +772,7 @@ describe("mutation answer validation", () => {
 describe("query cache validation", () => {
   it("does not cache or return a malformed deep result", async () => {
     const runner = vi.fn(async (): Promise<QueryResult> => ({
-      answer: "Here's the call: [read_concept(path='x')]",
+      answer: "The body is 18,543 chars — let me try reading smaller chunks.\n<tool_call><function=read_concept><parameter=path>projects/fs-fotovalidering/synthetic-dataset-generation</parameter><parameter=offset>10740</parameter>",
       steps: 1,
       traceId: "t",
     }));
