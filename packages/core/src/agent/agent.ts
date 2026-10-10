@@ -583,8 +583,28 @@ export async function runQuery(
         result.response?.messages
       );
       if (!repairMessages) {
-        throw new Error(MALFORMED_ANSWER_MESSAGE);
-      }
+        // A malformed answer with no trustworthy read-only transcript cannot
+        // be repaired by synthesis without inventing evidence. Give the query
+        // one fresh, bounded read-only tool-loop attempt instead.
+        const retryStarted = Date.now();
+        const retry = await generateText({
+          model: resolved.model,
+          system: buildSystemPrompt(ctx),
+          prompt: question,
+          tools: buildReadTools(kb, recorder, state),
+          stopWhen: stepCountIs(maxSteps),
+          prepareStep: prepareFinalSynthesisStep(maxSteps),
+          abortSignal: options.signal,
+        });
+        generateTextCalls.push({ model: resolved.modelChain.join(" → "), durationMs: Date.now() - retryStarted, ...sumStepsUsage(retry.steps) });
+        throwIfAborted(options.signal);
+        assertSynthesised(retry.steps);
+        allSteps.push(...retry.steps);
+        if (isMalformedAnswer(retry.text) || isUnsafeSynthesisAnswer(retry.text)) {
+          throw new Error(MALFORMED_ANSWER_MESSAGE);
+        }
+        finalText = retry.text;
+      } else {
       const repairStarted = Date.now();
       const repair = await generateText({
         model: resolved.synthesisModel,

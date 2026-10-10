@@ -78,6 +78,11 @@ describe("textual tool-call answer validation", () => {
       true,
     ],
     [
+      "complete XML tool call without parameters at answer boundary",
+      "<tool_call><function=read_concept></function></tool_call>",
+      true,
+    ],
+    [
       "truncated XML tool-call envelope",
       "<tool_call>\n<function=search_knowledge>\n<parameter=query>\nsearxng",
       true,
@@ -436,6 +441,65 @@ describe("deep agent answer validation", () => {
     expect(traces).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ outcome: "success", answer: leaked })])
     );
+  });
+
+  it("retries an evidence-free leaked answer once with read tools", async () => {
+    generateTextMock
+      .mockResolvedValueOnce({
+        text: "<tool_call><function=read_concept></function></tool_call>",
+        steps: [{ ...step, usage: { inputTokens: 5, outputTokens: 2 } }],
+        response: { messages: [] },
+      })
+      .mockResolvedValueOnce({
+        text: "The answer is alpha.",
+        steps: [{ ...step, usage: { inputTokens: 7, outputTokens: 3 } }],
+      });
+
+    const result = await runQuery(kb, "What is alpha?");
+    expect(result.answer).toBe("The answer is alpha.");
+    expect(result.steps).toBe(2);
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect(generateTextMock.mock.calls[1][0]).toMatchObject({
+      prompt: "What is alpha?",
+      tools: expect.any(Object),
+    });
+    const [trace] = await new TraceStore(root).list();
+    expect(trace).toMatchObject({ outcome: "success", answer: result.answer });
+    expect(trace.usage).toMatchObject({ inputTokens: 12, outputTokens: 5 });
+  });
+
+  it("fails closed when the evidence-free read-only retry also leaks", async () => {
+    const leaked = "<tool_call><function=read_concept></function></tool_call>";
+    generateTextMock
+      .mockResolvedValueOnce({ text: leaked, steps: [step], response: { messages: [] } })
+      .mockResolvedValueOnce({ text: leaked, steps: [step], response: { messages: [] } });
+
+    await expect(runQuery(kb, "What is alpha?")).rejects.toThrow("protocol leakage");
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    const [trace] = await new TraceStore(root).list();
+    expect(trace).toMatchObject({ outcome: "failed" });
+    expect(trace.answer).not.toBe(leaked);
+  });
+
+  it("honors abort during the evidence-free retry", async () => {
+    const controller = new AbortController();
+    generateTextMock
+      .mockResolvedValueOnce({
+        text: "<tool_call><function=read_concept></function></tool_call>",
+        steps: [step],
+        response: { messages: [] },
+      })
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        return { text: "The answer is alpha.", steps: [step] };
+      });
+
+    await expect(runQuery(kb, "What is alpha?", { signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    const [trace] = await new TraceStore(root).list();
+    expect(trace.outcome).toBe("failed");
   });
 
   it("cannot succeed through deep repair with an apostrophe preface", async () => {
