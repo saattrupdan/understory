@@ -316,7 +316,11 @@ function xmlToolCallEnvelope(answer: string): boolean {
     const atAnswerBoundary = !before;
     const hasProtocolPreface =
       isProtocolPreface(before) || isXmlProtocolPreface(before);
-    if (!(atAnswerBoundary || hasProtocolPreface || isProtocolSeparator(before))) {
+    const lineStart = answer.lastIndexOf("\n", firstStart - 1) + 1;
+    const standaloneLine = !answer.slice(lineStart, firstStart).trim();
+    if (
+      !(atAnswerBoundary || hasProtocolPreface || isProtocolSeparator(before) || standaloneLine)
+    ) {
       continue;
     }
 
@@ -335,6 +339,9 @@ function xmlToolCallEnvelope(answer: string): boolean {
       // documentation tag. Its name is intentionally not restricted to the
       // current tool set: an unrecognised call is still leaked protocol.
       if (!XML_FUNCTION_TAG.test(payload)) break;
+      // A parameter tag distinguishes an invocation from an explanatory XML
+      // snippet such as `<tool_call><function=search_knowledge> is the shape`.
+      if (!/<parameter\s*=\s*[A-Za-z_$][\w$.-]*\s*>/i.test(payload)) break;
 
       // A missing closing envelope is the normal shape of a provider response
       // truncated during generation. Once the unambiguous function tag exists,

@@ -103,6 +103,11 @@ describe("textual tool-call answer validation", () => {
       true,
     ],
     [
+      "arbitrary prose before truncated standalone XML invocation with quoted path",
+      "The response is too large, so here is what I will do next:\n<tool_call><function=read_concept><parameter=path>`projects/fs-fotovalidering/synthetic-dataset-generation`</parameter><parameter=offset>10740</parameter>",
+      true,
+    ],
+    [
       "em-dash action-prefaced truncated unknown XML call",
       "The response is too long — I'll inspect another section.\n<tool_call><function=future_tool><parameter=path>x",
       true,
@@ -135,6 +140,11 @@ describe("textual tool-call answer validation", () => {
     [
       "prose discussing XML tool-call syntax",
       "Let me explain how XML tool-call syntax works:\n<tool_call><function=search_knowledge> is the documented shape.",
+      false,
+    ],
+    [
+      "explanatory XML invocation-shaped snippet is not a standalone call",
+      "The <tool_call><function=search_knowledge><parameter=query>x</parameter></function></tool_call> element is documented here.",
       false,
     ],
     [
@@ -558,6 +568,25 @@ describe("deep agent answer validation", () => {
 
     await expect(runQuery(kb, "What is alpha?")).rejects.toThrow("protocol leakage");
     expect(generateTextMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("successfully retries a truncated standalone XML invocation after arbitrary prose", async () => {
+    const leakedAnswer =
+      "The response is too large, so here is what I will do next:\n<tool_call><function=read_concept><parameter=path>`projects/fs-fotovalidering/synthetic-dataset-generation`</parameter><parameter=offset>10740</parameter>";
+    generateTextMock
+      .mockResolvedValueOnce({ text: leakedAnswer, steps: [step] })
+      .mockResolvedValueOnce({ text: "The answer is recovered.", steps: [step] });
+
+    await expect(runQuery(kb, "What is alpha?")).resolves.toMatchObject({
+      answer: "The answer is recovered.",
+    });
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect(generateTextMock.mock.calls[1][0].tools).toEqual({});
+    expect(await new TraceStore(root).list()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ outcome: "success", answer: "The answer is recovered." }),
+      ])
+    );
   });
 
   it("fails closed after the bounded second repair is malformed", async () => {
