@@ -145,7 +145,7 @@ function isXmlProtocolPreface(value: string): boolean {
   // final first-person action sentence. Match that final clause, not the whole
   // answer; discussion of XML syntax without an action remains valid prose.
   const clause = value.trim().replace(/[.!?:]+$/, "").trim();
-  const lastClause = clause.split(/(?:[.!?]\s+|\n\n+)/).at(-1)?.trim() ?? "";
+  const lastClause = clause.split(/(?:[.!?]\s+|\n\n+|\s+[—–]\s+)/).at(-1)?.trim() ?? "";
   return new RegExp(
     `^(?:(?:let me|let's|i(?:'ll|’ll| will)|i am going to)\\s+)(?:${action})\\b[\\s\\S]*$`,
     "i"
