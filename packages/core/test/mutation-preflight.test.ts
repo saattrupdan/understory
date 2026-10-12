@@ -294,6 +294,48 @@ describe("mutation owner preflight", () => {
     expect(body).toContain(fact);
   });
 
+  it("stores an exact verified fact in a deterministic continuation when the owner is full", async () => {
+    await billingFixture(); staged();
+    const ownerPath = "/apis/billing-api.md";
+    const fact = "Billing API records an immutable support-charge audit reference for every transaction.";
+    const ownerBody = `${oldBody}\n\n${"Existing verified billing details. ".repeat(1_800)}`.slice(0, 63_990);
+    await kb.patchConcept(ownerPath, { replaceBody: ownerBody }, "fill owner");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    const options = { ownerHint: ownerPath, preflightInput: fact, directAdd: true };
+    const result = await runMutation(kb, `Remember that ${fact}`, options);
+    expect(result).toMatchObject({ ok: true });
+    const changed = (result as { result?: { filesChanged?: string[] } }).result?.filesChanged ?? [];
+    expect(changed).toHaveLength(1);
+    expect(changed[0]).toMatch(/^\/apis\/billing-api-continuation-[a-f0-9]{16}\.md$/);
+    const continuation = await kb.readConcept(changed[0]);
+    expect(continuation.body).toContain(fact);
+    expect(continuation.body).toContain(`[Billing API](${ownerPath})`);
+    expect(continuation.frontmatter.title).toContain("Billing API");
+    expect((await kb.readConcept(ownerPath)).body).toBe(ownerBody);
+
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    const replay = await runMutation(kb, `Remember that ${fact}`, options);
+    expect(replay).toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await fs.readdir(path.join(root, "apis"))).filter((name) => name.includes("continuation"))).toHaveLength(1);
+  });
+
+  it("does not create a continuation after the owner changes during verification", async () => {
+    await billingFixture(); staged();
+    const ownerPath = "/apis/billing-api.md";
+    const fact = "Billing API records an immutable support-charge audit reference for every transaction.";
+    const ownerBody = `${oldBody}\n\n${"Existing verified billing details. ".repeat(1_800)}`.slice(0, 63_990);
+    await kb.patchConcept(ownerPath, { replaceBody: ownerBody }, "fill owner");
+    generateObjectMock.mockImplementationOnce(async () => {
+      await kb.writeConcept(ownerPath, { type: "API Endpoint", title: "Billing API" }, "External revision", "external");
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, `Remember that ${fact}`, {
+      ownerHint: ownerPath, preflightInput: fact, directAdd: true,
+    });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await fs.readdir(path.join(root, "apis"))).some((name) => name.includes("continuation"))).toBe(false);
+  });
+
   it("reads an existing owner hint outside ranked search results but never a missing path", async () => {
     await billingFixture(); staged();
     const searchHit = (path: string, score: number) => ({

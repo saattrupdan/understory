@@ -669,6 +669,36 @@ describe("mutation serialization", () => {
     });
   });
 
+  it("conditionally creates only one sibling while the parent body is unchanged", async () => {
+    await kb.createConcept("/owner.md", { type: "T", title: "Owner" }, "original", "initial");
+    const expected = sha256("original\n");
+    const first = new KnowledgeBase(root);
+    const second = new KnowledgeBase(root);
+    const results = await Promise.allSettled([
+      first.createConceptIfUnchanged("/owner.md", expected, "/owner-fact.md", { type: "T" }, "fact", "first"),
+      second.createConceptIfUnchanged("/owner.md", expected, "/other-fact.md", { type: "T" }, "fact", "second"),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const landed = await Promise.all(["/owner-fact.md", "/other-fact.md"].map(async (conceptPath) =>
+      (await first.bundle.exists(conceptPath)) ? conceptPath : undefined));
+    expect(landed.filter(Boolean)).toHaveLength(1);
+  });
+
+  it("honors cancellation and refuses a stale parent before claiming a sibling", async () => {
+    await kb.createConcept("/owner.md", { type: "T" }, "original", "initial");
+    const expected = sha256("original\n");
+    const controller = new AbortController();
+    controller.abort(new DOMException("cancelled", "AbortError"));
+    await expect(kb.createConceptIfUnchanged("/owner.md", expected, "/cancelled.md", { type: "T" }, "fact", "cancel", controller.signal))
+      .rejects.toMatchObject({ name: "AbortError" });
+    await kb.writeConcept("/owner.md", { type: "T" }, "changed", "external");
+    await expect(kb.createConceptIfUnchanged("/owner.md", expected, "/stale-sibling.md", { type: "T" }, "fact", "stale"))
+      .rejects.toThrow("Concept changed while it was being read");
+    expect(await kb.bundle.exists("/cancelled.md")).toBe(false);
+    expect(await kb.bundle.exists("/stale-sibling.md")).toBe(false);
+  });
+
   it("concurrent writes all land and log all entries", async () => {
     await Promise.all(
       Array.from({ length: 8 }, (_, i) =>

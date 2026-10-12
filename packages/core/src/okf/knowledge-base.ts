@@ -117,6 +117,41 @@ export class KnowledgeBase {
     }, signal);
   }
 
+  createConceptIfUnchanged(
+    parentPath: string,
+    expectedBodyHash: string,
+    conceptPath: string,
+    frontmatter: ConceptFrontmatter,
+    body: string,
+    logSummary: string,
+    signal?: AbortSignal,
+    onWritten?: (path: string) => void
+  ): Promise<Concept> {
+    return this.enqueue(async () => {
+      throwIfAborted(signal);
+      const parent = await this.bundle.readConcept(parentPath);
+      throwIfAborted(signal);
+      if (sha256(parent.body) !== expectedBodyHash) {
+        throw new Error(`Concept changed while it was being read: ${parent.path}`);
+      }
+      const canonical = this.bundle.toBundlePath(conceptPath);
+      throwIfAborted(signal);
+      let concept: Concept;
+      try {
+        concept = await this.bundle.writeConcept(canonical, frontmatter, body, { exclusive: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error(`Concept already exists: ${canonical}; use patch_concept`);
+        }
+        throw error;
+      }
+      // The callback records the physical write before any fallible indexing or logging.
+      onWritten?.(concept.path);
+      await this.afterMutation(concept.path, "Creation", logSummary);
+      return concept;
+    }, signal);
+  }
+
   writeConcept(
     conceptPath: string,
     frontmatter: ConceptFrontmatter,
