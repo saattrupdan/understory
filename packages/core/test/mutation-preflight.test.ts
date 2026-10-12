@@ -361,7 +361,7 @@ describe("mutation owner preflight", () => {
       description: conceptPath === api ? "Creates customer charges" : "Other billing context",
       score: 10, confidence: 10, confidenceQualified: false,
     })));
-    const fact = "Billing API logs request IDs for charges created by support tooling.";
+    const fact = "Billing logs request IDs for charges created by support tooling.";
     generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
       expect(request.prompt).toContain("CANDIDATE METADATA");
       expect(request.prompt).toContain("Billing On-call");
@@ -391,7 +391,7 @@ describe("mutation owner preflight", () => {
       path: conceptPath, type: "Concept", title: conceptPath === api ? "Billing API" : "Billing On-call",
       score: 10, confidence: 10, confidenceQualified: false,
     })));
-    const fact = "Billing API logs request IDs for charges created by support tooling.";
+    const fact = "Billing logs request IDs for charges created by support tooling.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: "" } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
@@ -417,7 +417,7 @@ describe("mutation owner preflight", () => {
       path: conceptPath, type: "Concept", title: conceptPath === api ? "Billing API" : "Billing On-call",
       score: 10, confidence: 10, confidenceQualified: false,
     })));
-    const fact = "Billing API logs request IDs for charges created by support tooling.";
+    const fact = "Billing logs request IDs for charges created by support tooling.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: api } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
       ok: false, status: "failed", error: expect.stringContaining("owner body exceeds evidence limit"),
