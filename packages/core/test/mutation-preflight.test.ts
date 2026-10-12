@@ -320,6 +320,24 @@ describe("mutation owner preflight", () => {
     expect((await fs.readdir(path.join(root, "apis"))).filter((name) => name.includes("continuation"))).toHaveLength(1);
   });
 
+  it("does not extend an unhinted, unrelated continuation despite a shared project prefix", async () => {
+    await billingFixture(); staged();
+    const wrongPath = "/apis/billing-api-continuation-abc123.md";
+    await kb.writeConcept(wrongPath, { type: "Concept", title: "Billing API Legacy — Continuation abc123" },
+      "The legacy billing project was retired.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: wrongPath, type: "Concept", title: "Billing API Legacy — Continuation abc123",
+      score: 100, confidence: 100, confidenceQualified: true,
+    }]);
+    const fact = "Billing API logs a request ID for each new support charge.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: wrongPath } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("unhinted continuation owner") });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept(wrongPath)).body).not.toContain(fact);
+  });
+
   it("does not create a continuation after the owner changes during verification", async () => {
     await billingFixture(); staged();
     const ownerPath = "/apis/billing-api.md";

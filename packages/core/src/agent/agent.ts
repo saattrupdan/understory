@@ -941,6 +941,14 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: suggested owner lacks a positive entity anchor.");
       }
       if (!target.body.includes(fact)) {
+        const wouldOverflow = `${target.body.trimEnd()}\n\n${fact}\n`.length > STAGED_MAX_OWNER_CHARS;
+        // A broad search can select an unrelated, full project or a continuation
+        // whose generic prefix matches the fact. Do not extend either without
+        // an explicit owner hint or a positive mention of the full owner title.
+        if (!hintedPath && (wouldOverflow || target.path.includes("-continuation-")) &&
+            (!target.frontmatter.title || !stagedTitleMention(raw, target.frontmatter.title))) {
+          throw new Error("Staged mutation deferred: unhinted continuation owner was not explicitly named.");
+        }
         const judgement = await generateObject({
           model: resolved.model,
           schema: z.object({ safe: z.boolean() }).strict(),
