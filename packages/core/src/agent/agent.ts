@@ -958,7 +958,9 @@ async function runStagedMutation(
           const ownerType = typeof target.frontmatter.type === "string" ? target.frontmatter.type : "Knowledge";
           if (await kb.bundle.exists(continuationPath)) {
             const existing = await kb.readConcept(continuationPath);
-            if (!existing.body.includes(fact)) throw new Error("Staged mutation deferred: deterministic continuation conflicts with existing content.");
+            if (existing.body !== continuationBody || existing.frontmatter.title !== title) {
+              throw new Error("Staged mutation deferred: deterministic continuation conflicts with existing content.");
+            }
           } else {
             await kb.createConceptIfUnchanged(
               target.path, sha256(target.body), continuationPath,

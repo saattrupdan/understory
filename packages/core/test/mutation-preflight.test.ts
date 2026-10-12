@@ -298,8 +298,9 @@ describe("mutation owner preflight", () => {
     await billingFixture(); staged();
     const ownerPath = "/apis/billing-api.md";
     const fact = "Billing API records an immutable support-charge audit reference for every transaction.";
-    const ownerBody = `${oldBody}\n\n${"Existing verified billing details. ".repeat(1_800)}`.slice(0, 63_990);
+    const ownerBody = `${oldBody}\n\n${"Existing verified billing details. ".repeat(2_100)}`.slice(0, 63_990);
     await kb.patchConcept(ownerPath, { replaceBody: ownerBody }, "fill owner");
+    const savedOwnerBody = (await kb.readConcept(ownerPath)).body;
     generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
     const options = { ownerHint: ownerPath, preflightInput: fact, directAdd: true };
     const result = await runMutation(kb, `Remember that ${fact}`, options);
@@ -311,7 +312,7 @@ describe("mutation owner preflight", () => {
     expect(continuation.body).toContain(fact);
     expect(continuation.body).toContain(`[Billing API](${ownerPath})`);
     expect(continuation.frontmatter.title).toContain("Billing API");
-    expect((await kb.readConcept(ownerPath)).body).toBe(ownerBody);
+    expect((await kb.readConcept(ownerPath)).body).toBe(savedOwnerBody);
 
     generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
     const replay = await runMutation(kb, `Remember that ${fact}`, options);
@@ -323,7 +324,7 @@ describe("mutation owner preflight", () => {
     await billingFixture(); staged();
     const ownerPath = "/apis/billing-api.md";
     const fact = "Billing API records an immutable support-charge audit reference for every transaction.";
-    const ownerBody = `${oldBody}\n\n${"Existing verified billing details. ".repeat(1_800)}`.slice(0, 63_990);
+    const ownerBody = `${oldBody}\n\n${"Existing verified billing details. ".repeat(2_100)}`.slice(0, 63_990);
     await kb.patchConcept(ownerPath, { replaceBody: ownerBody }, "fill owner");
     generateObjectMock.mockImplementationOnce(async () => {
       await kb.writeConcept(ownerPath, { type: "API Endpoint", title: "Billing API" }, "External revision", "external");

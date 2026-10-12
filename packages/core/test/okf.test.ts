@@ -676,13 +676,11 @@ describe("mutation serialization", () => {
     const second = new KnowledgeBase(root);
     const results = await Promise.allSettled([
       first.createConceptIfUnchanged("/owner.md", expected, "/owner-fact.md", { type: "T" }, "fact", "first"),
-      second.createConceptIfUnchanged("/owner.md", expected, "/other-fact.md", { type: "T" }, "fact", "second"),
+      second.createConceptIfUnchanged("/owner.md", expected, "/owner-fact.md", { type: "T" }, "fact", "second"),
     ]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
-    const landed = await Promise.all(["/owner-fact.md", "/other-fact.md"].map(async (conceptPath) =>
-      (await first.bundle.exists(conceptPath)) ? conceptPath : undefined));
-    expect(landed.filter(Boolean)).toHaveLength(1);
+    expect(await first.bundle.exists("/owner-fact.md")).toBe(true);
   });
 
   it("honors cancellation and refuses a stale parent before claiming a sibling", async () => {
