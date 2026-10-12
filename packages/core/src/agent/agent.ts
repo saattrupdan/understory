@@ -856,6 +856,12 @@ async function runStagedMutation(
       state.checkCancellation();
       const selected = candidates.find((candidate) => candidate.path === selection.object.path);
       if (!selected) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
+      // A metadata-only selector cannot distinguish specific owners from shared
+      // slug vocabulary. Without an explicit path hint, require the caller to
+      // positively name the selected owner's complete title before proceeding.
+      if (!hintedPath && (!selected.frontmatter.title || !stagedTitleMention(raw, selected.frontmatter.title))) {
+        throw new Error("Staged mutation deferred: metadata-selected owner was not explicitly named.");
+      }
       selectedPath = selected.path;
       // Re-read the selected concept after the metadata-only choice; the
       // proposer, verifier and CAS must all use the same complete body.

@@ -438,16 +438,53 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockResolvedValueOnce({ object: { path: "" } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    generateObjectMock.mockResolvedValueOnce({ object: { path: playbook } })
-      .mockImplementationOnce(async (request: { prompt: string }) => {
-        expect(request.prompt).toContain("OWNER /playbooks/oncall-billing.md");
-        expect(request.prompt).toContain("Billing API");
-        return { object: { safe: false } };
-      });
+    generateObjectMock.mockResolvedValueOnce({ object: { path: playbook } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
     expect((await kb.readConcept(api)).body).not.toContain(fact);
     expect((await kb.readConcept(playbook)).body).not.toContain(fact);
+  });
+
+  it("rejects a metadata-selected specific owner when only shared slug words are mentioned", async () => {
+    staged();
+    const wrongOwner = "/projects/fs-fotovalidering-tono-onot.md";
+    const rightOwner = "/projects/fs-fotovalidering-general.md";
+    await kb.writeConcept(wrongOwner, { type: "Project", title: "FS Fotovalidering Tono Onot" }, "Project context. ".repeat(2_700), "seed");
+    await kb.writeConcept(rightOwner, { type: "Project", title: "FS Fotovalidering General" }, "General project context. ".repeat(2_700), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([wrongOwner, rightOwner].map((conceptPath) => ({
+      path: conceptPath, type: "Project",
+      title: conceptPath === wrongOwner ? "FS Fotovalidering Tono Onot" : "FS Fotovalidering General",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "FS Fotovalidering experiment 69 records a general experiment observation.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: wrongOwner } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept(wrongOwner)).body).not.toContain(fact);
+    expect((await kb.readConcept(rightOwner)).body).not.toContain(fact);
+  });
+
+  it("allows the correctly named specific owner through the independent check", async () => {
+    staged();
+    const wrongOwner = "/projects/fs-fotovalidering-tono-onot.md";
+    const rightOwner = "/projects/fs-fotovalidering-general.md";
+    await kb.writeConcept(wrongOwner, { type: "Project", title: "FS Fotovalidering Tono Onot" }, "Project context. ".repeat(2_700), "seed");
+    await kb.writeConcept(rightOwner, { type: "Project", title: "FS Fotovalidering General" }, "General project context. ".repeat(2_700), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([wrongOwner, rightOwner].map((conceptPath) => ({
+      path: conceptPath, type: "Project",
+      title: conceptPath === wrongOwner ? "FS Fotovalidering Tono Onot" : "FS Fotovalidering General",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "FS Fotovalidering General experiment 69 records a project observation.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: rightOwner } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [rightOwner] } });
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect((await kb.readConcept(rightOwner)).body).toContain(fact);
+    expect((await kb.readConcept(wrongOwner)).body).not.toContain(fact);
   });
 
   it("defers an oversized selected owner without sending a truncated body for verification", async () => {
