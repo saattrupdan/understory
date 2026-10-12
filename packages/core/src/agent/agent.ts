@@ -820,17 +820,56 @@ async function runStagedMutation(
       for (const hit of hits.slice(0, 3)) {
         const concept = await kb.readConcept(hit.path);
         recorder.record("read_concept", concept.path, [concept.path]);
-        if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: candidate body exceeds evidence limit.");
         candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
       }
     }
-    const evidence = JSON.stringify(candidates);
-    if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
+    let evidence = JSON.stringify(candidates);
+    let selectedPath: string | undefined;
+    if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS && candidates.length <= 1) {
       throw new Error("Staged mutation deferred: evidence exceeds prompt budget.");
+    }
+    if (candidates.length > 1 && evidence.length + raw.length <= STAGED_MAX_EVIDENCE_CHARS &&
+        candidates.some((candidate) => candidate.body.length > STAGED_MAX_OWNER_CHARS)) {
+      throw new Error("Staged mutation deferred: candidate body exceeds evidence limit.");
     }
     state.checkCancellation();
     const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
     modelChain = resolved.modelChain;
+    if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
+      if (raw.length > 8_000) throw new Error("Staged mutation deferred: instruction exceeds selector budget.");
+      // Selection is only a locator, never write authorization. Do not send
+      // truncated bodies to the proposer or silently drop competing owners:
+      // the independent verifier still sees the other search-hit titles.
+      const metadata = hits.slice(0, 3).map((hit) => ({
+        path: hit.path.slice(0, 512), title: hit.title?.slice(0, 256) ?? "",
+        description: hit.description?.slice(0, 512) ?? "",
+      }));
+      const selector = await resolveAgentModel(options, "mutate", { ...process.env, MUTATION_ENABLE_THINKING: "false" }, (call) => providerCalls.push(call));
+      const selection = await generateObject({
+        model: selector.model,
+        schema: z.object({ path: z.string() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Read-only owner selection. Choose exactly one existing concept directly about the instruction from the candidate metadata. A mention is not ownership. If competing owners could equally own the fact, or none fit, return an empty path. This choice does not authorize a write. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATE METADATA:\n${JSON.stringify(metadata)}`,
+      });
+      state.checkCancellation();
+      const selected = candidates.find((candidate) => candidate.path === selection.object.path);
+      if (!selected) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
+      selectedPath = selected.path;
+      // Re-read the selected concept after the metadata-only choice; the
+      // proposer, verifier and CAS must all use the same complete body.
+      const owner = await kb.readConcept(selectedPath);
+      recorder.record("read_concept", owner.path, [owner.path]);
+      state.checkCancellation();
+      if (owner.body.length > STAGED_MAX_OWNER_CHARS) {
+        throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
+      }
+      candidates.splice(0, candidates.length, { path: owner.path, frontmatter: owner.frontmatter, body: owner.body });
+      evidence = JSON.stringify(candidates);
+      if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
+        throw new Error("Staged mutation deferred: selected owner exceeds prompt budget.");
+      }
+    }
     // An explicit correction supplies its own exact old/new text. Avoid a
     // generated proposal, but still check the full owner, support, and CAS.
     const quotedCorrection = !options.directAdd && options.preflightInput
@@ -850,7 +889,7 @@ async function runStagedMutation(
           schema: z.object({ safe: z.boolean() }).strict(),
           temperature: 0,
           abortSignal: options.signal,
-          prompt: `Independent safety check. Does the caller's exact quoted replacement faithfully apply the instruction to this observed owner, preserve every unrelated claim, and avoid a contradiction? A quoted path alone is not proof of ownership. If uncertain, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nOLD TEXT:\n${oldText}\nNEW TEXT:\n${newText}`,
+          prompt: `Independent safety check. Does the caller's exact quoted replacement faithfully apply the instruction to this observed owner, preserve every unrelated claim, and avoid a contradiction? A quoted path or metadata selection is not proof of ownership; compare the alternative search hits and reject a better-matching owner. If uncertain, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${oldText}\nNEW TEXT:\n${newText}`,
         });
         state.checkCancellation();
         if (!judgement.object.safe) throw new Error("Staged mutation deferred: quoted correction failed consistency check.");
@@ -870,7 +909,7 @@ async function runStagedMutation(
     // replacement prose. A fast read-only selector handles unhinted candidates;
     // one thinking-model check must still independently approve the chosen owner
     // and consistency. memory_update keeps the conservative edit proposal below.
-    let directPath = hintedPath;
+    let directPath = hintedPath ?? selectedPath;
     if (!directPath && options.directAdd && options.preflightInput && !correction &&
         candidates.length > 0 && raw.trim().length >= 30 && raw.trim().length <= 4_000) {
       const selector = await resolveAgentModel(options, "mutate", { ...process.env, MUTATION_ENABLE_THINKING: "false" }, (call) => providerCalls.push(call));
@@ -1023,7 +1062,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent safety check. Does the exact proposed replacement faithfully apply the instruction to the observed owner, remove the superseded claim, preserve unrelated claims, and avoid a new contradiction? If uncertain, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nOLD TEXT:\n${p.old_text}\nNEW TEXT:\n${p.new_text}`,
+        prompt: `Independent safety check. Does the exact proposed replacement faithfully apply the instruction to the observed owner, remove the superseded claim, preserve unrelated claims, avoid a new contradiction, and truly belong to this owner rather than a better-matching alternative search hit? Metadata selection is not proof of ownership. If uncertain, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${p.old_text}\nNEW TEXT:\n${p.new_text}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: replacement failed independent consistency check.");
@@ -1032,7 +1071,7 @@ async function runStagedMutation(
       await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: replace verified claim", sha256(target.body), options.signal, (path) => { changed = [path]; });
     } else if (p.action === "create") {
       const explicitlyDistinct = /\b(?:distinct|standalone|stand-alone|new concept|new policy|unrelated)\b/i.test(raw);
-      if ((candidates.length > 0 && !explicitlyDistinct) || !p.path || !p.body || !p.frontmatter.type || !p.frontmatter.title ||
+      if (selectedPath || (candidates.length > 0 && !explicitlyDistinct) || !p.path || !p.body || !p.frontmatter.type || !p.frontmatter.title ||
           !/^\/[a-z0-9_/-]+\.md$/.test(p.path) || p.path.split("/").includes("..") || p.body.length > (state.maxDocumentChars ?? 12_000) ||
           stagedOverlap(p.frontmatter.title, raw) < 0.7 || stagedOverlap(p.body, raw) < 0.65 ||
           stagedOverlap(raw, p.body) < 0.8 ||

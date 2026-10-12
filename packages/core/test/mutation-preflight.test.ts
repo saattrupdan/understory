@@ -344,6 +344,88 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
+  it("selects one owner from bounded metadata when competing complete bodies exceed the prompt budget", async () => {
+    staged();
+    const api = "/apis/billing-api.md";
+    const playbook = "/playbooks/oncall-billing.md";
+    const table = "/tables/customers.md";
+    const tail = "Final Billing API constraint: support charges require approval.";
+    await kb.writeConcept(api, { type: "API Endpoint", title: "Billing API", description: "Creates customer charges" },
+      `${"Background billing API context. ".repeat(1_150)}\n${tail}`, "seed");
+    await kb.writeConcept(playbook, { type: "Playbook", title: "Billing On-call", description: "Handles charge failures" },
+      "On-call incident context. ".repeat(1_400), "seed");
+    await kb.writeConcept(table, { type: "Table", title: "Customers", description: "Customer records" },
+      "Customer table context. ".repeat(1_400), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([api, playbook, table].map((conceptPath) => ({
+      path: conceptPath, type: "Concept", title: conceptPath === api ? "Billing API" : conceptPath === playbook ? "Billing On-call" : "Customers",
+      description: conceptPath === api ? "Creates customer charges" : "Other billing context",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "Billing API logs request IDs for charges created by support tooling.";
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain("CANDIDATE METADATA");
+      expect(request.prompt).toContain("Billing On-call");
+      expect(request.prompt).not.toContain(tail);
+      return { object: { path: api } };
+    }).mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(tail);
+      expect(request.prompt).toContain("Billing On-call");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
+      ok: true, result: { filesChanged: [api] },
+    });
+    expect((await kb.readConcept(api)).body).toContain(tail);
+    expect((await kb.readConcept(api)).body).toContain(fact);
+    expect((await kb.readConcept(playbook)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("defers empty or wrong aggregate-budget selections without a write", async () => {
+    staged();
+    const api = "/apis/billing-api.md";
+    const playbook = "/playbooks/oncall-billing.md";
+    await kb.writeConcept(api, { type: "API Endpoint", title: "Billing API" }, "Billing API context. ".repeat(2_300), "seed");
+    await kb.writeConcept(playbook, { type: "Playbook", title: "Billing On-call" }, "On-call context. ".repeat(2_700), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([api, playbook].map((conceptPath) => ({
+      path: conceptPath, type: "Concept", title: conceptPath === api ? "Billing API" : "Billing On-call",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "Billing API logs request IDs for charges created by support tooling.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    generateObjectMock.mockResolvedValueOnce({ object: { path: playbook } })
+      .mockImplementationOnce(async (request: { prompt: string }) => {
+        expect(request.prompt).toContain("OWNER /playbooks/oncall-billing.md");
+        expect(request.prompt).toContain("Billing API");
+        return { object: { safe: false } };
+      });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+    expect((await kb.readConcept(api)).body).not.toContain(fact);
+    expect((await kb.readConcept(playbook)).body).not.toContain(fact);
+  });
+
+  it("defers an oversized selected owner without sending a truncated body for verification", async () => {
+    staged();
+    const api = "/apis/billing-api.md";
+    const playbook = "/playbooks/oncall-billing.md";
+    await kb.writeConcept(api, { type: "API Endpoint", title: "Billing API" }, "Billing API details. ".repeat(3_500), "seed");
+    await kb.writeConcept(playbook, { type: "Playbook", title: "Billing On-call" }, "On-call context. ".repeat(1_800), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([api, playbook].map((conceptPath) => ({
+      path: conceptPath, type: "Concept", title: conceptPath === api ? "Billing API" : "Billing On-call",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "Billing API logs request IDs for charges created by support tooling.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: api } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
+      ok: false, status: "failed", error: expect.stringContaining("owner body exceeds evidence limit"),
+    });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept(api)).body).not.toContain(fact);
+  });
+
   it("does not confuse incidental update language in an add with correction intent", async () => {
     await billingFixture(); staged();
     const fact = "Billing API reporting update uses request IDs rather than log offsets for support-created charges.";
