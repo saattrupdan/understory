@@ -842,8 +842,9 @@ async function runStagedMutation(
       // truncated bodies to the proposer or silently drop competing owners:
       // the independent verifier still sees the other search-hit titles.
       const metadata = hits.slice(0, 3).map((hit) => ({
-        path: hit.path.slice(0, 512), title: hit.title?.slice(0, 256) ?? "",
-        description: hit.description?.slice(0, 512) ?? "",
+        path: hit.path.slice(0, 512),
+        title: typeof hit.title === "string" ? hit.title.slice(0, 256) : "",
+        description: typeof hit.description === "string" ? hit.description.slice(0, 512) : "",
       }));
       const selector = await resolveAgentModel(options, "mutate", { ...process.env, MUTATION_ENABLE_THINKING: "false" }, (call) => providerCalls.push(call));
       const selection = await generateObject({

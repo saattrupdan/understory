@@ -401,13 +401,15 @@ describe("mutation owner preflight", () => {
       "Customer table context. ".repeat(1_400), "seed");
     vi.spyOn(kb, "search").mockResolvedValue([api, playbook, table].map((conceptPath) => ({
       path: conceptPath, type: "Concept", title: conceptPath === api ? "Billing API" : conceptPath === playbook ? "Billing On-call" : "Customers",
-      description: conceptPath === api ? "Creates customer charges" : "Other billing context",
+      description: conceptPath === api ? "Creates customer charges" : conceptPath === playbook
+        ? ({ unexpected: "non-string metadata" } as unknown as string) : "Other billing context",
       score: 10, confidence: 10, confidenceQualified: false,
     })));
     const fact = "Billing API logs request IDs for charges created by support tooling; Billing On-call is a competing owner for this request.";
     generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
       expect(request.prompt).toContain("CANDIDATE METADATA");
       expect(request.prompt).toContain("Billing On-call");
+      expect(request.prompt).not.toContain("non-string metadata");
       expect(request.prompt).not.toContain(tail);
       return { object: { path: api } };
     }).mockImplementationOnce(async (request: { prompt: string }) => {
