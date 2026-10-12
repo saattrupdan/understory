@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   generateText,
   generateObject,
@@ -943,11 +944,30 @@ async function runStagedMutation(
         state.checkCancellation();
         if (!judgement.object.safe) throw new Error("Staged mutation deferred: exact-fact append failed consistency check.");
         const appended = `${target.body.trimEnd()}\n\n${fact}\n`;
-        if (appended.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: appended body exceeds evidence limit.");
         const current = await kb.readConcept(target.path);
         if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
         state.checkCancellation();
-        await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append exact verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
+        if (appended.length <= STAGED_MAX_OWNER_CHARS) {
+          await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append exact verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
+        } else {
+          const factHash = sha256(fact);
+          const parentBase = path.posix.basename(target.path, ".md");
+          const continuationPath = path.posix.join(path.posix.dirname(target.path), `${parentBase}-continuation-${factHash.slice(0, 16)}.md`);
+          const title = `${target.frontmatter.title ?? parentBase} — Continuation ${factHash.slice(0, 8)}`.slice(0, 256);
+          const continuationBody = `${fact}\n\nThis fact belongs to [${target.frontmatter.title ?? parentBase}](${target.path}).\n`;
+          const ownerType = typeof target.frontmatter.type === "string" ? target.frontmatter.type : "Knowledge";
+          if (await kb.bundle.exists(continuationPath)) {
+            const existing = await kb.readConcept(continuationPath);
+            if (!existing.body.includes(fact)) throw new Error("Staged mutation deferred: deterministic continuation conflicts with existing content.");
+          } else {
+            await kb.createConceptIfUnchanged(
+              target.path, sha256(target.body), continuationPath,
+              { type: `${ownerType} Continuation`, title, description: `Additional ${target.frontmatter.title ?? parentBase} fact: ${fact.slice(0, 400)}` },
+              continuationBody, "Staged mutation: continue exact verified fact", options.signal,
+              (writtenPath) => { changed = [writtenPath]; }
+            );
+          }
+        }
       } else {
         // A substring may be quoted only to retract it later in the body. Do
         // not equate textual presence with a currently supported assertion.
