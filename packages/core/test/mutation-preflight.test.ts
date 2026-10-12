@@ -404,7 +404,7 @@ describe("mutation owner preflight", () => {
       description: conceptPath === api ? "Creates customer charges" : "Other billing context",
       score: 10, confidence: 10, confidenceQualified: false,
     })));
-    const fact = "Billing logs request IDs for charges created by support tooling.";
+    const fact = "Billing API logs request IDs for charges created by support tooling; Billing On-call is a competing owner for this request.";
     generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
       expect(request.prompt).toContain("CANDIDATE METADATA");
       expect(request.prompt).toContain("Billing On-call");
@@ -466,12 +466,12 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(rightOwner)).body).not.toContain(fact);
   });
 
-  it("allows the correctly named specific owner through the independent check", async () => {
+  it("allows a positively named owner through the independent check", async () => {
     staged();
     const wrongOwner = "/projects/fs-fotovalidering-tono-onot.md";
     const rightOwner = "/projects/fs-fotovalidering-general.md";
-    await kb.writeConcept(wrongOwner, { type: "Project", title: "FS Fotovalidering Tono Onot" }, "Project context. ".repeat(2_700), "seed");
-    await kb.writeConcept(rightOwner, { type: "Project", title: "FS Fotovalidering General" }, "General project context. ".repeat(2_700), "seed");
+    await kb.writeConcept(wrongOwner, { type: "Project", title: "FS Fotovalidering Tono Onot" }, "Project context. ".repeat(2_000), "seed");
+    await kb.writeConcept(rightOwner, { type: "Project", title: "FS Fotovalidering General" }, "General project context. ".repeat(2_000), "seed");
     vi.spyOn(kb, "search").mockResolvedValue([wrongOwner, rightOwner].map((conceptPath) => ({
       path: conceptPath, type: "Project",
       title: conceptPath === wrongOwner ? "FS Fotovalidering Tono Onot" : "FS Fotovalidering General",
@@ -500,7 +500,7 @@ describe("mutation owner preflight", () => {
     const fact = "Billing logs request IDs for charges created by support tooling.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: api } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
-      ok: false, status: "failed", error: expect.stringContaining("owner body exceeds evidence limit"),
+      ok: false, status: "failed", error: expect.stringContaining("metadata-selected owner was not explicitly named"),
     });
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
     expect((await kb.readConcept(api)).body).not.toContain(fact);
