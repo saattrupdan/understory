@@ -781,7 +781,8 @@ function stagedDiscriminativeOwnerAnchor(
   if (index < 0 || !candidates.some((candidate) => candidate.path === selectedPath)) return false;
   // Compare against every retained hit, including those whose bodies could
   // not fit together in the bounded prompt. Descriptions can mention related
-  // concepts and cannot establish owner identity.
+  // concepts and cannot establish owner identity. Shared positive topic terms
+  // are sufficient: ambiguity among plausible owners is resolved by search order.
   const generic = new Set([
     "about", "background", "general", "information", "knowledge", "memory",
     "overview", "project", "reference", "status", "summary", "update",
@@ -791,23 +792,20 @@ function stagedDiscriminativeOwnerAnchor(
     return new Set(stagedWords([hit.title ?? "", slug]
       .join(" ")).filter((term) => !generic.has(term)));
   });
-  const competitors = new Set(terms.flatMap((set, i) => i === index ? [] : [...set]));
   const inputTerms = new Set(stagedWords(input));
   const negatedMentions = [...input.matchAll(/\b(?:unrelated to|rather than changing|not about|do not change|instead of)\s+(?:the\s+)?([^.!?;,:]+)/gi)]
     .map((match) => new Set(stagedWords(match[1])));
   const titleAnchor = [...terms[index]].some((term) => {
-    if (competitors.has(term) || !inputTerms.has(term)) return false;
+    if (!inputTerms.has(term)) return false;
     return !negatedMentions.some((mention) => mention.has(term));
   });
   if (titleAnchor) return true;
 
   // A title-less correction can still be grounded by a verbatim old claim or
-  // an identifier that occurs in this complete body and no competing body.
-  // Generic overlap and model assertions are deliberately not evidence.
+  // an identifier that occurs in this complete body. Generic overlap and model
+  // assertions are deliberately not evidence.
   const selectedBody = candidates.find((candidate) => candidate.path === selectedPath)?.body;
   if (!selectedBody) return false;
-  const otherBodies = candidates.filter((candidate) => candidate.path !== selectedPath)
-    .map((candidate) => candidate.body).filter((body): body is string => typeof body === "string");
   // Only the explicit old operand of a correction can establish ownership.
   // An incidental date, filename, new hash or negated reference in the same
   // request must not authorize a different concept.
@@ -816,17 +814,15 @@ function stagedDiscriminativeOwnerAnchor(
     input.match(/\breplace\s+([\p{L}\p{N}][\p{L}\p{N}_-]*\d[\p{L}\p{N}_-]*)\s+with\b/iu)?.[1],
     input.match(/\bnot\s+(?:the\s+)?(?:intermediate|previous|old)\s+`([^`]{12,2000})`/i)?.[1],
   ].filter((claim): claim is string => !!claim);
-  const allCompetitorBodiesObserved = otherBodies.length === hits.length - 1;
-  const uniqueUnnegated = (claim: string): boolean => allCompetitorBodiesObserved &&
-    selectedBody.includes(claim) && !otherBodies.some((body) => body.includes(claim)) &&
+  const positivelyPresent = (claim: string): boolean => selectedBody.includes(claim) &&
     !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term)));
   if (directAdd) {
     // An item ID already in one complete owner body can locate an exact fact
     // about that item. Generic dates, hashes and ungrounded IDs cannot.
     const itemIds = input.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [];
-    return itemIds.some(uniqueUnnegated);
+    return itemIds.some(positivelyPresent);
   }
-  return oldClaims.some(uniqueUnnegated);
+  return oldClaims.some(positivelyPresent);
 }
 
 /** Knowledge add/update — full toolset, low temperature. */
@@ -913,7 +909,7 @@ async function runStagedMutation(
         schema: z.object({ path: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Read-only owner selection. Choose exactly one existing concept directly about the instruction from the candidate metadata. A mention is not ownership. If competing owners could equally own the fact, or none fit, return an empty path. This choice does not authorize a write. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATE METADATA:\n${JSON.stringify(metadata)}`,
+        prompt: `Read-only owner selection. Choose exactly one positively relevant existing concept from the candidate metadata. Any owner whose topic plausibly fits the fact is acceptable; do not reject a relevant owner just because another could also fit. If none fit, return an empty path. When multiple owners fit equally, choose the first in candidate order. A mere negative/unrelated mention is not relevance. This choice does not authorize a write. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATE METADATA:\n${JSON.stringify(metadata)}`,
       });
       state.checkCancellation();
       const selectedHit = hits.find((hit) => hit.path === selection.object.path);
@@ -973,7 +969,7 @@ async function runStagedMutation(
           schema: z.object({ safe: z.boolean() }).strict(),
           temperature: 0,
           abortSignal: options.signal,
-          prompt: `Independent safety check. Does the caller's exact quoted replacement faithfully apply the instruction to this observed owner, preserve every unrelated claim, and avoid a contradiction? A quoted path or metadata selection is not proof of ownership; compare the alternative search hits and reject a better-matching owner. If uncertain, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${oldText}\nNEW TEXT:\n${newText}`,
+          prompt: `Independent safety check. Does the caller's exact quoted replacement faithfully apply the instruction to this observed owner, preserve every unrelated claim, and avoid a contradiction? A quoted path or metadata selection is not proof of relevance; an alternative owner being equally plausible is not grounds for rejection. Reject negative/unrelated mentions. If uncertain about factual support or relevance, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${oldText}\nNEW TEXT:\n${newText}`,
         });
         state.checkCancellation();
         if (!judgement.object.safe) throw new Error("Staged mutation deferred: quoted correction failed consistency check.");
@@ -1002,7 +998,7 @@ async function runStagedMutation(
         schema: z.object({ path: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Choose the ONE existing concept whose topic is directly about the FACT. Use only an exact candidate path. If the fact is unrelated to all candidates, or ownership is truly ambiguous, return an empty path. A mere mention or negative reference is not ownership. Do not create or change any content. JSON only.\nFACT:\n${raw}\nCANDIDATES:\n${evidence}`,
+        prompt: `Choose ONE positively relevant existing concept whose topic plausibly fits the FACT. Use only an exact candidate path. If none fit, return an empty path. A mere negative/unrelated mention is not relevance. If multiple owners plausibly fit equally, choose the first candidate in search order. Do not create or change any content. JSON only.\nFACT:\n${raw}\nCANDIDATES:\n${evidence}`,
       });
       state.checkCancellation();
       if (candidates.some((candidate) => candidate.path === selection.object.path)) directPath = selection.object.path;
@@ -1030,7 +1026,7 @@ async function runStagedMutation(
           schema: z.object({ safe: z.boolean() }).strict(),
           temperature: 0,
           abortSignal: options.signal,
-          prompt: `Independent safety check for appending the caller's EXACT fact, without rewriting it. Is every assertion supported by the caller, truly about this owner rather than a more specific alternative, not already recorded, and consistent with the full existing body? The suggested path is not proof. If uncertain, safe=false.\nFACT:\n${fact}\nOWNER ${target.path} (${target.frontmatter.title ?? "untitled"}):\n${target.body}\nOTHER SEARCH HITS (titles and paths only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}`,
+          prompt: `Independent safety check for appending the caller's EXACT fact, without rewriting it. Is every assertion supported by the caller, positively relevant to this owner (even if another existing owner could also plausibly fit), not already recorded, and consistent with the full existing body? Reject negative/unrelated mentions. The suggested path is not proof. If uncertain about relevance or support, safe=false.\nFACT:\n${fact}\nOWNER ${target.path} (${target.frontmatter.title ?? "untitled"}):\n${target.body}\nOTHER SEARCH HITS (titles and paths only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}`,
         });
         state.checkCancellation();
         if (!judgement.object.safe) throw new Error("Staged mutation deferred: exact-fact append failed consistency check.");
@@ -1141,7 +1137,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent safety check. Is the proposed addition fully supported by the instruction, truly about this exact owner rather than a better-matching alternative, not already present, and consistent with every existing assertion? A suggested owner path is not proof. Answer safe=false on uncertainty, changed values, or an unrelated backlink.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nPROPOSED ADDITION:\n${p.new_text}`,
+        prompt: `Independent safety check. Is the proposed addition fully supported by the instruction, positively relevant to this owner even if another owner could also plausibly fit, not already present, and consistent with every existing assertion? Reject negative/unrelated mentions. A suggested owner path is not proof. Answer safe=false on uncertainty, changed values, or an unrelated backlink.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nPROPOSED ADDITION:\n${p.new_text}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: append failed independent consistency check.");
@@ -1175,7 +1171,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent safety check. Does the exact proposed replacement faithfully apply the instruction to the observed owner, remove the superseded claim, preserve unrelated claims, avoid a new contradiction, and truly belong to this owner rather than a better-matching alternative search hit? Metadata selection is not proof of ownership. If uncertain, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${p.old_text}\nNEW TEXT:\n${p.new_text}`,
+        prompt: `Independent safety check. Does the exact proposed replacement faithfully apply the instruction to the observed owner, remove the superseded claim, preserve unrelated claims, avoid a new contradiction, and positively fit this owner even if another search hit could also plausibly fit? Reject negative/unrelated mentions. Metadata selection is not proof of relevance. If uncertain about support or relevance, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${p.old_text}\nNEW TEXT:\n${p.new_text}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: replacement failed independent consistency check.");

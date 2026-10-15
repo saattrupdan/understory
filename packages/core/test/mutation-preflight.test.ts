@@ -524,18 +524,12 @@ describe("mutation owner preflight", () => {
     })));
     const instruction = "Correct the authoritative claim: replace old-value-id9 with new-value-id9.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: paths[3] } });
-    if (!shared) generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: paths[3],
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: paths[3],
       old_text: "old-value-id9", new_text: "new-value-id9" } })
       .mockResolvedValueOnce({ object: { safe: true, reason: "Exact correction." } });
     const result = await runMutation(kb, instruction, { preflightInput: instruction });
-    if (shared) {
-      expect(result).toMatchObject({ ok: false, status: "failed" });
-      expect((await kb.readConcept(paths[3])).body).toContain("old-value-id9");
-      expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    } else {
-      expect(result).toMatchObject({ ok: true, result: { filesChanged: [paths[3]] } });
-      expect((await kb.readConcept(paths[3])).body).toContain("new-value-id9");
-    }
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [paths[3]] } });
+    expect((await kb.readConcept(paths[3])).body).toContain("new-value-id9");
   });
 
   it.each(["unique", "shared", "negated"])('grounds an exact add in a unique existing item ID (%s)', async (caseName) => {
@@ -555,9 +549,9 @@ describe("mutation owner preflight", () => {
       ? 'FS Fotovalidering records an unrelated observation, not about godkendt_id9.'
       : 'FS Fotovalidering godkendt_id9 measured head height at 79.37 percent.';
     generateObjectMock.mockResolvedValueOnce({ object: { path: paths[3] } });
-    if (caseName === 'unique') generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    if (caseName !== 'negated') generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
-    if (caseName === 'unique') {
+    if (caseName !== 'negated') {
       expect(result).toMatchObject({ ok: true, result: { filesChanged: [paths[3]] } });
       expect((await kb.readConcept(paths[3])).body).toContain(fact);
     } else {
@@ -589,7 +583,7 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(other)).body).toContain("old-value-id9");
   });
 
-  it("rejects a metadata-selected specific owner when only shared slug words are mentioned", async () => {
+  it("accepts a metadata-selected plausible owner when topic words are shared", async () => {
     staged();
     const wrongOwner = "/projects/fs-fotovalidering-tono-onot.md";
     const rightOwner = "/projects/fs-fotovalidering-general.md";
@@ -604,9 +598,9 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockResolvedValueOnce({ object: { path: wrongOwner } })
       .mockResolvedValueOnce({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
-    expect(result).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    expect((await kb.readConcept(wrongOwner)).body).not.toContain(fact);
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [wrongOwner] } });
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect((await kb.readConcept(wrongOwner)).body).toContain(fact);
     expect((await kb.readConcept(rightOwner)).body).not.toContain(fact);
   });
 
