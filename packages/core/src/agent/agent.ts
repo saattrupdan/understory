@@ -773,18 +773,21 @@ function stagedTitleMention(input: string, title: string): boolean {
 function stagedDiscriminativeOwnerAnchor(
   input: string,
   selectedPath: string,
-  candidates: Array<{ path: string; frontmatter: { title?: string } }>,
-  hits: Array<{ path: string; title?: string; description?: string }>
+  candidates: Array<{ path: string; frontmatter: { title?: string } }>
 ): boolean {
   const index = candidates.findIndex((candidate) => candidate.path === selectedPath);
   if (index < 0) return false;
+  // Metadata descriptions often mention related concepts, rather than naming
+  // the owner. Only title/path identifiers can anchor a metadata-only choice.
+  // Generic section/type words are not useful discriminators even when unique.
+  const generic = new Set([
+    "about", "background", "general", "information", "knowledge", "memory",
+    "overview", "project", "reference", "status", "summary", "update",
+  ]);
   const terms = candidates.map((candidate) => {
-    const hit = hits.find((item) => item.path === candidate.path);
     const slug = candidate.path.split("/").pop()?.replace(/\.md$/, "").replace(/[-_]/g, " ") ?? "";
-    return new Set(stagedWords([
-      candidate.frontmatter.title ?? "", slug,
-      typeof hit?.description === "string" ? hit.description : "",
-    ].join(" ")));
+    return new Set(stagedWords([candidate.frontmatter.title ?? "", slug]
+      .join(" ")).filter((term) => !generic.has(term)));
   });
   const competitors = new Set(terms.flatMap((set, i) => i === index ? [] : [...set]));
   const inputTerms = new Set(stagedWords(input));
@@ -886,7 +889,7 @@ async function runStagedMutation(
       // Metadata selection cannot authorize a write. Require positive evidence
       // that distinguishes the selected candidate from competitors, then
       // independently verify against the complete re-read owner body.
-      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, candidates, hits)) {
+      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, candidates)) {
         throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
       }
       selectedPath = selected.path;
