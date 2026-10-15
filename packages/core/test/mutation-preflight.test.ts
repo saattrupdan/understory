@@ -1063,6 +1063,37 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
+  it("allows close wording of unrelated status history but not a changed old number", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const history = "The old baseline used 61 rows and was not independently verified accuracy.";
+    const oldParagraph = `Mimir zero-shot status: paused at 1,361 rows. ${history} ` +
+      "Danish and English choice groups use the resumable checkpoint and verified source manifest hashes. " +
+      "The unsolicited CSVs were removed, and the experimental scores remain imitation.";
+    const newParagraph = oldParagraph.replace("paused at 1,361 rows", "completed 12,000 rows")
+      .replace(history, "The old baseline used 61 rows and is not independently verified accuracy.") +
+      " Danish choice agreement is 82.75%; English choice agreement is 81.17%.";
+    const instruction = "Update Claes Mimir zero-shot status: completed 12,000 rows; Danish choice agreement 82.75%; English choice agreement 81.17%.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, oldParagraph, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: newParagraph } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Old 61-row baseline remains unchanged." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(newParagraph);
+
+    const changedNumber = newParagraph.replace("old baseline used 61 rows", "old baseline used 62 rows");
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, oldParagraph, "reset");
+    vi.mocked(generateObjectMock).mockReset();
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: changedNumber } })
+      .mockResolvedValueOnce({ object: { new_text: changedNumber } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
+    expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
+  });
+
   it("rejects a multi-clause status rewrite if the old paragraph has another owner", async () => {
     staged();
     const owner = "/projects/claes-jev-diagnostics.md";

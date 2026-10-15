@@ -795,9 +795,16 @@ function stagedStatusClauseIssue(before: string, after: string, instruction: str
   const newSet = new Set(newClauses);
   for (const clause of oldClauses) {
     if (newSet.has(clause)) continue;
-    if (stagedOverlap(clause, instruction) < 0.4) return "old clause not requested";
     const closest = newClauses.reduce((best, candidate) =>
       stagedOverlap(clause, candidate) > stagedOverlap(clause, best) ? candidate : best, "");
+    const numbers = (text: string): string[] =>
+      [...text.matchAll(/\b\d+(?:[.,]\d+)?%?\b/g)].map((match) => match[0]).sort();
+    const nearlyPreserved = stagedOverlap(clause, closest) >= 0.85 &&
+      stagedOverlap(closest, clause) >= 0.85 &&
+      JSON.stringify(numbers(clause)) === JSON.stringify(numbers(closest));
+    if (stagedOverlap(clause, instruction) < 0.4 && !nearlyPreserved) {
+      return `old clause not requested (closest=${stagedOverlap(clause, closest).toFixed(2)}/${stagedOverlap(closest, clause).toFixed(2)}, numbers=${JSON.stringify(numbers(clause)) === JSON.stringify(numbers(closest))})`;
+    }
     const removedNegations = stagedWords(clause).filter((word) =>
       negations.has(word) && !stagedWords(closest).includes(word));
     if (removedNegations.length && !requested.some((part) =>
@@ -1649,7 +1656,7 @@ async function runStagedMutation(
       // named subject. This is not a general multi-clause replacement license.
       let statusClauseIssue = statusWords.length >= 2 && statusParagraph
         ? stagedStatusClauseIssue(p.old_text, p.new_text, raw) : undefined;
-      if (statusUniqueAcrossHits && statusClauseIssue === "old clause not requested" &&
+      if (statusUniqueAcrossHits && statusClauseIssue?.startsWith("old clause not requested") &&
           p.old_text.length >= 200 && p.old_text.length <= 4_000 && p.new_text.length <= 4_000 &&
           stagedOverlap(p.old_text, p.new_text) >= 0.7) {
         const repair = await generateObject({
