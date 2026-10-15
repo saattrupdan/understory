@@ -1035,10 +1035,17 @@ async function runStagedMutation(
       }
       if (!target.body.includes(fact)) {
         const wouldOverflow = `${target.body.trimEnd()}\n\n${fact}\n`.length > STAGED_MAX_OWNER_CHARS;
-        // A broad search can select an unrelated, full project or a continuation
-        // whose generic prefix matches the fact. Do not extend either without
-        // an explicit owner hint or a positive mention of the full owner title.
+        // A broad search can select an unrelated, full project or continuation.
+        // An existing item ID in a continuation's complete body is stronger
+        // evidence than its generic project prefix, even without a title hint.
+        const itemIds = fact.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [];
+        const negativeSpans = [...fact.matchAll(/\b(?:unrelated to|not about|not)\s+([^.!?;,:]+)/gi)]
+          .map((match) => match[1].toLowerCase());
+        const groundedContinuation = target.path.includes("-continuation-") && !wouldOverflow &&
+          itemIds.some((id) => target.body.includes(id) &&
+            !negativeSpans.some((span) => span.includes(id.toLowerCase())));
         if (!hintedPath && (wouldOverflow || target.path.includes("-continuation-")) &&
+            !groundedContinuation &&
             (!target.frontmatter.title || !stagedTitleMention(raw, target.frontmatter.title))) {
           throw new Error("Staged mutation deferred: unhinted continuation owner was not explicitly named.");
         }

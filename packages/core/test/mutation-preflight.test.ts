@@ -338,6 +338,24 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(wrongPath)).body).not.toContain(fact);
   });
 
+  it("appends to a selected continuation that already records the fact's item ID", async () => {
+    await billingFixture(); staged();
+    const continuation = "/apis/billing-api-continuation-abc123.md";
+    await kb.writeConcept(continuation, { type: "Concept", title: "Billing API — Continuation abc123" },
+      "The support test for billing_case9 was recorded here.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: continuation, type: "Concept", title: "Billing API — Continuation abc123",
+      score: 100, confidence: 100, confidenceQualified: true,
+    }]);
+    const fact = "Billing API billing_case9 records an additional verified support observation.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: continuation } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
+      ok: true, result: { filesChanged: [continuation] },
+    });
+    expect((await kb.readConcept(continuation)).body).toContain(fact);
+  });
+
   it("does not create a continuation after the owner changes during verification", async () => {
     await billingFixture(); staged();
     const ownerPath = "/apis/billing-api.md";
