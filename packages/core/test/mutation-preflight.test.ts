@@ -1007,6 +1007,86 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(selectedPath)).body).toContain("new-value-id9");
   });
 
+  it("updates a uniquely owned named run-status paragraph with several metrics", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const competitor = "/papers/dfm-mimir-v1.md";
+    const oldParagraph = "Mimir zero-shot run status: paused at 1,361 rows. " +
+      "The Danish and English choice and score evaluations use the resumable checkpoint. " +
+      "Jev agreement reflects imitation rather than independently verified accuracy. " +
+      "The two unsolicited CSV files were removed; source manifest hashes are retained.";
+    const newParagraph = oldParagraph.replace("paused at 1,361 rows", "completed all 12,000 rows") +
+      " Danish choice agreement is 82.75% (Brier 0.02827); English choice agreement is 81.17% (Brier 0.02934).";
+    const instruction = "Update Claes Mimir zero-shot status: completed all 12,000 rows; Danish choice agreement 82.75%, Brier 0.02827; English choice agreement 81.17%, Brier 0.02934.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" },
+      `${oldParagraph}\n\nUnrelated Claes work remains unchanged.`, "seed");
+    await kb.writeConcept(competitor, { type: "Paper", title: "DFM Mimir v1" },
+      "Mimir zero-shot is an imitation experiment, not a verified accuracy result.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, competitor].map((path, i) => ({
+      path, type: i ? "Paper" : "Project", score: 10 - i,
+    })));
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: newParagraph } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "The full status paragraph is corrected." } });
+    const outcome = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+    expect(outcome).toMatchObject({ result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(newParagraph);
+    expect((await kb.readConcept(owner)).body).toContain("Unrelated Claes work remains unchanged.");
+    expect((await kb.readConcept(competitor)).body).toContain("not a verified accuracy result");
+  });
+
+  it("rejects a multi-clause status rewrite if the old paragraph has another owner", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const competitor = "/papers/dfm-mimir-v1.md";
+    const oldParagraph = "Mimir zero-shot run status: paused at 1,361 rows. " +
+      "Danish and English choice agreement reflect the resumable evaluation checkpoint. " +
+      "Jev agreement remains imitation, not independently verified accuracy. " +
+      "Source manifest hashes and removed unsolicited CSVs remain recorded.";
+    const newParagraph = oldParagraph.replace("paused at 1,361 rows", "completed all 12,000 rows") +
+      " Danish agreement is 82.75%; English agreement is 81.17%.";
+    const instruction = "Update Claes Mimir zero-shot status: completed all 12,000 rows; Danish agreement 82.75%; English agreement 81.17%.";
+    for (const conceptPath of [owner, competitor]) {
+      await kb.writeConcept(conceptPath, { type: "Project", title: conceptPath === owner ? "Claes Mimir zero-shot status" : "DFM Mimir v1" },
+        oldParagraph, "seed");
+    }
+    vi.spyOn(kb, "search").mockResolvedValue([owner, competitor].map((path, i) => ({
+      path, type: "Project", score: 10 - i,
+    })));
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: newParagraph } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
+    expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
+    expect((await kb.readConcept(competitor)).body).toContain(oldParagraph);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a named status that moves a negation onto an unrelated clause", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const oldParagraph = "Mimir zero-shot status: the run paused at 1,361 rows. " +
+      "Jev agreement is not independently verified accuracy. " +
+      "The unsolicited CSVs were removed. " +
+      "The model computes forced-code probabilities, which remain experimental. " +
+      "The resumable manifest retains source hashes for the 32-language evaluation.";
+    const newParagraph = oldParagraph.replace("paused at 1,361 rows", "completed 12,000 rows")
+      .replace("Jev agreement is not independently verified accuracy", "Jev agreement is independently verified accuracy")
+      .replace("The unsolicited CSVs were removed", "The unsolicited CSVs were not removed");
+    const instruction = "Update Claes Mimir zero-shot status: the run completed 12,000 rows. Jev agreement is not independently verified accuracy. The unsolicited CSVs remain deleted.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" },
+      oldParagraph, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: newParagraph } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Incorrect approval must not authorize this edit." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
+    expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
   it("locates a unique named incident section outside the broad hits", async () => {
     staged();
     const owner = "/repos/pi-agent/memory-async.md";
