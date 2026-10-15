@@ -320,9 +320,9 @@ describe("mutation owner preflight", () => {
     expect((await fs.readdir(path.join(root, "apis"))).filter((name) => name.includes("continuation"))).toHaveLength(1);
   });
 
-  it("does not extend an unhinted, unrelated continuation despite a shared project prefix", async () => {
+  it("routes an unrelated unhinted continuation to its relevant parent", async () => {
     await billingFixture(); staged();
-    const wrongPath = "/apis/billing-api-continuation-abc123.md";
+    const wrongPath = "/apis/billing-api-continuation-abc123abc123abcd.md";
     await kb.writeConcept(wrongPath, { type: "Concept", title: "Billing API Legacy — Continuation abc123" },
       "The legacy billing project was retired.", "seed");
     vi.spyOn(kb, "search").mockResolvedValue([{
@@ -333,14 +333,15 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockResolvedValueOnce({ object: { path: wrongPath } })
       .mockResolvedValueOnce({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
-    expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("unhinted continuation owner") });
-    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
     expect((await kb.readConcept(wrongPath)).body).not.toContain(fact);
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(fact);
   });
 
   it("appends to a selected continuation that already records the fact's item ID", async () => {
     await billingFixture(); staged();
-    const continuation = "/apis/billing-api-continuation-abc123.md";
+    const continuation = "/apis/billing-api-continuation-abc123abc123abcd.md";
     await kb.writeConcept(continuation, { type: "Concept", title: "Billing API — Continuation abc123" },
       "The support test for billing_case9 was recorded here.", "seed");
     vi.spyOn(kb, "search").mockResolvedValue([{

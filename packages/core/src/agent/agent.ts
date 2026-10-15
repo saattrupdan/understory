@@ -1026,8 +1026,28 @@ async function runStagedMutation(
     }
     if (directPath && options.directAdd && options.preflightInput && !correction &&
         raw.trim().length >= 30 && raw.trim().length <= 4_000) {
-      const target = candidates.find((candidate) => candidate.path === directPath)!;
+      let target = candidates.find((candidate) => candidate.path === directPath)!;
       const fact = raw.trim();
+      // A continuation may match only by a broad project prefix. When it does
+      // not mention the requested item, verify against its parent instead of
+      // appending to an unrelated continuation or dropping the fact.
+      const itemIds = fact.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [];
+      const parentPath = target.path.replace(/-continuation-[a-f0-9]{8,16}\.md$/, ".md");
+      let derivedParent = false;
+      if (!hintedPath && parentPath !== target.path &&
+          !itemIds.some((id) => target.body.includes(id)) &&
+          await kb.bundle.exists(parentPath)) {
+        const parent = await kb.readConcept(parentPath);
+        recorder.record("read_concept", parent.path, [parent.path]);
+        state.checkCancellation();
+        if (parent.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: parent owner body exceeds evidence limit.");
+        }
+        if (stagedOwnerAnchor(fact, parent.path)) {
+          target = { path: parent.path, frontmatter: parent.frontmatter, body: parent.body };
+          derivedParent = true;
+        }
+      }
       if (!(stagedOwnerAnchor(fact, target.path) || (verifiedMetadataOwner && selectedPath === target.path)) ||
           (target.frontmatter.title && fact.toLowerCase().includes(target.frontmatter.title.toLowerCase()) &&
             !stagedTitleMention(fact, target.frontmatter.title))) {
@@ -1038,14 +1058,13 @@ async function runStagedMutation(
         // A broad search can select an unrelated, full project or continuation.
         // An existing item ID in a continuation's complete body is stronger
         // evidence than its generic project prefix, even without a title hint.
-        const itemIds = fact.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [];
         const negativeSpans = [...fact.matchAll(/\b(?:unrelated to|not about|not)\s+([^.!?;,:]+)/gi)]
           .map((match) => match[1].toLowerCase());
         const groundedContinuation = target.path.includes("-continuation-") && !wouldOverflow &&
           itemIds.some((id) => target.body.includes(id) &&
             !negativeSpans.some((span) => span.includes(id.toLowerCase())));
         if (!hintedPath && (wouldOverflow || target.path.includes("-continuation-")) &&
-            !groundedContinuation &&
+            !groundedContinuation && !derivedParent &&
             (!target.frontmatter.title || !stagedTitleMention(raw, target.frontmatter.title))) {
           throw new Error("Staged mutation deferred: unhinted continuation owner was not explicitly named.");
         }
