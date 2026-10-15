@@ -455,13 +455,35 @@ describe("mutation owner preflight", () => {
       score: 10, confidence: 10, confidenceQualified: false,
     })));
     const fact = "Billing logs request IDs for charges created by support tooling.";
-    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } });
-    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    generateObjectMock.mockResolvedValueOnce({ object: { path: playbook } });
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { safe: false } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    generateObjectMock.mockResolvedValueOnce({ object: { path: playbook } })
+      .mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
     expect((await kb.readConcept(api)).body).not.toContain(fact);
+    expect((await kb.readConcept(playbook)).body).not.toContain(fact);
+  });
+
+  it("chooses a relevant owner when the metadata selector abstains on an equal fit", async () => {
+    staged();
+    const api = "/apis/billing-api.md";
+    const playbook = "/playbooks/oncall-billing.md";
+    await kb.writeConcept(api, { type: "API Endpoint", title: "Billing API" }, "Billing API context. ".repeat(2_300), "seed");
+    await kb.writeConcept(playbook, { type: "Playbook", title: "Billing On-call" }, "On-call context. ".repeat(2_700), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([api, playbook].map((conceptPath) => ({
+      path: conceptPath, type: "Concept", title: conceptPath === api ? "Billing API" : "Billing On-call",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "Billing logs request IDs for charges created by support tooling.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
+      ok: true, result: { filesChanged: [api] },
+    });
+    expect((await kb.readConcept(api)).body).toContain(fact);
     expect((await kb.readConcept(playbook)).body).not.toContain(fact);
   });
 
@@ -583,25 +605,25 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(other)).body).toContain("old-value-id9");
   });
 
-  it("accepts a metadata-selected plausible owner when topic words are shared", async () => {
+  it("accepts one of two equally plausible metadata owners", async () => {
     staged();
-    const wrongOwner = "/projects/fs-fotovalidering-tono-onot.md";
-    const rightOwner = "/projects/fs-fotovalidering-general.md";
-    await kb.writeConcept(wrongOwner, { type: "Project", title: "FS Fotovalidering Tono Onot" }, "Project context. ".repeat(2_700), "seed");
-    await kb.writeConcept(rightOwner, { type: "Project", title: "FS Fotovalidering General" }, "General project context. ".repeat(2_700), "seed");
-    vi.spyOn(kb, "search").mockResolvedValue([wrongOwner, rightOwner].map((conceptPath) => ({
+    const firstOwner = "/projects/fs-fotovalidering-tests.md";
+    const secondOwner = "/projects/fs-fotovalidering-review.md";
+    await kb.writeConcept(firstOwner, { type: "Project", title: "FS Fotovalidering Tests" }, "Project context. ".repeat(2_700), "seed");
+    await kb.writeConcept(secondOwner, { type: "Project", title: "FS Fotovalidering Review" }, "Review context. ".repeat(2_700), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([firstOwner, secondOwner].map((conceptPath) => ({
       path: conceptPath, type: "Project",
-      title: conceptPath === wrongOwner ? "FS Fotovalidering Tono Onot" : "FS Fotovalidering General",
+      title: conceptPath === firstOwner ? "FS Fotovalidering Tests" : "FS Fotovalidering Review",
       score: 10, confidence: 10, confidenceQualified: false,
     })));
-    const fact = "FS Fotovalidering experiment 69 records a general experiment observation.";
-    generateObjectMock.mockResolvedValueOnce({ object: { path: wrongOwner } })
+    const fact = "FS Fotovalidering experiment 69 records a project observation.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: firstOwner } })
       .mockResolvedValueOnce({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
-    expect(result).toMatchObject({ ok: true, result: { filesChanged: [wrongOwner] } });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [firstOwner] } });
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
-    expect((await kb.readConcept(wrongOwner)).body).toContain(fact);
-    expect((await kb.readConcept(rightOwner)).body).not.toContain(fact);
+    expect((await kb.readConcept(firstOwner)).body).toContain(fact);
+    expect((await kb.readConcept(secondOwner)).body).not.toContain(fact);
   });
 
   it("rejects every token of a negated multiword owner mention despite verifier approval", async () => {
@@ -641,7 +663,7 @@ describe("mutation owner preflight", () => {
       path: conceptPath, type: "Project", title: titles[i],
       score: 10, confidence: 10, confidenceQualified: false,
     })));
-    const fact = "Onot experiment 69 records a camera calibration observation for this project.";
+    const fact = "Onot archive experiment 69 records a camera calibration observation for this project.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: paths[0] } })
       .mockResolvedValueOnce({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });

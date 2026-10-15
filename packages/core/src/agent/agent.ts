@@ -795,7 +795,16 @@ function stagedDiscriminativeOwnerAnchor(
   const inputTerms = new Set(stagedWords(input));
   const negatedMentions = [...input.matchAll(/\b(?:unrelated to|rather than changing|not about|do not change|instead of)\s+(?:the\s+)?([^.!?;,:]+)/gi)]
     .map((match) => new Set(stagedWords(match[1])));
-  const titleAnchor = [...terms[index]].some((term) => {
+  const selectedTerms = [...terms[index]];
+  const otherTerms = new Set(terms.flatMap((set, i) => i === index ? [] : [...set]));
+  const specificTerms = selectedTerms.filter((term) => !otherTerms.has(term));
+  if (specificTerms.length && negatedMentions.some((mention) => specificTerms.every((term) => mention.has(term)))) return false;
+  // Shared topics are acceptable, but not when the instruction points much
+  // more specifically to a different retained owner.
+  const score = (words: Set<string>): number => words.size
+    ? [...words].filter((term) => inputTerms.has(term)).length / words.size : 0;
+  if (terms.some((words, i) => i !== index && score(words) > score(terms[index]) + 0.2)) return false;
+  const titleAnchor = selectedTerms.some((term) => {
     if (!inputTerms.has(term)) return false;
     return !negatedMentions.some((mention) => mention.has(term));
   });
@@ -912,7 +921,9 @@ async function runStagedMutation(
         prompt: `Read-only owner selection. Choose exactly one positively relevant existing concept from the candidate metadata. Any owner whose topic plausibly fits the fact is acceptable; do not reject a relevant owner just because another could also fit. If none fit, return an empty path. When multiple owners fit equally, choose the first in candidate order. A mere negative/unrelated mention is not relevance. This choice does not authorize a write. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATE METADATA:\n${JSON.stringify(metadata)}`,
       });
       state.checkCancellation();
-      const selectedHit = hits.find((hit) => hit.path === selection.object.path);
+      const selectedHit = hits.find((hit) => hit.path === selection.object.path) ??
+        (selection.object.path === "" ? hits.find((hit) =>
+          (hit.title && stagedTitleMention(raw, hit.title)) || stagedOwnerAnchor(raw, hit.path)) : undefined);
       if (!selectedHit) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
       selectedPath = selectedHit.path;
       // Metadata selection cannot authorize a write. Re-read the selected hit
