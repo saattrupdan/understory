@@ -389,6 +389,98 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body).not.toContain(fact);
   });
 
+  it("creates an exact fact at a distinct missing hinted path despite generic unrelated search hits", async () => {
+    staged();
+    const unrelated = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
+    await kb.writeConcept(unrelated, { type: "Project", title: "Synthetic Dataset Generation" },
+      "Synthetic datasets are generated for FS Fotovalidering.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: unrelated, type: "Project", title: "Synthetic Dataset Generation",
+      score: 100, confidence: 100, confidenceQualified: true,
+    }]);
+    const hintedPath = "/projects/claes-jev-diagnostics.md";
+    const fact = "Claes Jev diagnostics use a dedicated calibration process for independent validation.";
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain("FULL EXISTING SEARCH EVIDENCE");
+      expect(request.prompt).toContain("Synthetic datasets are generated");
+      expect(request.prompt).toContain(fact);
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, fact, { ownerHint: hintedPath, preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [hintedPath] } });
+    expect((await kb.readConcept(hintedPath)).body).toBe(`${fact}\\n`);
+    expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
+  });
+
+  it("rejects a missing hinted path unrelated to the exact fact", async () => {
+    staged();
+    await kb.writeConcept("/projects/general-datasets.md", { type: "Project", title: "General Datasets" },
+      "General dataset notes.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: "/projects/general-datasets.md", type: "Project", title: "General Datasets",
+      score: 10, confidence: 10, confidenceQualified: false,
+    }]);
+    const fact = "Claes Jev diagnostics use a dedicated calibration process for independent validation.";
+    expect(await runMutation(kb, fact, {
+      ownerHint: "/projects/unrelated-release-notes.md", preflightInput: fact, directAdd: true,
+    })).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+    expect(await kb.bundle.exists("/projects/unrelated-release-notes.md")).toBe(false);
+  });
+
+  it("does not create a missing hinted concept when the independent check detects a duplicate or unsafe fact", async () => {
+    staged();
+    const existing = "/projects/claes-jev-history.md";
+    await kb.writeConcept(existing, { type: "Project", title: "Claes Jev History" },
+      "Claes Jev diagnostics use a dedicated calibration process for independent validation.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: existing, type: "Project", title: "Claes Jev History", score: 10, confidence: 10,
+      confidenceQualified: false,
+    }]);
+    const hintedPath = "/projects/claes-jev-diagnostics.md";
+    const fact = "Claes Jev diagnostics use a dedicated calibration process for independent validation.";
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fact, { ownerHint: hintedPath, preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(await kb.bundle.exists(hintedPath)).toBe(false);
+    expect((await kb.readConcept(existing)).body.match(/dedicated calibration/g)).toHaveLength(1);
+  });
+
+  it("does not create a missing hinted concept when the fact fails the independent safety check", async () => {
+    staged();
+    const existing = "/projects/reference.md";
+    await kb.writeConcept(existing, { type: "Project", title: "Reference" }, "Reference context.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: existing, type: "Project", title: "Reference", score: 10, confidence: 10,
+      confidenceQualified: false,
+    }]);
+    const hintedPath = "/projects/claes-jev-diagnostics.md";
+    const fact = "Claes Jev diagnostics use a dedicated calibration process for independent validation.";
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fact, { ownerHint: hintedPath, preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(await kb.bundle.exists(hintedPath)).toBe(false);
+  });
+
+  it("does not overwrite a missing hinted path created concurrently after safety approval", async () => {
+    staged();
+    const existing = "/projects/reference.md";
+    await kb.writeConcept(existing, { type: "Project", title: "Reference" }, "Reference context.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: existing, type: "Project", title: "Reference", score: 10, confidence: 10,
+      confidenceQualified: false,
+    }]);
+    const hintedPath = "/projects/claes-jev-diagnostics.md";
+    const fact = "Claes Jev diagnostics use a dedicated calibration process for independent validation.";
+    generateObjectMock.mockImplementationOnce(async () => {
+      await kb.writeConcept(hintedPath, { type: "Project", title: "Concurrent" }, "Concurrent content.", "race");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { ownerHint: hintedPath, preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(hintedPath)).body).toBe("Concurrent content.\\n");
+  });
+
   it("allows a fact explicitly naming the selected project despite generic dataset terms", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
@@ -483,7 +575,7 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
       .mockResolvedValueOnce({ object: { ...baseProposal, action: "defer", reason: "No owner." } });
     expect(await runMutation(kb, "Remember a billing incident response fact.", { ownerHint: "/other/unsearched.md", preflightInput: "Remember a billing incident response fact.", directAdd: true })).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
   it("appends to a relevant existing hinted owner even when broad search ranks another", async () => {

@@ -933,6 +933,62 @@ async function runStagedMutation(
     state.checkCancellation();
     const first = hits[0];
     const second = hits[1];
+    const requestedPath = options.ownerHint;
+    const missingDirectPath = !!(options.directAdd && options.preflightInput && requestedPath &&
+      !(await kb.bundle.exists(requestedPath)));
+    if (missingDirectPath && (correction || raw.trim().length < 30 || raw.trim().length > 4_000)) {
+      throw new Error("Staged mutation deferred: missing suggested path cannot safely own this fact.");
+    }
+    if (missingDirectPath) {
+      const generic = new Set(["about", "and", "for", "from", "general", "information", "knowledge", "memory", "of", "project", "the", "to"]);
+      const pathTerms = new Set(stagedWords(path.posix.basename(requestedPath!, ".md").replace(/[-_]/g, " "))
+        .filter((term) => !generic.has(term)));
+      const factTerms = new Set(stagedWords(raw));
+      const distinctiveOverlap = [...pathTerms].filter((term) => factTerms.has(term));
+      // The proposed new concept must be specifically named by the caller's fact;
+      // generic search overlap is not evidence that an arbitrary path belongs.
+      if (distinctiveOverlap.length < 2 || hits.length === 0) {
+        throw new Error("Staged mutation deferred: missing suggested path lacks a positive fact-topic anchor.");
+      }
+      const evidence = [];
+      for (const hit of hits) {
+        const concept = await kb.readConcept(hit.path);
+        recorder.record("read_concept", concept.path, [concept.path]);
+        state.checkCancellation();
+        if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: competing owner body exceeds evidence limit.");
+        }
+        evidence.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
+      }
+      const evidenceText = JSON.stringify(evidence);
+      if (evidenceText.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
+        throw new Error("Staged mutation deferred: new-concept evidence exceeds prompt budget.");
+      }
+      const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+      modelChain = resolved.modelChain;
+      const judgement = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent safety and duplication check for creating a new concept at the caller's missing suggested path. Is the exact caller fact supported as written, positively about the distinctive path topic, and not already stated or substantially represented by any existing owner/claim in the FULL bounded evidence? Reject if an existing owner is an exact or similar fit, if the fact duplicates an existing claim, or if relevance/support is uncertain. Do not infer facts beyond the exact caller fact. Return safe=true only when all checks pass.\nFACT:\n${raw.trim()}\nSUGGESTED NEW PATH: ${requestedPath}\nFULL EXISTING SEARCH EVIDENCE:\n${evidenceText}`,
+      });
+      state.checkCancellation();
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: new concept failed independent safety or duplication check.");
+      const anchor = evidence[0];
+      const title = path.posix.basename(requestedPath!, ".md").split(/[-_]/).filter(Boolean)
+        .map((part) => part[0].toUpperCase() + part.slice(1)).join(" ").slice(0, 256);
+      await kb.createConceptIfUnchanged(
+        anchor.path, sha256(anchor.body), requestedPath!,
+        { type: "Knowledge", title, description: raw.trim().slice(0, 400) },
+        `${raw.trim()}\n`, "Staged mutation: create exact verified fact", options.signal,
+        (writtenPath) => { changed = [writtenPath]; }
+      );
+      const summary = `Staged mutation changed ${changed.join(", ")}.`;
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+    }
     // A caller-supplied path is a locator, not a search-ranking requirement.
     // Read it only when it already exists, then subject it to the same complete
     // evidence, independent consistency and stale-body checks as any other owner.
