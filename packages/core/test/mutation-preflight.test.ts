@@ -1037,6 +1037,32 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(competitor)).body).toContain("not a verified accuracy result");
   });
 
+  it("repairs a named run-status rewrite that drops unrelated history", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const history = "The initial comparison was an imitation experiment and not independently verified accuracy.";
+    const oldParagraph = `Mimir zero-shot status: paused at 1,361 rows. ${history} ` +
+      "The Danish choice and English choice groups use the resumable checkpoint. " +
+      "The two unsolicited CSVs were removed, and the source manifest retains its hashes.";
+    const broad = oldParagraph.replace("paused at 1,361 rows", "completed 12,000 rows")
+      .replace(history, "The initial comparison used the resumable checkpoint") +
+      " Danish choice agreement is 82.75%; English choice agreement is 81.17%.";
+    const repaired = oldParagraph.replace("paused at 1,361 rows", "completed 12,000 rows") +
+      " Danish choice agreement is 82.75%; English choice agreement is 81.17%.";
+    const instruction = "Update Claes Mimir zero-shot status: completed 12,000 rows; Danish choice agreement 82.75%; English choice agreement 81.17%.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, oldParagraph, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: broad } })
+      .mockResolvedValueOnce({ object: { new_text: repaired } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Old history preserved and status updated." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(repaired);
+    expect((await kb.readConcept(owner)).body).toContain(history);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
   it("rejects a multi-clause status rewrite if the old paragraph has another owner", async () => {
     staged();
     const owner = "/projects/claes-jev-diagnostics.md";

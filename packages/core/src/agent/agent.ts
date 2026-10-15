@@ -1647,8 +1647,22 @@ async function runStagedMutation(
       // one paragraph. The exact old span must stay inside that one paragraph,
       // be unique across complete observed owners, and positively match the
       // named subject. This is not a general multi-clause replacement license.
-      const statusClauseIssue = statusWords.length >= 2 && statusParagraph
+      let statusClauseIssue = statusWords.length >= 2 && statusParagraph
         ? stagedStatusClauseIssue(p.old_text, p.new_text, raw) : undefined;
+      if (statusUniqueAcrossHits && statusClauseIssue === "old clause not requested" &&
+          p.old_text.length >= 200 && p.old_text.length <= 4_000 && p.new_text.length <= 4_000 &&
+          stagedOverlap(p.old_text, p.new_text) >= 0.7) {
+        const repair = await generateObject({
+          model: proposer.model,
+          schema: z.object({ new_text: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Repair ONLY this uniquely owned run-status span. Keep every OLD clause that the instruction does not address VERBATIM, including qualifiers, removed artifacts and cautions. Change only requested run status and metric claims; retain every unrelated claim in its original place. Return one paragraph, with no invented facts. If that is impossible return an empty new_text. JSON only.\nINSTRUCTION:\n${raw}\nOLD STATUS:\n${p.old_text}\nREJECTED REWRITE:\n${p.new_text}`,
+        });
+        state.checkCancellation();
+        p.new_text = repair.object.new_text;
+        statusClauseIssue = stagedStatusClauseIssue(p.old_text, p.new_text, raw);
+      }
       const boundedStatus = statusWords.length >= 2 &&
         statusWords.every((word) => oldStatusWords.has(word) || identityWords.has(word)) &&
         statusWords.filter((word) => oldStatusWords.has(word)).length >= 2 &&
