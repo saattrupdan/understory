@@ -465,6 +465,50 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(playbook)).body).not.toContain(fact);
   });
 
+  it.each([3, 4])("re-reads and accepts the selected metadata hit at rank %s", async (rank) => {
+    staged();
+    const paths = Array.from({ length: 5 }, (_, i) => `/projects/candidate-${i + 1}.md`);
+    const titles = ["Project Alpha", "Project Beta", "Project Gamma", "FS Fotovalidering Godkendt ID9", "FS Fotovalidering Backup ID8"];
+    for (let i = 0; i < paths.length; i++) {
+      const body = i === rank ? "The authoritative SHA is old-value-id9." : `Candidate ${i + 1} context. `.repeat(2_100);
+      await kb.writeConcept(paths[i], { type: "Project", title: titles[i] }, body, "seed");
+    }
+    vi.spyOn(kb, "search").mockResolvedValue(paths.map((conceptPath, i) => ({
+      path: conceptPath, type: "Project", title: titles[i], score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const selectedPath = paths[rank];
+    const fact = `Correct FS Fotovalidering ${rank === 3 ? "Godkendt ID9" : "Backup ID8"}: replace old-value-id9 with new-value-id9.`;
+    generateObjectMock.mockResolvedValueOnce({ object: { path: selectedPath } })
+      .mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: selectedPath,
+        old_text: "old-value-id9", new_text: "new-value-id9" } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Exact local correction." } });
+    const result = await runMutation(kb, fact, { preflightInput: fact });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [selectedPath] } });
+    expect((await kb.readConcept(selectedPath)).body).toContain("new-value-id9");
+  });
+
+  it("uses a unique exact old identifier as title-less update evidence", async () => {
+    staged();
+    const selected = "/projects/authoritative-record.md";
+    const competitors = ["/projects/other-record.md", "/projects/archive-record.md"];
+    await kb.writeConcept(selected, { type: "Project" }, "The authoritative SHA is old-value-id9.", "seed");
+    for (const competitor of competitors) {
+      await kb.writeConcept(competitor, { type: "Project", title: "Other Record" }, "Other project details. ".repeat(2_500), "seed");
+    }
+    vi.spyOn(kb, "search").mockResolvedValue([selected, ...competitors].map((conceptPath) => ({
+      path: conceptPath, type: "Project", title: conceptPath === selected ? "" : "Other Record",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const instruction = "Correct the authoritative record: replace old-value-id9 with new-value-id9.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: selected } })
+      .mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: selected,
+        old_text: "old-value-id9", new_text: "new-value-id9" } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Exact claim corrected." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction })).toMatchObject({
+      ok: true, result: { filesChanged: [selected] },
+    });
+  });
+
   it("rejects a metadata-selected specific owner when only shared slug words are mentioned", async () => {
     staged();
     const wrongOwner = "/projects/fs-fotovalidering-tono-onot.md";
@@ -611,6 +655,17 @@ describe("mutation owner preflight", () => {
     });
     expect(await runMutation(kb, fact, { ownerHint: "/apis/billing-api.md", preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
+  });
+
+  it("prioritizes a distinctive late identifier in the bounded mutation search", async () => {
+    await billingFixture(); staged();
+    const search = vi.spyOn(kb, "search");
+    const fact = "FS Fotovalidering godkendt_id9 head-height detail is approved for review.";
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    await runMutation(kb, `Remember the detailed project status and operational follow-up: ${fact}`, {
+      ownerHint: "/apis/billing-api.md", preflightInput: fact, directAdd: true,
+    });
+    expect(search.mock.calls[0][0].split(" ")[0]).toBe("godkendt_id9");
   });
 
   it("matches a hyphenated entity to its owner slug on an unhinted add", async () => {
