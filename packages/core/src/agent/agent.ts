@@ -773,25 +773,26 @@ function stagedTitleMention(input: string, title: string): boolean {
 function stagedDiscriminativeOwnerAnchor(
   input: string,
   selectedPath: string,
-  candidates: Array<{ path: string; frontmatter: { title?: string } }>
+  candidates: Array<{ path: string; frontmatter: { title?: string } }>,
+  hits: Array<{ path: string; title?: string }>
 ): boolean {
-  const index = candidates.findIndex((candidate) => candidate.path === selectedPath);
-  if (index < 0) return false;
-  // Metadata descriptions often mention related concepts, rather than naming
-  // the owner. Only title/path identifiers can anchor a metadata-only choice.
-  // Generic section/type words are not useful discriminators even when unique.
+  const index = hits.findIndex((hit) => hit.path === selectedPath);
+  if (index < 0 || !candidates.some((candidate) => candidate.path === selectedPath)) return false;
+  // Compare against every retained hit, including those whose bodies could
+  // not fit together in the bounded prompt. Descriptions can mention related
+  // concepts and cannot establish owner identity.
   const generic = new Set([
     "about", "background", "general", "information", "knowledge", "memory",
     "overview", "project", "reference", "status", "summary", "update",
   ]);
-  const terms = candidates.map((candidate) => {
-    const slug = candidate.path.split("/").pop()?.replace(/\.md$/, "").replace(/[-_]/g, " ") ?? "";
-    return new Set(stagedWords([candidate.frontmatter.title ?? "", slug]
+  const terms = hits.map((hit) => {
+    const slug = hit.path.split("/").pop()?.replace(/\.md$/, "").replace(/[-_]/g, " ") ?? "";
+    return new Set(stagedWords([hit.title ?? "", slug]
       .join(" ")).filter((term) => !generic.has(term)));
   });
   const competitors = new Set(terms.flatMap((set, i) => i === index ? [] : [...set]));
   const inputTerms = new Set(stagedWords(input));
-  const negatedMentions = [...input.matchAll(/\\b(?:unrelated to|rather than changing|not about|do not change|instead of)\\s+(?:the\\s+)?([^.!?;,:]+)/gi)]
+  const negatedMentions = [...input.matchAll(/\b(?:unrelated to|rather than changing|not about|do not change|instead of)\s+(?:the\s+)?([^.!?;,:]+)/gi)]
     .map((match) => new Set(stagedWords(match[1])));
   return [...terms[index]].some((term) => {
     if (competitors.has(term) || !inputTerms.has(term)) return false;
@@ -846,9 +847,9 @@ async function runStagedMutation(
       if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
     } else if (hits.length > 0) {
-      // Give the proposer complete bodies for up to five competing owners.
-      // Its choice is checked again against the alternative titles below.
-      for (const hit of hits.slice(0, 5)) {
+      // Give the proposer complete bodies for up to three competing owners.
+      // All five hit titles are still checked as potential competitors.
+      for (const hit of hits.slice(0, 3)) {
         const concept = await kb.readConcept(hit.path);
         recorder.record("read_concept", concept.path, [concept.path]);
         candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
@@ -890,7 +891,7 @@ async function runStagedMutation(
       // Metadata selection cannot authorize a write. Require positive evidence
       // that distinguishes the selected candidate from competitors, then
       // independently verify against the complete re-read owner body.
-      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, candidates)) {
+      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, candidates, hits)) {
         throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
       }
       selectedPath = selected.path;

@@ -512,10 +512,10 @@ describe("mutation owner preflight", () => {
       "/projects/tono-onot.md",
       "/projects/project-beta.md",
       "/projects/project-gamma.md",
-      "/projects/tono-onot-archive.md",
+      "/projects/project-onot-archive.md",
       "/projects/project-epsilon.md",
     ];
-    const titles = ["Tono Onot", "Project Beta", "Project Gamma", "Tono Onot Archive", "Project Epsilon"];
+    const titles = ["Tono Onot", "Project Beta", "Project Gamma", "Project Onot Archive", "Project Epsilon"];
     for (let i = 0; i < paths.length; i++) {
       await kb.writeConcept(paths[i], { type: "Project", title: titles[i] }, `Project ${i} context. `.repeat(2_700), "seed");
     }
@@ -523,7 +523,7 @@ describe("mutation owner preflight", () => {
       path: conceptPath, type: "Project", title: titles[i],
       score: 10, confidence: 10, confidenceQualified: false,
     })));
-    const fact = "Tono Onot experiment 69 records a camera calibration observation for this project.";
+    const fact = "Onot experiment 69 records a camera calibration observation for this project.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: paths[0] } })
       .mockResolvedValueOnce({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
