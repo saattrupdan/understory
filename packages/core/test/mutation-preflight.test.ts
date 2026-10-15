@@ -1018,8 +1018,9 @@ describe("mutation owner preflight", () => {
     const newParagraph = oldParagraph.replace("paused at 1,361 rows", "completed all 12,000 rows") +
       " Danish choice agreement is 82.75% (Brier 0.02827); English choice agreement is 81.17% (Brier 0.02934).";
     const instruction = "Update Claes Mimir zero-shot status: completed all 12,000 rows; Danish choice agreement 82.75%, Brier 0.02827; English choice agreement 81.17%, Brier 0.02934.";
+    const surrounding = "Unrelated Claes model-development history remains unchanged. ".repeat(5);
     await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" },
-      `${oldParagraph}\n\nUnrelated Claes work remains unchanged.`, "seed");
+      `${surrounding}${oldParagraph} ${surrounding}\n\nUnrelated Claes work remains unchanged.`, "seed");
     await kb.writeConcept(competitor, { type: "Paper", title: "DFM Mimir v1" },
       "Mimir zero-shot is an imitation experiment, not a verified accuracy result.", "seed");
     vi.spyOn(kb, "search").mockResolvedValue([owner, competitor].map((path, i) => ({
@@ -1031,7 +1032,7 @@ describe("mutation owner preflight", () => {
     const outcome = await runMutation(kb, instruction, { preflightInput: instruction });
     expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
     expect(outcome).toMatchObject({ result: { filesChanged: [owner] } });
-    expect((await kb.readConcept(owner)).body).toContain(newParagraph);
+    expect((await kb.readConcept(owner)).body).toContain(`${surrounding}${newParagraph} ${surrounding}`);
     expect((await kb.readConcept(owner)).body).toContain("Unrelated Claes work remains unchanged.");
     expect((await kb.readConcept(competitor)).body).toContain("not a verified accuracy result");
   });

@@ -1628,7 +1628,7 @@ async function runStagedMutation(
       const oldStatusWords = new Set(stagedWords(p.old_text));
       const identityWords = new Set(stagedWords(`${target?.frontmatter.title ?? ""} ${target?.path ?? ""}`));
       const statusParagraph = target?.body.split(/\n\s*\n/).find((paragraph) =>
-        paragraph.includes(p.old_text) && paragraph.length - p.old_text.length <= 150);
+        paragraph.includes(p.old_text));
       let statusUniqueAcrossHits = false;
       if (statusWords.length >= 2 && statusParagraph && p.old_text.length >= 200) {
         statusUniqueAcrossHits = true;
@@ -1644,8 +1644,8 @@ async function runStagedMutation(
         }
       }
       // A named run status can require several coordinated metric changes in
-      // one paragraph. The old operand must be nearly the whole paragraph,
-      // uniquely observed among complete candidates, and positively match the
+      // one paragraph. The exact old span must stay inside that one paragraph,
+      // be unique across complete observed owners, and positively match the
       // named subject. This is not a general multi-clause replacement license.
       const boundedStatus = statusWords.length >= 2 &&
         statusWords.every((word) => oldStatusWords.has(word) || identityWords.has(word)) &&
