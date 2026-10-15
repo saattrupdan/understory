@@ -605,6 +605,45 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(other)).body).toContain("old-value-id9");
   });
 
+  it("skips an explicitly negated owner on metadata abstention", async () => {
+    staged();
+    const api = "/apis/billing-api.md";
+    const playbook = "/playbooks/oncall-billing.md";
+    await kb.writeConcept(api, { type: "API Endpoint", title: "Billing API" }, "Billing API context. ".repeat(2_300), "seed");
+    await kb.writeConcept(playbook, { type: "Playbook", title: "Billing On-call" }, "On-call context. ".repeat(2_700), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([api, playbook].map((conceptPath) => ({
+      path: conceptPath, type: "Concept", title: conceptPath === api ? "Billing API" : "Billing On-call",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "Billing responders on call handle incidents, not Billing API.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
+      ok: true, result: { filesChanged: [playbook] },
+    });
+    expect((await kb.readConcept(api)).body).not.toContain(fact);
+    expect((await kb.readConcept(playbook)).body).toContain(fact);
+  });
+
+  it("rejects a generic owner when a specific competing topic is named", async () => {
+    staged();
+    const general = "/projects/fs-fotovalidering-general.md";
+    const specific = "/projects/fs-fotovalidering-tono-onot.md";
+    await kb.writeConcept(general, { type: "Project", title: "FS Fotovalidering General" }, "General context. ".repeat(3_000), "seed");
+    await kb.writeConcept(specific, { type: "Project", title: "FS Fotovalidering Tono Onot" }, "Tono Onot context. ".repeat(3_000), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([general, specific].map((conceptPath) => ({
+      path: conceptPath, type: "Project", title: conceptPath === general ? "FS Fotovalidering General" : "FS Fotovalidering Tono Onot",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "FS Fotovalidering experiment 69 in Tono Onot measured head height.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: general } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(general)).body).not.toContain(fact);
+    expect((await kb.readConcept(specific)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts one of two equally plausible metadata owners", async () => {
     staged();
     const firstOwner = "/projects/fs-fotovalidering-tests.md";

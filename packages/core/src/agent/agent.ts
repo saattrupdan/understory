@@ -766,7 +766,7 @@ function stagedOwnerAnchor(input: string, conceptPath: string): boolean {
 
 function stagedTitleMention(input: string, title: string): boolean {
   return title.length >= 4 && input.toLowerCase().includes(title.toLowerCase()) &&
-    !new RegExp(`\\b(?:unrelated to|rather than changing|do not change)\\s+(?:the\\s+)?${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(input);
+    !new RegExp(`\\b(?:unrelated to|rather than changing|do not change|not about|instead of|not)\\s+(?:the\\s+)?${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(input);
 }
 
 /** Metadata selection locates a possible owner; it never authorizes a write. */
@@ -793,7 +793,7 @@ function stagedDiscriminativeOwnerAnchor(
       .join(" ")).filter((term) => !generic.has(term)));
   });
   const inputTerms = new Set(stagedWords(input));
-  const negatedMentions = [...input.matchAll(/\b(?:unrelated to|rather than changing|not about|do not change|instead of)\s+(?:the\s+)?([^.!?;,:]+)/gi)]
+  const negatedMentions = [...input.matchAll(/\b(?:unrelated to|rather than changing|not about|do not change|instead of|not)\s+(?:the\s+)?([^.!?;,:]+)/gi)]
     .map((match) => new Set(stagedWords(match[1])));
   const selectedTerms = [...terms[index]];
   const otherTerms = new Set(terms.flatMap((set, i) => i === index ? [] : [...set]));
@@ -801,9 +801,18 @@ function stagedDiscriminativeOwnerAnchor(
   if (specificTerms.length && negatedMentions.some((mention) => specificTerms.every((term) => mention.has(term)))) return false;
   // Shared topics are acceptable, but not when the instruction points much
   // more specifically to a different retained owner.
+  const positiveTerms = new Set([...inputTerms].filter((term) =>
+    !negatedMentions.some((mention) => mention.has(term))));
   const score = (words: Set<string>): number => words.size
-    ? [...words].filter((term) => inputTerms.has(term)).length / words.size : 0;
+    ? [...words].filter((term) => positiveTerms.has(term)).length / words.size : 0;
   if (terms.some((words, i) => i !== index && score(words) > score(terms[index]) + 0.2)) return false;
+  // A generic owner cannot win a tie when the request positively names a
+  // distinctive part of another retained owner's identity.
+  if (terms.some((words, i) => i !== index &&
+    [...words].some((term) => !terms[index].has(term) && inputTerms.has(term) &&
+      !negatedMentions.some((mention) => mention.has(term))) &&
+    !selectedTerms.some((term) => !words.has(term) && inputTerms.has(term) &&
+      !negatedMentions.some((mention) => mention.has(term))))) return false;
   const titleAnchor = selectedTerms.some((term) => {
     if (!inputTerms.has(term)) return false;
     return !negatedMentions.some((mention) => mention.has(term));
@@ -923,7 +932,8 @@ async function runStagedMutation(
       state.checkCancellation();
       const selectedHit = hits.find((hit) => hit.path === selection.object.path) ??
         (selection.object.path === "" ? hits.find((hit) =>
-          (hit.title && stagedTitleMention(raw, hit.title)) || stagedOwnerAnchor(raw, hit.path)) : undefined);
+          !(hit.title && raw.toLowerCase().includes(hit.title.toLowerCase()) && !stagedTitleMention(raw, hit.title)) &&
+          ((hit.title && stagedTitleMention(raw, hit.title)) || stagedOwnerAnchor(raw, hit.path))) : undefined);
       if (!selectedHit) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
       selectedPath = selectedHit.path;
       // Metadata selection cannot authorize a write. Re-read the selected hit
