@@ -964,20 +964,27 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: exact fact already belongs to an observed concept.");
       }
       const evidenceText = JSON.stringify(evidence);
-      if (evidenceText.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
-        throw new Error("Staged mutation deferred: new-concept evidence exceeds prompt budget.");
-      }
+      // Keep every owner body complete. When they cannot fit together, check
+      // each one separately rather than omitting competitors or truncating a body.
+      const batches = evidenceText.length + raw.length <= STAGED_MAX_EVIDENCE_CHARS
+        ? [evidence] : evidence.map((candidate) => [candidate]);
       const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
-      const judgement = await generateObject({
-        model: resolved.model,
-        schema: z.object({ safe: z.boolean() }).strict(),
-        temperature: 0,
-        abortSignal: options.signal,
-        prompt: `Independent safety and duplication check for creating a new concept at the caller's missing suggested path. Is the exact caller fact supported as written, positively about the distinctive path topic, and not already stated or substantially represented by any existing owner/claim in the FULL bounded evidence? Reject if an existing owner is an exact or similar fit, if the fact duplicates an existing claim, or if relevance/support is uncertain. Do not infer facts beyond the exact caller fact. Return safe=true only when all checks pass.\nFACT:\n${raw.trim()}\nSUGGESTED NEW PATH: ${requestedPath}\nFULL EXISTING SEARCH EVIDENCE:\n${evidenceText}`,
-      });
-      state.checkCancellation();
-      if (!judgement.object.safe) throw new Error("Staged mutation deferred: new concept failed independent safety or duplication check.");
+      for (const batch of batches) {
+        const fullEvidence = JSON.stringify(batch);
+        if (fullEvidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
+          throw new Error("Staged mutation deferred: new-concept owner exceeds prompt budget.");
+        }
+        const judgement = await generateObject({
+          model: resolved.model,
+          schema: z.object({ safe: z.boolean() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Independent safety and duplication check for creating a new concept at the caller's missing suggested path. Is the exact caller fact supported as written, positively about the distinctive path topic, and not already stated or substantially represented by any existing owner/claim in the FULL bounded evidence? Reject if an existing owner is an exact or similar fit, if the fact duplicates an existing claim, or if relevance/support is uncertain. Do not infer facts beyond the exact caller fact. Return safe=true only when all checks pass.\nFACT:\n${raw.trim()}\nSUGGESTED NEW PATH: ${requestedPath}\nFULL EXISTING SEARCH EVIDENCE:\n${fullEvidence}`,
+        });
+        state.checkCancellation();
+        if (!judgement.object.safe) throw new Error("Staged mutation deferred: new concept failed independent safety or duplication check.");
+      }
       const anchor = evidence[0];
       const title = path.posix.basename(requestedPath!, ".md").split(/[-_]/).filter(Boolean)
         .map((part) => part[0].toUpperCase() + part.slice(1)).join(" ").slice(0, 256);

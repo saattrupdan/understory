@@ -462,6 +462,32 @@ describe("mutation owner preflight", () => {
     expect(await kb.bundle.exists(hintedPath)).toBe(false);
   });
 
+  it("checks every complete competing body separately when new-concept evidence exceeds the prompt budget", async () => {
+    staged();
+    const paths = ["/projects/unrelated-a.md", "/projects/unrelated-b.md"];
+    for (const [index, ownerPath] of paths.entries()) {
+      await kb.writeConcept(ownerPath, { type: "Project", title: `Unrelated ${index}` },
+        `${"Other project details. ".repeat(2_300)}\nEND-OF-OWNER-${index}`, "seed");
+    }
+    vi.spyOn(kb, "search").mockResolvedValue(paths.map((ownerPath, index) => ({
+      path: ownerPath, type: "Project", title: `Unrelated ${index}`,
+      score: 10 - index, confidence: 10 - index, confidenceQualified: false,
+    })));
+    const fact = "Claes Jev diagnostics use a dedicated calibration process for independent validation.";
+    const prompts: string[] = [];
+    generateObjectMock.mockImplementation(async (request: { prompt: string }) => {
+      prompts.push(request.prompt);
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, fact, {
+      ownerHint: "/projects/claes-jev-diagnostics.md", preflightInput: fact, directAdd: true,
+    });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/projects/claes-jev-diagnostics.md"] } });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain("END-OF-OWNER-0");
+    expect(prompts[1]).toContain("END-OF-OWNER-1");
+  });
+
   it("does not overwrite a missing hinted path created concurrently after safety approval", async () => {
     staged();
     const existing = "/projects/reference.md";
