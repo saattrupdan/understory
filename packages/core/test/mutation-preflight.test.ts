@@ -1011,8 +1011,8 @@ describe("mutation owner preflight", () => {
     staged();
     const owner = "/repos/pi-agent/memory-async.md";
     const unrelated = [1, 2, 3, 4, 5].map((n) => `/repos/unrelated-${n}.md`);
-    const heading = "**Understory memory_add/memory_update incident (Oct 15 2026)**:";
-    const oldClaim = "Nine sampled retries succeeded.";
+    const heading = "Understory memory_add/memory_update incident (Oct 15 2026):";
+    const oldClaim =  "Nine sampled retries succeeded.";
     const instruction = "Update the Understory memory_add/memory_update incident note (Oct 15 2026): nine sampled retries failed, not succeeded.";
     for (const [i, conceptPath] of unrelated.entries()) {
       await kb.writeConcept(conceptPath, { type: "Repository", title: `Understory unrelated ${i + 1}` },
@@ -1042,14 +1042,15 @@ describe("mutation owner preflight", () => {
     const owner = "/repos/pi-agent/memory-async.md";
     const competitor = "/repos/pi-agent/incident-copy.md";
     const unrelated = [1, 2, 3, 4, 5].map((n) => `/repos/unrelated-${n}.md`);
-    const heading = "**Understory memory_add/memory_update incident (Oct 15 2026)**:";
+    const heading = "Understory memory_add/memory_update incident (Oct 15 2026):";
     const instruction = "Update the Understory memory_add/memory_update incident note (Oct 15 2026): nine retries failed.";
     for (const conceptPath of unrelated) {
       await kb.writeConcept(conceptPath, { type: "Repository", title: "Unrelated" }, "Other work.", "seed");
     }
     for (const conceptPath of [owner, competitor]) {
+      const label = conceptPath === owner ? heading : `**${heading.slice(0, -1)}:**`;
       await kb.writeConcept(conceptPath, { type: "Repository", title: "Pi Agent — Memory-Async Extension" },
-        `${heading} Nine retries succeeded.`, "seed");
+        `${label} Nine retries succeeded.`, "seed");
     }
     vi.spyOn(kb, "search").mockImplementation(async (query) =>
       query.includes("Understory memory_add/memory_update incident")

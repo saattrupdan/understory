@@ -821,12 +821,12 @@ function stagedTitleMention(input: string, title: string): boolean {
 /** Metadata selection locates a possible owner; it never authorizes a write. */
 function stagedNamedSection(input: string): RegExp | undefined {
   // A dated section named at the start of a correction may be more specific
-  // than its containing concept's title. Require a real Markdown heading,
-  // not an incidental sentence elsewhere in the body.
+  // than its containing concept's title. Require a line-leading Markdown
+  // heading or colon-labelled paragraph, not a passing mention in prose.
   const match = input.trim().match(/^(?:update|correct|revise)\s+(?:the\s+)?(.{16,120}?)\s+(?:note|record)\s+\(((?:[A-Za-z]{3,9}\s+\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9})\s+\d{4})\)\s*:/i);
   if (!match) return undefined;
   const escaped = `${match[1]} (${match[2]})`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^(?:#{1,6}\\s+|\\*\\*)${escaped}(?:\\*\\*)?\\s*(?::|$)`, "mi");
+  return new RegExp(`^(?:#{1,6}\\s+|\\*\\*)?${escaped}(?:\\*\\*)?\\s*:(?:\\*\\*)?(?=\\s|$)`, "mi");
 }
 
 function stagedDiscriminativeOwnerAnchor(
@@ -1023,7 +1023,7 @@ async function runStagedMutation(
       hits = [...hits, ...focused];
     }
     // Search the explicitly named section without displacing any original hit.
-    // Its heading is retrieval evidence only; all competing owner bodies and the
+    // Its line-leading label is retrieval evidence only; all competing owner bodies and the
     // ordinary independent verifier still govern the write.
     if (namedSection) {
       const sectionTitle = raw.trim().match(/^(?:update|correct|revise)\s+(?:the\s+)?(.{16,120}?)\s+(?:note|record)\s+\((?:[A-Za-z]{3,9}\s+\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9})\s+\d{4}\)\s*:/i)?.[1];
