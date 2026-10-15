@@ -78,6 +78,47 @@ describe("mutation owner preflight", () => {
     frontmatter: { type: "", title: "", description: "" }, claim: "", reason: "",
   };
 
+  it("retracts only one exact, complete paragraph from the explicitly named owner", async () => {
+    staged();
+    const paragraph = "Claes Jev paragraph states one sentence. It contains a second exact sentence.";
+    const retained = "The synthetic dataset generator writes deterministic records.";
+    await kb.writeConcept("/projects/fs-fotovalidering/synthetic-dataset-generation.md", {
+      type: "Project", title: "Synthetic Dataset Generation",
+    }, `${retained}\n\n${paragraph}\n\nAnother unrelated paragraph remains.`, "add");
+    const result = await runMutation(kb, `Retract exact paragraph from \`/projects/fs-fotovalidering/synthetic-dataset-generation.md\`:\n<<<\n${paragraph}\n>>>`);
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/projects/fs-fotovalidering/synthetic-dataset-generation.md"] } });
+    expect((await kb.readConcept("/projects/fs-fotovalidering/synthetic-dataset-generation.md")).body)
+      .toBe(`${retained}\n\nAnother unrelated paragraph remains.`);
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses stale, ambiguous, nonexact, and mismatched-path retractions", async () => {
+    staged();
+    const paragraph = "This accidentally filed paragraph has two exact sentences. It should be removed verbatim.";
+    const ownerPath = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
+    const instruction = `Retract exact paragraph from \`${ownerPath}\`:\n<<<\n${paragraph}\n>>>`;
+    await kb.writeConcept(ownerPath, { type: "Project", title: "Synthetic Dataset Generation" }, `Before.\n\n${paragraph}\n\nAfter.`, "add");
+    const originalRead = kb.readConcept.bind(kb);
+    let reads = 0;
+    vi.spyOn(kb, "readConcept").mockImplementation(async (pathName) => {
+      reads += 1;
+      if (reads === 2) {
+        await kb.writeConcept(ownerPath, { type: "Project", title: "Synthetic Dataset Generation" }, "Concurrent external revision.", "external");
+      }
+      return originalRead(pathName);
+    });
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed" });
+    vi.restoreAllMocks();
+
+    await kb.writeConcept(ownerPath, { type: "Project", title: "Synthetic Dataset Generation" }, `Before.\n\n${paragraph}\n\n${paragraph}\n\nAfter.`, "external");
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed" });
+    await kb.writeConcept(ownerPath, { type: "Project", title: "Synthetic Dataset Generation" }, `Before.\n\n${paragraph} Extra words.\n\nAfter.`, "external");
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed" });
+    await kb.writeConcept("/projects/other.md", { type: "Project", title: "Other" }, paragraph, "add");
+    expect(await runMutation(kb, instruction, { ownerHint: "/projects/other.md" })).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
   it("requires a verified claim matching the requested knowledge for a no-op", async () => {
     await billingFixture(); staged();
     generateObjectMock.mockResolvedValueOnce({ object: {

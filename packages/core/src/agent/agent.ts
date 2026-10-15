@@ -227,6 +227,30 @@ const MAX_REPAIR_EVIDENCE_CHARS = 16_000;
 const MAX_REPAIR_EVIDENCE_ITEMS = 64;
 const MAX_REPAIR_EVIDENCE_VALUE_DEPTH = 5;
 const MAX_REPAIR_EVIDENCE_VALUE_CHARS = 8_000;
+const MAX_EXACT_RETRACTION_CHARS = 4_000;
+
+function parseExactParagraphRetraction(input: string): { path: string; paragraph: string } | null {
+  const match = input.match(/^Retract exact paragraph from `(\/[a-z0-9_/-]+\.md)`:\n<<<\n([\s\S]+)\n>>>$/);
+  if (!match) return null;
+  return { path: match[1], paragraph: match[2] };
+}
+
+function removeUniqueParagraph(body: string, paragraph: string): string | null {
+  const matches: Array<{ start: number; end: number }> = [];
+  let offset = 0;
+  while ((offset = body.indexOf(paragraph, offset)) !== -1) {
+    const end = offset + paragraph.length;
+    const startsParagraph = offset === 0 || body.slice(0, offset).endsWith("\n\n");
+    const endsParagraph = end === body.length || body.slice(end).startsWith("\n\n");
+    if (startsParagraph && endsParagraph) matches.push({ start: offset, end });
+    offset += 1;
+  }
+  if (matches.length !== 1) return null;
+  const { start, end } = matches[0];
+  if (body.slice(end).startsWith("\n\n")) return body.slice(0, end) + body.slice(end + 2);
+  if (body.slice(0, start).endsWith("\n\n")) return body.slice(0, start - 2) + body.slice(end);
+  return body.slice(0, start) + body.slice(end);
+}
 
 function isReadOnlyToolName(value: unknown): value is string {
   return typeof value === "string" && READ_ONLY_TOOL_NAMES.has(value);
@@ -869,6 +893,36 @@ async function runStagedMutation(
     if (options.ownerHint && (options.ownerHint.length > 512 ||
         !/^\/[a-z0-9_/-]+\.md$/.test(options.ownerHint) || options.ownerHint.split("/").includes(".."))) {
       throw new Error("Staged mutation deferred: owner hint is not a bounded concept path.");
+    }
+    if (raw.startsWith("Retract exact paragraph from ")) {
+      const retraction = parseExactParagraphRetraction(raw);
+      if (!retraction || retraction.paragraph.length === 0 || retraction.paragraph.length >= MAX_EXACT_RETRACTION_CHARS) {
+        throw new Error("Staged mutation rejected: exact paragraph retraction syntax or size is invalid.");
+      }
+      if (options.ownerHint && options.ownerHint !== retraction.path) {
+        throw new Error("Staged mutation rejected: explicit owner path does not match the retraction path.");
+      }
+      if (!(await kb.bundle.exists(retraction.path))) {
+        throw new Error(`Staged mutation rejected: owner concept does not exist: ${retraction.path}`);
+      }
+      state.checkCancellation();
+      const target = await kb.readConcept(retraction.path);
+      recorder.record("read_concept", target.path, [target.path]);
+      if (target.body.length > STAGED_MAX_OWNER_CHARS) {
+        throw new Error("Staged mutation rejected: owner body exceeds evidence limit.");
+      }
+      const replacement = removeUniqueParagraph(target.body, retraction.paragraph);
+      if (replacement === null) {
+        throw new Error("Staged mutation rejected: paragraph is not one exact unique owner paragraph.");
+      }
+      const current = await kb.readConcept(target.path);
+      if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+      state.checkCancellation();
+      await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: retract exact paragraph", sha256(target.body), options.signal, (path) => { changed = [path]; });
+      const summary = `Staged mutation changed ${changed.join(", ")}.`;
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
     }
     const query = mutationSearchQuery(raw);
     if (!query) throw new Error("Staged mutation deferred: no bounded search terms.");
