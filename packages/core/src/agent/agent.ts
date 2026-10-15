@@ -764,6 +764,13 @@ function stagedOwnerAnchor(input: string, conceptPath: string): boolean {
   return stagedWords(slug).some((word) => words.has(word));
 }
 
+/** Reject a generic-term match when the fact explicitly names another project/person. */
+function stagedConflictingNamedOwner(input: string, title: string | undefined, conceptPath: string): boolean {
+  const identity = `${title ?? ""} ${conceptPath.split("/").pop()?.replace(/\.md$/, "").replace(/[-_]/g, " ") ?? ""}`.toLowerCase();
+  const namedPairs = input.match(/\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b/g) ?? [];
+  return namedPairs.some((name) => !identity.includes(name.toLowerCase()));
+}
+
 function stagedTitleMention(input: string, title: string): boolean {
   return title.length >= 4 && input.toLowerCase().includes(title.toLowerCase()) &&
     !new RegExp(`\\b(?:unrelated to|rather than changing|do not change|not about|instead of|not)\\s+(?:the\\s+)?${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(input);
@@ -1048,7 +1055,8 @@ async function runStagedMutation(
           derivedParent = true;
         }
       }
-      if (!(stagedOwnerAnchor(fact, target.path) || (verifiedMetadataOwner && selectedPath === target.path)) ||
+      if (stagedConflictingNamedOwner(fact, target.frontmatter.title, target.path) ||
+          !(stagedOwnerAnchor(fact, target.path) || (verifiedMetadataOwner && selectedPath === target.path)) ||
           (target.frontmatter.title && fact.toLowerCase().includes(target.frontmatter.title.toLowerCase()) &&
             !stagedTitleMention(fact, target.frontmatter.title))) {
         throw new Error("Staged mutation deferred: suggested owner lacks a positive entity anchor.");
