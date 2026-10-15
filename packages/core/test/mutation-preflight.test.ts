@@ -633,11 +633,11 @@ describe("mutation owner preflight", () => {
 
   it("does not treat a single-word author as a conflicting named owner", async () => {
     staged();
-    const owner = "/projects/fs-fotovalidering-synthetic-dataset-generation.md";
-    await kb.writeConcept(owner, { type: "Project", title: "Synthetic Dataset Generation" },
-      "Synthetic datasets are generated for FS Fotovalidering.", "seed");
+    const owner = "/projects/fs-fotovalidering.md";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering" },
+      "FS Fotovalidering has an annotation review interface.", "seed");
     vi.spyOn(kb, "search").mockResolvedValue([{
-      path: owner, type: "Project", title: "Synthetic Dataset Generation", score: 10, confidence: 10,
+      path: owner, type: "Project", title: "FS Fotovalidering", score: 10, confidence: 10,
       confidenceQualified: false,
     }]);
     const fact = "Dan prefers the FS Fotovalidering annotation buttons to remain visible during review.";
