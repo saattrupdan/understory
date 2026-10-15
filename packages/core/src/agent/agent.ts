@@ -1536,7 +1536,11 @@ async function runStagedMutation(
       await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
     } else if (p.action === "replace") {
       const target = candidates.find((c) => c.path === p.path);
-      const boundedParagraphRepair = (repairedCorrection || (!!quotedOwner && quotedOwner === p.path)) &&
+      const namedParagraph = target && namedSection && sectionOwnerPath === p.path
+        ? target.body.split(/\n\s*\n/).find((paragraph) =>
+          namedSection.test(paragraph.split("\n", 1)[0] ?? "")) : undefined;
+      const boundedParagraphRepair = (repairedCorrection || (!!quotedOwner && quotedOwner === p.path) ||
+        (!!namedParagraph && namedParagraph.includes(p.old_text))) &&
         p.old_text.length <= 4_000 &&
         p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
         stagedOverlap(p.old_text, p.new_text) >= 0.5;
