@@ -773,7 +773,7 @@ function stagedTitleMention(input: string, title: string): boolean {
 function stagedDiscriminativeOwnerAnchor(
   input: string,
   selectedPath: string,
-  candidates: Array<{ path: string; frontmatter: { title?: string } }>,
+  candidates: Array<{ path: string; frontmatter: { title?: string }; body?: string }>,
   hits: Array<{ path: string; title?: string }>
 ): boolean {
   const index = hits.findIndex((hit) => hit.path === selectedPath);
@@ -794,10 +794,31 @@ function stagedDiscriminativeOwnerAnchor(
   const inputTerms = new Set(stagedWords(input));
   const negatedMentions = [...input.matchAll(/\b(?:unrelated to|rather than changing|not about|do not change|instead of)\s+(?:the\s+)?([^.!?;,:]+)/gi)]
     .map((match) => new Set(stagedWords(match[1])));
-  return [...terms[index]].some((term) => {
+  const titleAnchor = [...terms[index]].some((term) => {
     if (competitors.has(term) || !inputTerms.has(term)) return false;
     return !negatedMentions.some((mention) => mention.has(term));
   });
+  if (titleAnchor) return true;
+
+  // A title-less correction can still be grounded by a verbatim old claim or
+  // an identifier that occurs in this complete body and no competing body.
+  // Generic overlap and model assertions are deliberately not evidence.
+  const selectedBody = candidates.find((candidate) => candidate.path === selectedPath)?.body;
+  if (!selectedBody) return false;
+  const otherBodies = candidates.filter((candidate) => candidate.path !== selectedPath)
+    .map((candidate) => candidate.body).filter((body): body is string => typeof body === "string");
+  const identifiers = input.match(/[\p{L}\p{N}][\p{L}\p{N}_-]*\d[\p{L}\p{N}_-]*/gu) ?? [];
+  const quotedClaims = [...input.matchAll(/`([^`]{12,2000})`/g)].map((match) => match[1]);
+  const allCompetitorBodiesObserved = otherBodies.length === hits.length - 1;
+  const uniqueInBody = (evidence: string) => allCompetitorBodiesObserved && selectedBody.includes(evidence) &&
+    !otherBodies.some((body) => body.includes(evidence));
+  return identifiers.some((identifier) => inputTerms.has(identifier.toLowerCase()) &&
+    uniqueInBody(identifier) && !negatedMentions.some((mention) => mention.has(identifier.toLowerCase()))) ||
+    quotedClaims.some((claim) => {
+      const claimTerms = stagedWords(claim);
+      return claimTerms.length >= 3 && uniqueInBody(claim) &&
+        !negatedMentions.some((mention) => claimTerms.every((term) => mention.has(term)));
+    });
 }
 
 /** Knowledge add/update — full toolset, low temperature. */
@@ -886,24 +907,23 @@ async function runStagedMutation(
         prompt: `Read-only owner selection. Choose exactly one existing concept directly about the instruction from the candidate metadata. A mention is not ownership. If competing owners could equally own the fact, or none fit, return an empty path. This choice does not authorize a write. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATE METADATA:\n${JSON.stringify(metadata)}`,
       });
       state.checkCancellation();
-      const selected = candidates.find((candidate) => candidate.path === selection.object.path);
-      if (!selected) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
-      // Metadata selection cannot authorize a write. Require positive evidence
-      // that distinguishes the selected candidate from competitors, then
-      // independently verify against the complete re-read owner body.
-      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, candidates, hits)) {
-        throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
-      }
-      selectedPath = selected.path;
-      // Re-read the selected concept after the metadata-only choice; the
-      // proposer, verifier and CAS must all use the same complete body.
+      const selectedHit = hits.find((hit) => hit.path === selection.object.path);
+      if (!selectedHit) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
+      selectedPath = selectedHit.path;
+      // Metadata selection cannot authorize a write. Re-read the selected hit
+      // even when it ranked fourth or fifth; never send a truncated body onward.
       const owner = await kb.readConcept(selectedPath);
       recorder.record("read_concept", owner.path, [owner.path]);
       state.checkCancellation();
       if (owner.body.length > STAGED_MAX_OWNER_CHARS) {
         throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       }
-      candidates.splice(0, candidates.length, { path: owner.path, frontmatter: owner.frontmatter, body: owner.body });
+      const selected = { path: owner.path, frontmatter: owner.frontmatter, body: owner.body };
+      const evidenceCandidates = [...candidates.filter((candidate) => candidate.path !== selectedPath), selected];
+      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits)) {
+        throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
+      }
+      candidates.splice(0, candidates.length, selected);
       evidence = JSON.stringify(candidates);
       if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
         throw new Error("Staged mutation deferred: selected owner exceeds prompt budget.");
@@ -1181,7 +1201,12 @@ function mutationSearchQuery(input: string): string {
     .toLowerCase()
     .match(/[\p{L}\p{N}][\p{L}\p{N}_-]{2,}/gu) ?? [];
   const stop = new Set(["the", "and", "for", "with", "that", "this", "into", "from", "about", "existing", "concept", "knowledge", "base", "update", "change", "please", "persist", "following"]);
-  return [...new Set(words.filter((word) => !stop.has(word)))].slice(0, 10).join(" ").slice(0, 500);
+  const retained = [...new Set(words.filter((word) => !stop.has(word)))];
+  // Identifiers often appear in the decisive tail of an otherwise generic
+  // instruction (e.g. godkendt_id2). Keep these ahead of leading boilerplate.
+  const identifiers = retained.filter((word) => /\d|_/.test(word));
+  const descriptive = retained.filter((word) => !identifiers.includes(word));
+  return [...identifiers, ...descriptive].slice(0, 10).join(" ").slice(0, 500);
 }
 
 export async function runMutation(
