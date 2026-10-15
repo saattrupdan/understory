@@ -412,6 +412,83 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
   });
 
+  it("creates a verified owner for an unhinted named application without using an unrelated rate-limit hit", async () => {
+    staged();
+    const unrelated = "/repos/pi-agent/rate-limit-retry.md";
+    await kb.writeConcept(unrelated, { type: "Extension", title: "Pi Agent Rate Limit Retry" },
+      "Pi retries provider HTTP 429 responses with exponential backoff.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: unrelated, type: "Extension", title: "Pi Agent Rate Limit Retry",
+      score: 100, confidence: 100, confidenceQualified: true,
+    }]);
+    const fact = "Job-bot account rate limits deployed on main at bf272c6 (Oct 2026): PostgreSQL rate_limit_reservations keyed by hash of verified Auth0 sub.";
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
+      .mockImplementationOnce(async (request: { prompt: string }) => {
+        expect(request.prompt).toContain("/repos/job-bot.md");
+        expect(request.prompt).toContain("Pi retries provider HTTP 429");
+        return { object: { safe: true } };
+      });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/repos/job-bot.md"] } });
+    expect((await kb.readConcept("/repos/job-bot.md")).body).toBe(`${fact}\n`);
+    expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
+  });
+
+  it("does not infer a repository from a hyphenated policy belonging to another application", async () => {
+    staged();
+    const unrelated = "/repos/pi-agent/rate-limit-retry.md";
+    await kb.writeConcept(unrelated, { type: "Extension", title: "Rate Limit Retry" },
+      "Pi retries provider HTTP 429 responses.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: unrelated, type: "Extension", title: "Rate Limit Retry",
+      score: 100, confidence: 100, confidenceQualified: true,
+    }]);
+    const fact = "Rate-limit policy for Billing API deployed on main at bf272c6: reservations enforce per-account quotas.";
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: false } })
+      .mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(await kb.bundle.exists("/repos/rate-limit.md")).toBe(false);
+    expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
+  });
+
+  it("rejects an unhinted application creation if independent evidence fits an existing owner", async () => {
+    staged();
+    const existing = "/servers/job-bot.md";
+    await kb.writeConcept(existing, { type: "Server", title: "Job-bot" },
+      "Job-bot hosts the account rate-limit database.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: existing, type: "Server", title: "Job-bot", score: 10, confidence: 10,
+      confidenceQualified: false,
+    }]);
+    const fact = "Job-bot account rate limits deployed on main at bf272c6: PostgreSQL reservations enforce per-account quotas.";
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
+      .mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(await kb.bundle.exists("/repos/job-bot.md")).toBe(false);
+    expect((await kb.readConcept(existing)).body).not.toContain(fact);
+  });
+
+  it("uses an existing unhinted application owner outside search ranking with independent verification", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "Job-bot" },
+      "Job-bot builds job applications.", "seed");
+    await kb.writeConcept("/repos/pi-agent/rate-limit-retry.md", { type: "Extension", title: "Rate Limit Retry" },
+      "Pi retries provider HTTP 429 responses.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: "/repos/pi-agent/rate-limit-retry.md", type: "Extension", title: "Rate Limit Retry",
+      score: 100, confidence: 100, confidenceQualified: true,
+    }]);
+    const fact = "Job-bot account rate limits deployed on main at bf272c6: PostgreSQL reservations enforce per-account quotas.";
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+  });
+
   it("rejects a missing hinted path unrelated to the exact fact", async () => {
     staged();
     await kb.writeConcept("/projects/general-datasets.md", { type: "Project", title: "General Datasets" },

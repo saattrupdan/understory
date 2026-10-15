@@ -937,7 +937,28 @@ async function runStagedMutation(
     state.checkCancellation();
     const first = hits[0];
     const second = hits[1];
-    const requestedPath = options.ownerHint;
+    // A deployed, named application may identify its own repository when the
+    // search ranks only unrelated topics. Typography alone cannot establish
+    // that a hyphenated word is an application (e.g. "Rate-limit policy").
+    // Classification locates a candidate; the full independent owner check
+    // below still controls any creation or write.
+    const possibleRepository = !options.ownerHint && options.directAdd && options.preflightInput &&
+      raw.trim().match(/^([A-Z][a-z0-9]+(?:-[a-z0-9]+)+)\b/)?.[1];
+    let namedApplication: string | undefined;
+    if (possibleRepository && /\bon main at [0-9a-f]{7,40}\b/i.test(raw.slice(0, 250))) {
+      const classifier = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+      modelChain = classifier.modelChain;
+      const judgement = await generateObject({
+        model: classifier.model,
+        schema: z.object({ repositorySubject: z.boolean() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Read-only subject check. Does the opening name ${JSON.stringify(possibleRepository)} unambiguously identify the software repository or application deployed on main in this exact fact? Return repositorySubject=false for a policy, feature, limit, check, or other topic that merely belongs to a different named application. Do not infer identity from capitalization or a hyphen alone. JSON only.\nFACT:\n${raw.trim()}`,
+      });
+      state.checkCancellation();
+      if (judgement.object.repositorySubject) namedApplication = possibleRepository;
+    }
+    const requestedPath = options.ownerHint ?? (namedApplication ? `/repos/${namedApplication.toLowerCase()}.md` : undefined);
     const missingDirectPath = !!(options.directAdd && options.preflightInput && requestedPath &&
       !(await kb.bundle.exists(requestedPath)));
     if (missingDirectPath && (correction || raw.trim().length < 30 || raw.trim().length > 4_000)) {
@@ -949,7 +970,7 @@ async function runStagedMutation(
         .filter((term) => !generic.has(term)));
       const factTerms = new Set(stagedWords(raw));
       const distinctiveOverlap = [...pathTerms].filter((term) => factTerms.has(term));
-      // The proposed new concept must be specifically named by the caller's fact;
+      // The proposed new concept must be specifically named by the exact fact;
       // generic search overlap is not evidence that an arbitrary path belongs.
       if (distinctiveOverlap.length < 2 || hits.length === 0) {
         throw new Error("Staged mutation deferred: missing suggested path lacks a positive fact-topic anchor.");
@@ -984,7 +1005,7 @@ async function runStagedMutation(
           schema: z.object({ safe: z.boolean() }).strict(),
           temperature: 0,
           abortSignal: options.signal,
-          prompt: `Independent safety and duplication check for creating a new concept at the caller's missing suggested path. Is the exact caller fact supported as written, positively about the distinctive path topic, and not already stated or substantially represented by any existing owner/claim in the FULL bounded evidence? Reject if an existing owner is an exact or similar fit, if the fact duplicates an existing claim, or if relevance/support is uncertain. Do not infer facts beyond the exact caller fact. Return safe=true only when all checks pass.\nFACT:\n${raw.trim()}\nSUGGESTED NEW PATH: ${requestedPath}\nFULL EXISTING SEARCH EVIDENCE:\n${fullEvidence}`,
+          prompt: `Independent safety and duplication check for creating a new concept at the proposed missing path. Is the exact caller fact supported as written, positively about the distinctive path topic, and not already stated or substantially represented by any existing owner/claim in the FULL bounded evidence? Reject if an existing owner is an exact or similar fit, if the fact duplicates an existing claim, or if relevance/support is uncertain. Do not infer facts beyond the exact caller fact. Return safe=true only when all checks pass.\nFACT:\n${raw.trim()}\nPROPOSED NEW PATH: ${requestedPath}\nFULL EXISTING SEARCH EVIDENCE:\n${fullEvidence}`,
         });
         state.checkCancellation();
         if (!judgement.object.safe) throw new Error("Staged mutation deferred: new concept failed independent safety or duplication check.");
@@ -1008,7 +1029,7 @@ async function runStagedMutation(
     // evidence, independent consistency and stale-body checks as any other owner.
     // A missing hint may still be the desired path of a distinct new concept.
     const quotedOwner = !options.directAdd ? raw.match(/`(\/[a-z0-9_/-]+\.md)`/i)?.[1] : undefined;
-    const ownerPath = options.ownerHint ?? quotedOwner;
+    const ownerPath = requestedPath ?? quotedOwner;
     const hintedPath = ownerPath && /^\/[a-z0-9_/-]+\.md$/.test(ownerPath) && await kb.bundle.exists(ownerPath)
       ? ownerPath : undefined;
     const named = hits.filter((hit) => hit.title && stagedTitleMention(raw, hit.title));
