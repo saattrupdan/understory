@@ -1400,6 +1400,23 @@ async function runStagedMutation(
     });
     state.checkCancellation();
     const p = proposal.object;
+    if (correction && p.action === "append") {
+      // Appending a correction leaves the contradicted old assertion in place.
+      // Try one exact, local replacement instead; the ordinary replacement
+      // branch below still enforces support, independent review and CAS.
+      const repair = await generateObject({
+        model: resolved.model,
+        schema: z.object({ path: z.string(), old_text: z.string(), new_text: z.string() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `The proposed append cannot correct an existing claim. Choose ONE exact old clause in an observed candidate body that the instruction supersedes, and replace it with text that addresses ALL applicable requested corrections while preserving unrelated claims. The old_text must be a unique verbatim substring of the owner; new_text must be supported by the instruction. Do not invent an old claim, use an unrelated owner, or append elsewhere. Return empty strings if a single local replacement cannot safely do this. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATES:\n${evidence}`,
+      });
+      state.checkCancellation();
+      p.action = "replace";
+      p.path = repair.object.path;
+      p.old_text = repair.object.old_text;
+      p.new_text = repair.object.new_text;
+    }
     if (p.action === "defer") throw new Error(`Staged mutation deferred: ${p.reason || "proposal is not safely actionable"}`);
     if (p.action === "noop") {
       const claim = p.claim.trim();
@@ -1489,7 +1506,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent safety check. Does the exact proposed replacement faithfully apply the instruction to the observed owner, remove the superseded claim, preserve unrelated claims, avoid a new contradiction, and positively fit this owner even if another search hit could also plausibly fit? Reject negative/unrelated mentions. Metadata selection is not proof of relevance. If uncertain about support or relevance, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${p.old_text}\nNEW TEXT:\n${newText}`,
+        prompt: `Independent safety check. Does the exact proposed replacement faithfully apply ALL applicable corrections in the instruction to the observed owner, remove the superseded claim, preserve unrelated claims, avoid a new contradiction, and positively fit this owner even if another search hit could also plausibly fit? Reject negative/unrelated mentions. Metadata selection is not proof of relevance. If uncertain about support, completeness or relevance, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${p.old_text}\nNEW TEXT:\n${newText}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: replacement failed independent consistency check.");

@@ -232,14 +232,14 @@ describe("mutation owner preflight", () => {
     expect(body).toContain(newFact);
   });
 
-  it("rejects a contradictory append even if the model's verifier would approve it", async () => {
+  it("rejects a correction append when no exact old clause can be repaired", async () => {
     await billingFixture(); staged();
     generateObjectMock.mockResolvedValueOnce({ object: {
       ...baseProposal, action: "append", new_text: "Billing API support tooling creates ad-hoc charges only after an approval check.",
-    } });
+    } }).mockResolvedValueOnce({ object: { path: "", old_text: "", new_text: "" } });
     const result = await runMutation(kb, updateInstruction);
     expect(result).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
   });
 
@@ -1299,6 +1299,35 @@ describe("mutation owner preflight", () => {
       ownerHint: "/apis/billing-api.md", preflightInput: fact, directAdd: true,
     });
     expect(search.mock.calls[0][0]).toContain("godkendt_id9");
+  });
+
+  it("repairs an unsafe correction append as one exact verified replacement", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "append",
+      path: "/apis/billing-api.md", new_text: "Support tooling requires approval." } })
+      .mockResolvedValueOnce({ object: { path: "/apis/billing-api.md",
+        old_text: "ad-hoc charges come from support tooling.",
+        new_text: "ad-hoc charges come from support tooling only after approval." } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "verified" } });
+    const result = await runMutation(kb, updateInstruction, { preflightInput: updateInstruction });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    const body = (await kb.readConcept("/apis/billing-api.md")).body;
+    expect(body).toContain("only after approval");
+    expect(body).not.toContain("ad-hoc charges come from support tooling.");
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("refuses a correction append when independent replacement verification fails", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "append",
+      path: "/apis/billing-api.md", new_text: "Support tooling requires approval." } })
+      .mockResolvedValueOnce({ object: { path: "/apis/billing-api.md",
+        old_text: "ad-hoc charges come from support tooling.",
+        new_text: "ad-hoc charges come from support tooling only after approval." } })
+      .mockResolvedValueOnce({ object: { safe: false, reason: "wrong owner" } });
+    expect(await runMutation(kb, updateInstruction, { preflightInput: updateInstruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toBe(`${oldBody}\n`);
   });
 
   it("finds a named Mimir correction owner outside the broad top five without bypassing verification", async () => {
