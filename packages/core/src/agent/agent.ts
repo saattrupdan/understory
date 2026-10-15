@@ -1549,7 +1549,8 @@ async function runStagedMutation(
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 || !localEdit) {
         const reason = !target ? `owner missing: ${p.path.slice(0, 256) || "(empty)"}; candidates: ${candidates.map((candidate) => candidate.path).join(", ")}` : p.old_text.length < 12 ? "old text too short" :
           !p.new_text ? "new text empty" : target.body.split(p.old_text).length !== 2 ? "old text not unique" :
-          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ? "new text lacks support" : "change spans clauses";
+          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ? "new text lacks support" :
+            `change spans clauses (section=${!!sectionOwnerPath}, scoped=${!!namedParagraph && namedParagraph.includes(p.old_text)}, old=${p.old_text.length}, new=${p.new_text.length}, overlap=${stagedOverlap(p.old_text, p.new_text).toFixed(2)}, paragraph_break=${/\n\s*\n/.test(p.old_text) || /\n\s*\n/.test(p.new_text)})`;
         throw new Error(`Staged mutation rejected: replacement is not one supported local change (${reason}).`);
       }
       const oldWords = new Set(stagedWords(p.old_text));
