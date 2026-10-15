@@ -614,6 +614,40 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept("/playbooks/oncall-billing.md")).body).toContain(newFact);
   });
 
+  it("routes a fact framed with a preposition to its named owner without a hint", async () => {
+    staged();
+    const owner = "/repos/holi.md";
+    await kb.writeConcept(owner, { type: "Project", title: "Holi" },
+      "Holi maintains the hereinmygarage vault.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: owner, type: "Project", title: "Holi", score: 10, confidence: 10,
+      confidenceQualified: false,
+    }]);
+    const fact = "For Holi's hereinmygarage vault, the backup rotation retains verified snapshots for 30 days.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: owner } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+  });
+
+  it("rejects a different named subject even when the selected owner is otherwise relevant", async () => {
+    staged();
+    const owner = "/repos/holi.md";
+    await kb.writeConcept(owner, { type: "Project", title: "Holi" },
+      "Holi maintains the hereinmygarage vault.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: owner, type: "Project", title: "Holi", score: 10, confidence: 10,
+      confidenceQualified: false,
+    }]);
+    const fact = "For Claes Jev's hereinmygarage vault, the backup rotation retains verified snapshots for 30 days.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: owner } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
   it("selects an unhinted owner without rewriting the exact caller fact", async () => {
     await billingFixture(); staged();
     const fact = "Billing API logs a request ID for each charge created by support tooling.";

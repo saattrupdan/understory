@@ -790,7 +790,10 @@ function stagedOwnerAnchor(input: string, conceptPath: string): boolean {
 
 /** The named subject of a fact must not be lost to a generic title match. */
 function stagedConflictingNamedOwner(input: string, title: string | undefined, conceptPath: string): boolean {
-  const subject = input.trim().match(/^([A-Z][a-z]{2,}\s+[A-Z][a-z]{2,})\b/)?.[1];
+  // A leading preposition is framing, not part of a named subject. In
+  // particular, facts phrased "For Holi's ..." must be anchored to Holi,
+  // rather than misread as a person named "For Holi".
+  const subject = input.trim().match(/^(?:[Ff]or\s+)?([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*)\b/)?.[1];
   if (!subject) return false;
   const identity = `${title ?? ""} ${conceptPath.split("/").pop()?.replace(/\.md$/, "").replace(/[-_]/g, " ") ?? ""}`.toLowerCase();
   return !identity.includes(subject.toLowerCase()) && !(title && stagedTitleMention(input, title));
