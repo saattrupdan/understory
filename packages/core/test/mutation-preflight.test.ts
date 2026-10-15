@@ -1007,6 +1007,59 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(selectedPath)).body).toContain("new-value-id9");
   });
 
+  it("locates a unique named incident section outside the broad hits", async () => {
+    staged();
+    const owner = "/repos/pi-agent/memory-async.md";
+    const unrelated = [1, 2, 3, 4, 5].map((n) => `/repos/unrelated-${n}.md`);
+    const heading = "**Understory memory_add/memory_update incident (Oct 15 2026)**:";
+    const oldClaim = "Nine sampled retries succeeded.";
+    const instruction = "Update the Understory memory_add/memory_update incident note (Oct 15 2026): nine sampled retries failed, not succeeded.";
+    for (const [i, conceptPath] of unrelated.entries()) {
+      await kb.writeConcept(conceptPath, { type: "Repository", title: `Understory unrelated ${i + 1}` },
+        `Unrelated provider notes ${i + 1}. `.repeat(1200), "seed");
+    }
+    await kb.writeConcept(owner, { type: "Repository", title: "Pi Agent — Memory-Async Extension" },
+      `${heading} ${oldClaim}\n\nUnrelated memory-async operations remain unchanged.`, "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) =>
+      query.includes("Understory memory_add/memory_update incident")
+        ? [{ path: owner, type: "Repository", title: "Pi Agent — Memory-Async Extension", score: 5 }]
+        : unrelated.map((conceptPath, i) => ({ path: conceptPath, type: "Repository",
+          title: `Understory unrelated ${i + 1}`, score: 10 - i })));
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`"path":"${owner}"`);
+      expect(prompt).not.toContain(`"path":"${unrelated[0]}"`);
+      return { object: { ...baseProposal, action: "replace", path: owner,
+        old_text: oldClaim, new_text: "Nine sampled retries failed." } };
+    }).mockResolvedValueOnce({ object: { safe: true, reason: "verified against full owner" } });
+    const outcome = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(outcome).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain("Nine sampled retries failed.");
+    expect((await kb.readConcept(unrelated[0])).body).toContain("Unrelated provider notes");
+  });
+
+  it("rejects an incident section that appears in two complete owners", async () => {
+    staged();
+    const owner = "/repos/pi-agent/memory-async.md";
+    const competitor = "/repos/pi-agent/incident-copy.md";
+    const unrelated = [1, 2, 3, 4, 5].map((n) => `/repos/unrelated-${n}.md`);
+    const heading = "**Understory memory_add/memory_update incident (Oct 15 2026)**:";
+    const instruction = "Update the Understory memory_add/memory_update incident note (Oct 15 2026): nine retries failed.";
+    for (const conceptPath of unrelated) {
+      await kb.writeConcept(conceptPath, { type: "Repository", title: "Unrelated" }, "Other work.", "seed");
+    }
+    for (const conceptPath of [owner, competitor]) {
+      await kb.writeConcept(conceptPath, { type: "Repository", title: "Pi Agent — Memory-Async Extension" },
+        `${heading} Nine retries succeeded.`, "seed");
+    }
+    vi.spyOn(kb, "search").mockImplementation(async (query) =>
+      query.includes("Understory memory_add/memory_update incident")
+        ? [owner, competitor].map((conceptPath) => ({ path: conceptPath, type: "Repository", score: 5 }))
+        : unrelated.map((conceptPath) => ({ path: conceptPath, type: "Repository", score: 10 })));
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("named section is not unique") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
   it("uses a unique exact old identifier as title-less update evidence", async () => {
     staged();
     const selected = "/projects/authoritative-record.md";

@@ -819,6 +819,16 @@ function stagedTitleMention(input: string, title: string): boolean {
 }
 
 /** Metadata selection locates a possible owner; it never authorizes a write. */
+function stagedNamedSection(input: string): RegExp | undefined {
+  // A dated section named at the start of a correction may be more specific
+  // than its containing concept's title. Require a real Markdown heading,
+  // not an incidental sentence elsewhere in the body.
+  const match = input.trim().match(/^(?:update|correct|revise)\s+(?:the\s+)?(.{16,120}?)\s+(?:note|record)\s+\(((?:[A-Za-z]{3,9}\s+\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9})\s+\d{4})\)\s*:/i);
+  if (!match) return undefined;
+  const escaped = `${match[1]} (${match[2]})`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^(?:#{1,6}\\s+|\\*\\*)${escaped}(?:\\*\\*)?\\s*(?::|$)`, "mi");
+}
+
 function stagedDiscriminativeOwnerAnchor(
   input: string,
   selectedPath: string,
@@ -987,6 +997,7 @@ async function runStagedMutation(
     state.checkCancellation();
     let hits = (await kb.search(query)).slice(0, 5);
     recorder.record("search_knowledge", query, hits.map((hit) => hit.path));
+    const namedSection = !options.directAdd && options.preflightInput ? stagedNamedSection(raw) : undefined;
     state.checkCancellation();
     // A correction can name its actual subject after an unrelated opening
     // clause. Search up to two explicit proper names separately, but include
@@ -1011,6 +1022,28 @@ async function runStagedMutation(
       }
       hits = [...hits, ...focused];
     }
+    // Search the explicitly named section without displacing any original hit.
+    // Its heading is retrieval evidence only; all competing owner bodies and the
+    // ordinary independent verifier still govern the write.
+    if (namedSection) {
+      const sectionTitle = raw.trim().match(/^(?:update|correct|revise)\s+(?:the\s+)?(.{16,120}?)\s+(?:note|record)\s+\((?:[A-Za-z]{3,9}\s+\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9})\s+\d{4}\)\s*:/i)?.[1];
+      if (sectionTitle) {
+        const sectionHits = await kb.search(sectionTitle);
+        recorder.record("search_knowledge", sectionTitle, sectionHits.map((hit) => hit.path));
+        for (const hit of sectionHits) {
+          if (hits.some((old) => old.path === hit.path)) continue;
+          const concept = await kb.readConcept(hit.path);
+          recorder.record("read_concept", concept.path, [concept.path]);
+          state.checkCancellation();
+          if (namedSection.test(concept.body)) {
+            if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
+              throw new Error("Staged mutation deferred: named-section owner exceeds evidence limit.");
+            }
+            hits.push(hit);
+          }
+        }
+      }
+    }
     // A long incident note can rank a tangential owner above the repository
     // explicitly named at its start. Include that existing owner as a candidate;
     // its name is only retrieval evidence, never permission to append.
@@ -1028,6 +1061,24 @@ async function runStagedMutation(
           title: owner.frontmatter.title, description: owner.frontmatter.description,
           score: 0, confidenceQualified: false }, ...hits];
       }
+    }
+    let sectionOwnerPath: string | undefined;
+    if (namedSection) {
+      const sectionOwners: string[] = [];
+      for (const hit of hits) {
+        const concept = await kb.readConcept(hit.path);
+        recorder.record("read_concept", concept.path, [concept.path]);
+        state.checkCancellation();
+        if (!namedSection.test(concept.body)) continue;
+        if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: named-section owner exceeds evidence limit.");
+        }
+        sectionOwners.push(concept.path);
+      }
+      if (sectionOwners.length !== 1) {
+        throw new Error("Staged mutation deferred: named section is not unique to one observed owner.");
+      }
+      sectionOwnerPath = sectionOwners[0];
     }
     const first = hits[0];
     const second = hits[1];
@@ -1132,8 +1183,11 @@ async function runStagedMutation(
       (first.confidence ?? 0) >= (second.confidence ?? 0) + 20 &&
       (first.confidence ?? 0) >= (second.confidence ?? 0) * 1.5);
     const candidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> = [];
-    if (hintedPath || explicitOwner || dominant) {
-      const concept = await kb.readConcept(hintedPath ?? (explicitOwner ?? first).path);
+    if (hintedPath && sectionOwnerPath && hintedPath !== sectionOwnerPath) {
+      throw new Error("Staged mutation deferred: suggested owner conflicts with named section.");
+    }
+    if (hintedPath || sectionOwnerPath || explicitOwner || dominant) {
+      const concept = await kb.readConcept(hintedPath ?? sectionOwnerPath ?? (explicitOwner ?? first).path);
       recorder.record("read_concept", concept.path, [concept.path]);
       if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
@@ -1154,7 +1208,7 @@ async function runStagedMutation(
     // Select by metadata sooner when multiple focused matches would force a
     // large correction prompt. Selection remains a locator; the chosen owner
     // is always re-read in full for the independent write check.
-    const selectionBudget = focused.length ? 24_000 : STAGED_MAX_EVIDENCE_CHARS;
+    const selectionBudget = focused.length && !sectionOwnerPath ? 24_000 : STAGED_MAX_EVIDENCE_CHARS;
     let selectedPath: string | undefined;
     let verifiedMetadataOwner = false;
     if (evidence.length + raw.length > selectionBudget && candidates.length <= 1) {
@@ -1202,8 +1256,9 @@ async function runStagedMutation(
       }
       const selected = { path: owner.path, frontmatter: owner.frontmatter, body: owner.body };
       const evidenceCandidates = [...candidates.filter((candidate) => candidate.path !== selectedPath), selected];
-      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd)) {
-        // A title-less exact claim needs complete competing bodies, not just
+      if (!hintedPath && (namedSection ||
+          !stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd))) {
+        // A named section or title-less exact claim needs complete competing bodies, not just
         // the three bodies that fit in the proposal prompt. These reads are
         // used for the uniqueness check only; the proposer sees the owner.
         for (const hit of hits) {
@@ -1216,12 +1271,20 @@ async function runStagedMutation(
           }
           evidenceCandidates.push({ path: competitor.path, frontmatter: competitor.frontmatter, body: competitor.body });
         }
-        if (!stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd)) {
+        if (namedSection) {
+          // The explicitly named heading outranks a generic title match, but
+          // only if exactly one full observed owner contains that heading.
+          const sectionOwners = evidenceCandidates.filter((candidate) => namedSection.test(candidate.body));
+          if (sectionOwners.length !== 1) {
+            throw new Error("Staged mutation deferred: named section is not unique to one observed owner.");
+          }
+          selectedPath = sectionOwners[0].path;
+        } else if (!stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd)) {
           throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
         }
       }
       verifiedMetadataOwner = true;
-      candidates.splice(0, candidates.length, selected);
+      candidates.splice(0, candidates.length, evidenceCandidates.find((candidate) => candidate.path === selectedPath)!);
       evidence = JSON.stringify(candidates);
       if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
         throw new Error("Staged mutation deferred: selected owner exceeds prompt budget.");
