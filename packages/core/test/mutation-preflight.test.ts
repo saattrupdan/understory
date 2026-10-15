@@ -148,6 +148,28 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
   });
 
+  it("treats an independently verified prior retraction as a no-op without changing the owner", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
+    const instruction = `In \`${owner}\`, remove ONLY the exact paragraph beginning \`Claes Jev diagnostics decision (Oct 2026): keep strict _valid_answer\` and ending \`orchestrator fixed and verified 110 tests.\` Do not change any other material.`;
+    await kb.writeConcept(owner, { type: "Project", title: "Synthetic Dataset Generation" },
+      "FS generation facts.\n\nRetain FS review results.", "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept(owner)).body).toBe("FS generation facts.\n\nRetain FS review results.\n");
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not claim absence if the paragraph start remains with Markdown ticks", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
+    const instruction = `In \`${owner}\`, remove ONLY the exact paragraph beginning \`Claes Jev diagnostics decision (Oct 2026): keep strict _valid_answer\` and ending \`orchestrator fixed and verified 110 tests.\` Do not change any other material.`;
+    await kb.writeConcept(owner, { type: "Project", title: "Synthetic Dataset Generation" },
+      "Claes Jev diagnostics decision (Oct 2026): keep strict `_valid_answer` for checkpoint integrity. Unfinished claim.", "seed");
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
   it("rejects ambiguous, incomplete, mismatched, and stale endpoint-anchored removals", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";

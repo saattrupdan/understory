@@ -933,6 +933,28 @@ async function runStagedMutation(
       }
       const paragraph = exact?.paragraph ?? uniquelyAnchoredParagraph(target.body, anchored!.beginning, anchored!.ending);
       const replacement = paragraph && removeUniqueParagraph(target.body, paragraph);
+      if ((!paragraph || replacement === null) && anchored &&
+          !target.body.replaceAll("`", "").includes(anchored.beginning) && !target.body.includes(anchored.ending)) {
+        // A later exact retraction may already have removed a historical
+        // request. Markdown code ticks must not conceal a still-present start.
+        const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+        modelChain = resolved.modelChain;
+        const judgement = await generateObject({
+          model: resolved.model,
+          schema: z.object({ safe: z.boolean() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Independent no-op check. Is the paragraph identified by BOTH endpoints already absent from this complete owner body? Refuse if any equivalent claim or partial matching paragraph remains, or if the path is not the intended owner. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}`,
+        });
+        state.checkCancellation();
+        if (!judgement.object.safe) throw new Error("Staged mutation deferred: anchored retraction absence is uncertain.");
+        const current = await kb.readConcept(target.path);
+        if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+        const summary = `Staged mutation: paragraph already absent from ${target.path}.`;
+        const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+        await traceStore(kb).save(trace);
+        return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
+      }
       if (replacement === null || !paragraph) {
         throw new Error("Staged mutation rejected: paragraph is not one exact unique owner paragraph.");
       }
