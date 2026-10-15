@@ -1301,6 +1301,66 @@ describe("mutation owner preflight", () => {
     expect(search.mock.calls[0][0]).toContain("godkendt_id9");
   });
 
+  it("finds a named Mimir correction owner outside the broad top five without bypassing verification", async () => {
+    staged();
+    const paper = "/papers/dfm-mimir-v1.md";
+    const unrelated = [1, 2, 3, 4, 5].map((n) => `/projects/unrelated-${n}.md`);
+    await kb.writeConcept(paper, { type: "Paper", title: "DFM Mimir v1" },
+      "Mimir validation-zero-shot-by-language.csv and validation-zero-shot-mimir-matched-by-language.csv reports exist.", "seed");
+    for (const [i, owner] of unrelated.entries()) {
+      await kb.writeConcept(owner, { type: "Project", title: `Unrelated ${i + 1}` },
+        `Unrelated project ${i + 1} notes.`, "seed");
+    }
+    const search = vi.spyOn(kb, "search").mockImplementation(async (query) => {
+      if (query === "mimir") return [{ path: paper, type: "Paper", title: "DFM Mimir v1",
+        score: 10, confidenceQualified: false }];
+      if (query === "claes") return [];
+      return unrelated.map((owner, i) => ({ path: owner, type: "Project", title: `Unrelated ${i + 1}`,
+        score: 10, confidenceQualified: false }));
+    });
+    const instruction = "Correct Claes zero-shot evaluation: Mimir validation-zero-shot-by-language.csv and validation-zero-shot-mimir-matched-by-language.csv reports were removed, not retained.";
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`"path":"${paper}"`);
+      expect(prompt).toContain(`"path":"${unrelated[0]}"`);
+      return { object: { ...baseProposal, action: "replace", path: paper,
+        old_text: "reports exist", new_text: "reports were removed" } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`OWNER ${paper}:`);
+      expect(prompt).toContain(unrelated[4]);
+      return { object: { safe: false, reason: "uncertain" } };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(search.mock.calls.map(([query]) => query)).toContain("mimir");
+    expect((await kb.readConcept(paper)).body).toContain("reports exist");
+  });
+
+  it("retains the original third owner when a focused name is incidental", async () => {
+    staged();
+    const original = [1, 2, 3, 4, 5].map((n) => `/projects/project-${n}.md`);
+    const incidental = "/projects/hooli.md";
+    for (const [i, owner] of original.entries()) {
+      await kb.writeConcept(owner, { type: "Project", title: `Project ${i + 1}` },
+        `Project ${i + 1} records a distinct claim.`, "seed");
+    }
+    await kb.writeConcept(incidental, { type: "Project", title: "Hooli" },
+      "Hooli is unrelated to the correction.", "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) =>
+      query === "hooli"
+        ? [{ path: incidental, type: "Project", title: "Hooli", score: 10, confidenceQualified: false }]
+        : original.map((owner, i) => ({ path: owner, type: "Project", title: `Project ${i + 1}`,
+          score: 10, confidenceQualified: false })));
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`"path":"${original[2]}"`);
+      expect(prompt).toContain(`"path":"${incidental}"`);
+      return { object: { ...baseProposal, action: "defer", reason: "Test only." } };
+    });
+    expect(await runMutation(kb, "Correct the project claim; Hooli is unrelated to this correction.", {
+      preflightInput: "Correct the project claim; Hooli is unrelated to this correction.",
+    })).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(original[2])).body).toContain("distinct claim");
+  });
+
   it("keeps a late named owner in the bounded search when the new identifier is absent", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering.md";

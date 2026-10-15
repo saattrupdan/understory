@@ -988,6 +988,29 @@ async function runStagedMutation(
     let hits = (await kb.search(query)).slice(0, 5);
     recorder.record("search_knowledge", query, hits.map((hit) => hit.path));
     state.checkCancellation();
+    // A correction can name its actual subject after an unrelated opening
+    // clause. Search up to two explicit proper names separately, but include
+    // only a title/slug match and retain every original search hit. Retrieval
+    // does not authorize the independent owner or factual safety check.
+    const focused: typeof hits = [];
+    if (!options.directAdd && options.preflightInput && !options.ownerHint) {
+      const names = [...new Set([...raw.matchAll(/\b[A-Z][a-z]{3,}\b/g)]
+        .map((match) => match[0].toLowerCase()))]
+        .filter((name) => !["correct", "update", "replace", "remove", "retain", "the", "this", "under"].includes(name))
+        .slice(0, 2);
+      for (const name of names) {
+        state.checkCancellation();
+        const matches = (await kb.search(name)).slice(0, 5);
+        recorder.record("search_knowledge", name, matches.map((hit) => hit.path));
+        const match = matches.find((hit) =>
+          !hits.some((old) => old.path === hit.path) &&
+          !focused.some((old) => old.path === hit.path) &&
+          (stagedWords(hit.title ?? "").includes(name) ||
+            stagedWords(path.posix.basename(hit.path, ".md")).includes(name)));
+        if (match) focused.push(match);
+      }
+      hits = [...hits, ...focused];
+    }
     // A long incident note can rank a tangential owner above the repository
     // explicitly named at its start. Include that existing owner as a candidate;
     // its name is only retrieval evidence, never permission to append.
@@ -1105,7 +1128,7 @@ async function runStagedMutation(
       ? ownerPath : undefined;
     const named = hits.filter((hit) => hit.title && stagedTitleMention(raw, hit.title));
     const explicitOwner = named.length === 1 ? named[0] : undefined;
-    const dominant = first && first.confidenceQualified === true && (!second ||
+    const dominant = !focused.length && first && first.confidenceQualified === true && (!second ||
       (first.confidence ?? 0) >= (second.confidence ?? 0) + 20 &&
       (first.confidence ?? 0) >= (second.confidence ?? 0) * 1.5);
     const candidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> = [];
@@ -1115,10 +1138,13 @@ async function runStagedMutation(
       if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
     } else if (hits.length > 0) {
-      // Give the proposer complete bodies for the original top three owners
-      // plus a bounded named repository, if it was added. All original five
-      // hits remain visible to the independent verifier.
-      for (const hit of hits.slice(0, leadingPath && hits[0]?.path === leadingPath ? 4 : 3)) {
+      // Keep the original top-three bodies eligible even when a focused name
+      // is incidental. Also expose the bounded title-matched owners to the
+      // proposer; all original five hits remain visible to the verifier.
+      const originalCandidates = hits.slice(0, leadingPath && hits[0]?.path === leadingPath ? 4 : 3);
+      const candidateHits = [...originalCandidates, ...focused.filter((hit) =>
+        !originalCandidates.some((candidate) => candidate.path === hit.path))];
+      for (const hit of candidateHits) {
         const concept = await kb.readConcept(hit.path);
         recorder.record("read_concept", concept.path, [concept.path]);
         candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
