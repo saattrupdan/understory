@@ -1098,6 +1098,45 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
+  it("appends an exact dated incident follow-up only after independent full-body approval", async () => {
+    staged();
+    const owner = "/repos/pi-agent/memory-async.md";
+    const heading = "Understory memory_add/memory_update incident (Oct 15 2026):";
+    const oldParagraph = `${heading} Initial metadata owner-selection fix shipped; historical failures were not requeued.`;
+    const followUp = "Later sampled retries failed; the queue resumed after one-job canaries.";
+    const instruction = `Update the Understory memory_add/memory_update incident note (Oct 15 2026): ${followUp}`;
+    const unrelated = "Other deployment history remains intact.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Pi Agent — Memory-Async Extension" },
+      `${oldParagraph}\n\n${unrelated}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: followUp } })
+      .mockResolvedValueOnce({ object: { new_text: followUp } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "No contradictory or duplicate claim." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(`${oldParagraph}\n\n${followUp}\n\n${unrelated}`);
+  });
+
+  it("rejects a dated follow-up that contradicts the existing incident", async () => {
+    staged();
+    const owner = "/repos/pi-agent/memory-async.md";
+    const heading = "Understory memory_add/memory_update incident (Oct 15 2026):";
+    const oldParagraph = `${heading} All metadata rejections were permanently fixed.`;
+    const followUp = "Nine metadata retries still fail after the fix.";
+    const instruction = `Update the Understory memory_add/memory_update incident note (Oct 15 2026): ${followUp}`;
+    await kb.writeConcept(owner, { type: "Repository", title: "Pi Agent — Memory-Async Extension" },
+      oldParagraph, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: followUp } })
+      .mockResolvedValueOnce({ object: { new_text: followUp } })
+      .mockResolvedValueOnce({ object: { safe: false, reason: "Old assertion contradicts new status." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("follow-up failed independent") });
+    expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
+  });
+
   it("does not broaden a named-section correction to an unrelated paragraph", async () => {
     staged();
     const owner = "/repos/pi-agent/memory-async.md";

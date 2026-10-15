@@ -1555,6 +1555,36 @@ async function runStagedMutation(
         state.checkCancellation();
         p.new_text = repair.object.new_text;
       }
+      const exactFollowUp = raw.trim().toLowerCase().startsWith("update ") && namedParagraph?.includes(p.old_text) &&
+        stagedOverlap(p.old_text, p.new_text) < 0.5 ? raw.slice(raw.indexOf(":") + 1).trim() : undefined;
+      if (target && exactFollowUp && exactFollowUp.length >= 30 && exactFollowUp.length <= 4_000 &&
+          !target.body.includes(exactFollowUp) && target.body.split(namedParagraph!).length === 2) {
+        // A later dated status can supplement a historical incident snapshot;
+        // it must not silently overwrite that history or leave a contradiction.
+        const judgement = await generateObject({
+          model: resolved.model,
+          schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Independent full-body safety check. Does the caller's EXACT dated status update belong immediately after this uniquely identified incident paragraph, without contradicting ANY current assertion in the COMPLETE owner body or duplicating a fact already stated? A historical partial fix is not a claim that all failures were resolved. Reject if any old statement must instead be retracted, if any assertion is unsupported, or if this owner is wrong. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (paths and titles):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nEXACT FOLLOW-UP:\n${exactFollowUp}`,
+        });
+        state.checkCancellation();
+        if (!judgement.object.safe) {
+          throw new Error("Staged mutation deferred: dated incident follow-up failed independent consistency check.");
+        }
+        const replacement = target.body.replace(namedParagraph!, `${namedParagraph}\n\n${exactFollowUp}`);
+        if (replacement.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: dated incident follow-up exceeds evidence limit.");
+        }
+        const current = await kb.readConcept(target.path);
+        if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+        state.checkCancellation();
+        await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: verified dated incident follow-up", sha256(target.body), options.signal, (path) => { changed = [path]; });
+        const summary = `Staged mutation changed ${changed.join(", ")}.`;
+        const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+        await traceStore(kb).save(trace);
+        return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+      }
       const boundedParagraphRepair = (repairedCorrection || (!!quotedOwner && quotedOwner === p.path) ||
         (!!namedParagraph && namedParagraph.includes(p.old_text))) &&
         p.old_text.length <= 4_000 &&
