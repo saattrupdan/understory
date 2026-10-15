@@ -784,12 +784,27 @@ function stagedSingleClauseEdit(before: string, after: string): boolean {
   return clauseAt(start) === clauseAt(beforeEnd);
 }
 
-function stagedStatusClauseIssue(before: string, after: string, instruction: string): string | undefined {
-  const clauses = (text: string): string[] => text.split(/;\s*|(?<=[.!?])\s+|\n+/).map((part) => part.trim())
+function stagedStatusClauses(text: string): string[] {
+  return text.split(/;\s*|(?<=[.!?])\s+|\n+/).map((part) => part.trim())
     .filter((part) => part.length >= 12);
-  const oldClauses = clauses(before);
-  const newClauses = clauses(after);
-  const requested = clauses(instruction);
+}
+
+function stagedRestoreUnrequestedStatusClauses(before: string, after: string, instruction: string): string {
+  const newClauses = stagedStatusClauses(after);
+  const lost = stagedStatusClauses(before).filter((clause) =>
+    stagedOverlap(clause, instruction) < 0.4 && !newClauses.includes(clause) &&
+    !newClauses.some((candidate) => stagedOverlap(clause, candidate) >= 0.85 &&
+      stagedOverlap(candidate, clause) >= 0.85));
+  // Exact observed text, not a model paraphrase. The usual support,
+  // contradiction and independent checks still apply to the whole result.
+  return lost.length ? `${after.trimEnd()} ${lost.map((clause) =>
+    /[.!?]$/.test(clause) ? clause : `${clause};`).join(" ")}` : after;
+}
+
+function stagedStatusClauseIssue(before: string, after: string, instruction: string): string | undefined {
+  const oldClauses = stagedStatusClauses(before);
+  const newClauses = stagedStatusClauses(after);
+  const requested = stagedStatusClauses(instruction);
   const negations = new Set(["not", "never", "without", "cannot", "doesn't", "don't"]);
   const oldSet = new Set(oldClauses);
   const newSet = new Set(newClauses);
@@ -1669,6 +1684,10 @@ async function runStagedMutation(
         state.checkCancellation();
         p.new_text = repair.object.new_text;
         statusClauseIssue = stagedStatusClauseIssue(p.old_text, p.new_text, raw);
+        if (statusClauseIssue?.startsWith("old clause not requested") && p.new_text.length <= 4_000) {
+          p.new_text = stagedRestoreUnrequestedStatusClauses(p.old_text, p.new_text, raw);
+          statusClauseIssue = stagedStatusClauseIssue(p.old_text, p.new_text, raw);
+        }
       }
       const boundedStatus = statusWords.length >= 2 &&
         statusWords.every((word) => oldStatusWords.has(word) || identityWords.has(word)) &&

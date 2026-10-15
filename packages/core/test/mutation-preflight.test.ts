@@ -1063,6 +1063,31 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
+  it("restores an unrequested old status clause after an incomplete model repair", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const history = "The obsolete Julia checksum calibration procedure is archived in a separate report.";
+    const oldParagraph = `Mimir zero-shot status: paused at 1,361 rows. ${history} ` +
+      "The Danish and English choices use the resumable manifest. " +
+      "Jev agreement remains imitation, not independently verified accuracy. " +
+      "The two unsolicited CSVs were removed from the checkout.";
+    const broad = oldParagraph.replace("paused at 1,361 rows", "completed all 12,000 rows")
+      .replace(`${history} `, "") + " Danish choice agreement is 82.75%.";
+    const instruction = "Update Claes Mimir zero-shot status: completed all 12,000 rows; Danish choice agreement 82.75%.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, oldParagraph, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: broad } })
+      .mockResolvedValueOnce({ object: { new_text: broad } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "History restored without contradiction." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(history);
+    expect(body).toContain("completed all 12,000 rows");
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
   it("allows close wording of unrelated status history but not a changed old number", async () => {
     staged();
     const owner = "/projects/claes-jev-diagnostics.md";
