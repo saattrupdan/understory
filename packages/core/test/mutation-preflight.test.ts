@@ -614,7 +614,7 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept("/playbooks/oncall-billing.md")).body).toContain(newFact);
   });
 
-  it("routes a fact framed with a preposition to its named owner without a hint", async () => {
+  it("routes the failed Holi possessive-framing fact to its named owner without a hint", async () => {
     staged();
     const owner = "/repos/holi.md";
     await kb.writeConcept(owner, { type: "Project", title: "Holi" },
@@ -623,7 +623,24 @@ describe("mutation owner preflight", () => {
       path: owner, type: "Project", title: "Holi", score: 10, confidence: 10,
       confidenceQualified: false,
     }]);
-    const fact = "For Holi's hereinmygarage vault, the backup rotation retains verified snapshots for 30 days.";
+    const fact = "For Holi's hereinmygarage vault, Dan prefers the existing `report` PDF template to `syv-report` and asked to remove `syv-report`. On 15 Oct 2026 the `syv-report` template and its dedicated `_brand/fonts/syv-report` fonts were removed from the Holi-managed vault, committed/pushed as 0ef1810, and the separate gitsky checkout was fast-forwarded. When suggesting or generating report PDFs for this vault, use `report`.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: owner } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+  });
+
+  it("does not treat a single-word author as a conflicting named owner", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering-synthetic-dataset-generation.md";
+    await kb.writeConcept(owner, { type: "Project", title: "Synthetic Dataset Generation" },
+      "Synthetic datasets are generated for FS Fotovalidering.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: owner, type: "Project", title: "Synthetic Dataset Generation", score: 10, confidence: 10,
+      confidenceQualified: false,
+    }]);
+    const fact = "Dan prefers the FS Fotovalidering annotation buttons to remain visible during review.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: owner } })
       .mockResolvedValueOnce({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
