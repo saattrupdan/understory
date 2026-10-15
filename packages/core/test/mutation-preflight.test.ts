@@ -477,7 +477,7 @@ describe("mutation owner preflight", () => {
       path: conceptPath, type: "Project", title: titles[i], score: 10, confidence: 10, confidenceQualified: false,
     })));
     const selectedPath = paths[rank];
-    const fact = `Correct FS Fotovalidering ${rank === 3 ? "Godkendt ID9" : "Backup ID8"}: replace old-value-id9 with new-value-id9.`;
+    const fact = `Correct FS Fotovalidering ${rank === 3 ? "godkendt_id9" : "backup_id8"}: replace old-value-id9 with new-value-id9.`;
     generateObjectMock.mockResolvedValueOnce({ object: { path: selectedPath } })
       .mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: selectedPath,
         old_text: "old-value-id9", new_text: "new-value-id9" } })
@@ -507,6 +507,35 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, instruction, { preflightInput: instruction })).toMatchObject({
       ok: true, result: { filesChanged: [selected] },
     });
+  });
+
+  it.each([false, true])("checks all five complete owners for a title-less identifier (shared=%s)", async (shared) => {
+    staged();
+    const paths = Array.from({ length: 5 }, (_, i) => `/projects/record-${i}.md`);
+    for (let i = 0; i < paths.length; i++) {
+      const body = i === 3 ? "The authoritative old-value-id9 is recorded here." :
+        i === 4 && shared ? "Archive: old-value-id9 was recorded here." :
+        `Other project context ${i}. `.repeat(i < 3 ? 1_800 : 5);
+      await kb.writeConcept(paths[i], { type: "Project", title: `Record ${i}` }, body, "seed");
+    }
+    vi.spyOn(kb, "search").mockResolvedValue(paths.map((conceptPath, i) => ({
+      path: conceptPath, type: "Project", title: `Record ${i}`,
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const instruction = "Correct the authoritative claim: replace old-value-id9 with new-value-id9.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: paths[3] } });
+    if (!shared) generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: paths[3],
+      old_text: "old-value-id9", new_text: "new-value-id9" } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Exact correction." } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    if (shared) {
+      expect(result).toMatchObject({ ok: false, status: "failed" });
+      expect((await kb.readConcept(paths[3])).body).toContain("old-value-id9");
+      expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    } else {
+      expect(result).toMatchObject({ ok: true, result: { filesChanged: [paths[3]] } });
+      expect((await kb.readConcept(paths[3])).body).toContain("new-value-id9");
+    }
   });
 
   it("rejects a metadata-selected specific owner when only shared slug words are mentioned", async () => {
@@ -628,7 +657,7 @@ describe("mutation owner preflight", () => {
     const fact = "Billing logs request IDs for charges created by support tooling.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: api } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
-      ok: false, status: "failed", error: expect.stringContaining("metadata-selected owner lacks a positive discriminative anchor"),
+      ok: false, status: "failed", error: expect.stringContaining("owner body exceeds evidence limit"),
     });
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
     expect((await kb.readConcept(api)).body).not.toContain(fact);

@@ -921,7 +921,22 @@ async function runStagedMutation(
       const selected = { path: owner.path, frontmatter: owner.frontmatter, body: owner.body };
       const evidenceCandidates = [...candidates.filter((candidate) => candidate.path !== selectedPath), selected];
       if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits)) {
-        throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
+        // A title-less exact claim needs complete competing bodies, not just
+        // the three bodies that fit in the proposal prompt. These reads are
+        // used for the uniqueness check only; the proposer sees the owner.
+        for (const hit of hits) {
+          if (evidenceCandidates.some((candidate) => candidate.path === hit.path)) continue;
+          const competitor = await kb.readConcept(hit.path);
+          recorder.record("read_concept", competitor.path, [competitor.path]);
+          state.checkCancellation();
+          if (competitor.body.length > STAGED_MAX_OWNER_CHARS) {
+            throw new Error("Staged mutation deferred: competing owner body exceeds evidence limit.");
+          }
+          evidenceCandidates.push({ path: competitor.path, frontmatter: competitor.frontmatter, body: competitor.body });
+        }
+        if (!stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits)) {
+          throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
+        }
       }
       candidates.splice(0, candidates.length, selected);
       evidence = JSON.stringify(candidates);
@@ -1206,7 +1221,8 @@ function mutationSearchQuery(input: string): string {
   // instruction (e.g. godkendt_id2). Keep these ahead of leading boilerplate.
   const identifiers = retained.filter((word) => /\d|_/.test(word));
   const descriptive = retained.filter((word) => !identifiers.includes(word));
-  return [...identifiers, ...descriptive].slice(0, 10).join(" ").slice(0, 500);
+  // Preserve the named topic even in a request containing many hashes/dates.
+  return [...identifiers.slice(0, 4), ...descriptive.slice(0, 6)].join(" ").slice(0, 500);
 }
 
 export async function runMutation(
