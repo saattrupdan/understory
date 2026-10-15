@@ -1332,6 +1332,18 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
+  it("verifies a bounded paragraph correction at an explicitly named existing owner", async () => {
+    await billingFixture(); staged();
+    const instruction = "In `/apis/billing-api.md`, correct the Billing API: monthly charges are scheduled only after approval; ad-hoc charges come from support tooling only after approval.";
+    const corrected = "Monthly charges are scheduled only after approval; ad-hoc charges come from support tooling only after approval.";
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace",
+      path: "/apis/billing-api.md", old_text: oldBody, new_text: corrected } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "verified" } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(corrected);
+  });
+
   it("allows a bounded multi-clause correction repair only after independent approval", async () => {
     await billingFixture(); staged();
     const instruction = "Correct Billing API: monthly charges are scheduled only after approval; ad-hoc charges come from support tooling only after approval.";
