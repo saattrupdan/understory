@@ -784,7 +784,7 @@ function stagedSingleClauseEdit(before: string, after: string): boolean {
   return clauseAt(start) === clauseAt(beforeEnd);
 }
 
-function stagedStatusClausesSupported(before: string, after: string, instruction: string): boolean {
+function stagedStatusClauseIssue(before: string, after: string, instruction: string): string | undefined {
   const clauses = (text: string): string[] => text.split(/;\s*|(?<=[.!?])\s+|\n+/).map((part) => part.trim())
     .filter((part) => part.length >= 12);
   const oldClauses = clauses(before);
@@ -795,7 +795,7 @@ function stagedStatusClausesSupported(before: string, after: string, instruction
   const newSet = new Set(newClauses);
   for (const clause of oldClauses) {
     if (newSet.has(clause)) continue;
-    if (stagedOverlap(clause, instruction) < 0.4) return false;
+    if (stagedOverlap(clause, instruction) < 0.4) return "old clause not requested";
     const closest = newClauses.reduce((best, candidate) =>
       stagedOverlap(clause, candidate) > stagedOverlap(clause, best) ? candidate : best, "");
     const removedNegations = stagedWords(clause).filter((word) =>
@@ -803,22 +803,22 @@ function stagedStatusClausesSupported(before: string, after: string, instruction
     if (removedNegations.length && !requested.some((part) =>
       removedNegations.every((word) => !stagedWords(part).includes(word)) &&
       stagedWords(part).filter((word) => stagedWords(closest).includes(word)).length >= 2 &&
-      stagedOverlap(closest, part) >= 0.6)) return false;
+      stagedOverlap(closest, part) >= 0.6)) return "removed negation not requested";
   }
   for (const clause of newClauses) {
     if (oldSet.has(clause)) continue;
     const closest = oldClauses.reduce((best, candidate) =>
       stagedOverlap(clause, candidate) > stagedOverlap(clause, best) ? candidate : best, "");
-    if (stagedOverlap(clause, `${instruction} ${closest}`) < 0.65) return false;
+    if (stagedOverlap(clause, `${instruction} ${closest}`) < 0.65) return "new clause lacks support";
     const newNegations = stagedWords(clause).filter((word) => negations.has(word));
     if (newNegations.every((word) => stagedWords(closest).includes(word))) continue;
     // A negation used in another old/requested sentence does not authorize
     // moving it onto a different subject (e.g. deleted CSVs -> not deleted).
     if (!requested.some((part) => newNegations.every((word) => stagedWords(part).includes(word)) &&
       stagedWords(part).filter((word) => !negations.has(word) && stagedWords(clause).includes(word)).length >= 2 &&
-      stagedOverlap(clause, part) >= 0.6)) return false;
+      stagedOverlap(clause, part) >= 0.6)) return "added negation not requested";
   }
-  return true;
+  return undefined;
 }
 
 function stagedCorrectionIntent(input: string): boolean {
@@ -1647,6 +1647,8 @@ async function runStagedMutation(
       // one paragraph. The exact old span must stay inside that one paragraph,
       // be unique across complete observed owners, and positively match the
       // named subject. This is not a general multi-clause replacement license.
+      const statusClauseIssue = statusWords.length >= 2 && statusParagraph
+        ? stagedStatusClauseIssue(p.old_text, p.new_text, raw) : undefined;
       const boundedStatus = statusWords.length >= 2 &&
         statusWords.every((word) => oldStatusWords.has(word) || identityWords.has(word)) &&
         statusWords.filter((word) => oldStatusWords.has(word)).length >= 2 &&
@@ -1654,8 +1656,7 @@ async function runStagedMutation(
         !!statusParagraph && statusUniqueAcrossHits &&
         candidates.filter((candidate) => candidate.body.includes(p.old_text)).length === 1 &&
         p.old_text.length >= 200 && p.old_text.length <= 4_000 && p.new_text.length <= 4_000 &&
-        stagedOverlap(p.old_text, p.new_text) >= 0.7 &&
-        stagedStatusClausesSupported(p.old_text, p.new_text, raw);
+        stagedOverlap(p.old_text, p.new_text) >= 0.7 && !statusClauseIssue;
       const boundedParagraphRepair = (repairedCorrection || (!!quotedOwner && quotedOwner === p.path) ||
         (!!namedParagraph && namedParagraph.includes(p.old_text)) || boundedStatus) &&
         p.old_text.length <= 4_000 &&
@@ -1667,7 +1668,7 @@ async function runStagedMutation(
         const reason = !target ? `owner missing: ${p.path.slice(0, 256) || "(empty)"}; candidates: ${candidates.map((candidate) => candidate.path).join(", ")}` : p.old_text.length < 12 ? "old text too short" :
           !p.new_text ? "new text empty" : target.body.split(p.old_text).length !== 2 ? "old text not unique" :
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ? "new text lacks support" :
-            `change spans clauses (section=${!!sectionOwnerPath}, scoped=${!!namedParagraph && namedParagraph.includes(p.old_text)}, status=${!!statusSubject}, status_paragraph=${!!statusParagraph}, subject=${statusWords.length}/${statusWords.filter((word) => oldStatusWords.has(word)).length}/${statusWords.filter((word) => identityWords.has(word)).length}, owners=${candidates.filter((candidate) => candidate.body.includes(p.old_text)).length}, old=${p.old_text.length}, new=${p.new_text.length}, overlap=${stagedOverlap(p.old_text, p.new_text).toFixed(2)}, paragraph_break=${/\n\s*\n/.test(p.old_text) || /\n\s*\n/.test(p.new_text)})`;
+            `change spans clauses (section=${!!sectionOwnerPath}, scoped=${!!namedParagraph && namedParagraph.includes(p.old_text)}, status=${!!statusSubject}, status_paragraph=${!!statusParagraph}, status_unique=${statusUniqueAcrossHits}, status_clause=${statusClauseIssue ?? "ok"}, subject=${statusWords.length}/${statusWords.filter((word) => oldStatusWords.has(word)).length}/${statusWords.filter((word) => identityWords.has(word)).length}, owners=${candidates.filter((candidate) => candidate.body.includes(p.old_text)).length}, old=${p.old_text.length}, new=${p.new_text.length}, overlap=${stagedOverlap(p.old_text, p.new_text).toFixed(2)}, paragraph_break=${/\n\s*\n/.test(p.old_text) || /\n\s*\n/.test(p.new_text)})`;
         throw new Error(`Staged mutation rejected: replacement is not one supported local change (${reason}).`);
       }
       const oldWords = new Set(stagedWords(p.old_text));
@@ -1692,7 +1693,7 @@ async function runStagedMutation(
       if (!newText || !(stagedSingleClauseEdit(p.old_text, newText) ||
           (boundedParagraphRepair && newText.length <= 4_000 && !/\n\s*\n/.test(newText) &&
             stagedOverlap(p.old_text, newText) >= (boundedStatus ? 0.7 : 0.5) &&
-            (!boundedStatus || stagedStatusClausesSupported(p.old_text, newText, raw)))) ||
+            (!boundedStatus || !stagedStatusClauseIssue(p.old_text, newText, raw)))) ||
           stagedOverlap(newText, `${raw} ${p.old_text}`) < 0.65 || unsupportedWords(newText).length) {
         throw new Error("Staged mutation rejected: replacement introduces facts absent from the request.");
       }
