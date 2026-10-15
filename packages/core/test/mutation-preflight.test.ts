@@ -486,6 +486,51 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(rightOwner)).body).not.toContain(fact);
   });
 
+  it("rejects every token of a negated multiword owner mention despite verifier approval", async () => {
+    staged();
+    const wrongOwner = "/projects/fs-fotovalidering-tono-onot.md";
+    const rightOwner = "/projects/fs-fotovalidering-general.md";
+    await kb.writeConcept(wrongOwner, { type: "Project", title: "FS Fotovalidering Tono Onot" }, "Project context. ".repeat(2_700), "seed");
+    await kb.writeConcept(rightOwner, { type: "Project", title: "FS Fotovalidering General" }, "General project context. ".repeat(2_700), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([wrongOwner, rightOwner].map((conceptPath) => ({
+      path: conceptPath, type: "Project",
+      title: conceptPath === wrongOwner ? "FS Fotovalidering Tono Onot" : "FS Fotovalidering General",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "FS Fotovalidering experiment 69 records an observation, not about Tono Onot.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: wrongOwner } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(wrongOwner)).body).not.toContain(fact);
+    expect((await kb.readConcept(rightOwner)).body).not.toContain(fact);
+  });
+
+  it("includes all five retained metadata hits when checking selected-owner discrimination", async () => {
+    staged();
+    const paths = [
+      "/projects/tono-onot.md",
+      "/projects/project-beta.md",
+      "/projects/project-gamma.md",
+      "/projects/tono-onot-archive.md",
+      "/projects/project-epsilon.md",
+    ];
+    const titles = ["Tono Onot", "Project Beta", "Project Gamma", "Tono Onot Archive", "Project Epsilon"];
+    for (let i = 0; i < paths.length; i++) {
+      await kb.writeConcept(paths[i], { type: "Project", title: titles[i] }, `Project ${i} context. `.repeat(2_700), "seed");
+    }
+    vi.spyOn(kb, "search").mockResolvedValue(paths.map((conceptPath, i) => ({
+      path: conceptPath, type: "Project", title: titles[i],
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = "Tono Onot experiment 69 records a camera calibration observation for this project.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: paths[0] } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    for (const conceptPath of paths) expect((await kb.readConcept(conceptPath)).body).not.toContain(fact);
+  });
+
   it("allows a positively named domain-specific owner through the independent check", async () => {
     staged();
     const wrongOwner = "/projects/fs-fotovalidering-general.md";
