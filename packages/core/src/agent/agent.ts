@@ -1539,6 +1539,22 @@ async function runStagedMutation(
       const namedParagraph = target && namedSection && sectionOwnerPath === p.path
         ? target.body.split(/\n\s*\n/).find((paragraph) =>
           namedSection.test(paragraph.split("\n", 1)[0] ?? "")) : undefined;
+      if (namedParagraph?.includes(p.old_text) && p.old_text.length <= 4_000 &&
+          p.new_text.length <= 4_000 && stagedOverlap(p.old_text, p.new_text) < 0.5) {
+        // A broad rewrite of a dated incident may erase unrelated history.
+        // Give the proposer one chance to retain the old paragraph verbatim
+        // except for the requested corrections; the usual lexical, independent
+        // and compare-and-swap checks still run on the repaired text.
+        const repair = await generateObject({
+          model: proposer.model,
+          schema: z.object({ new_text: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Repair ONLY this one named incident paragraph. Preserve its heading and all old statements that the instruction does not contradict, with most old wording unchanged. Incorporate all supported new facts and retract any superseded claim. Keep it one paragraph, do not invent facts or edit any other section. If this cannot be done safely, return an empty new_text. JSON only.\nINSTRUCTION:\n${raw}\nOLD PARAGRAPH:\n${p.old_text}\nREJECTED BROAD REWRITE:\n${p.new_text}`,
+        });
+        state.checkCancellation();
+        p.new_text = repair.object.new_text;
+      }
       const boundedParagraphRepair = (repairedCorrection || (!!quotedOwner && quotedOwner === p.path) ||
         (!!namedParagraph && namedParagraph.includes(p.old_text))) &&
         p.old_text.length <= 4_000 &&

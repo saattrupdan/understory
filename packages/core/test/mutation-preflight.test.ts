@@ -1059,6 +1059,45 @@ describe("mutation owner preflight", () => {
     expect(body).not.toContain("nine sampled retries succeeded");
   });
 
+  it("repairs a broad named-incident rewrite by preserving the old paragraph", async () => {
+    staged();
+    const owner = "/repos/pi-agent/memory-async.md";
+    const heading = "Understory memory_add/memory_update incident (Oct 15 2026):";
+    const oldParagraph = `${heading} One MultiBFCL add recovered; nine sampled retries succeeded; queue canaries were paused.`;
+    const newParagraph = `${heading} One MultiBFCL add recovered; nine sampled retries failed; queue canaries were paused and resumed.`;
+    const instruction = "Update the Understory memory_add/memory_update incident note (Oct 15 2026): One MultiBFCL add recovered; nine sampled retries failed; queue canaries were paused and resumed.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Pi Agent — Memory-Async Extension" },
+      `${oldParagraph}\n\nAn unrelated paragraph stays unchanged.`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: "Nine sampled retries failed; queue canaries were paused and resumed." } })
+      .mockResolvedValueOnce({ object: { new_text: newParagraph } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "History retained." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(newParagraph);
+    expect((await kb.readConcept(owner)).body).toContain("An unrelated paragraph stays unchanged.");
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects an unrepairable broad named-incident rewrite without writing", async () => {
+    staged();
+    const owner = "/repos/pi-agent/memory-async.md";
+    const heading = "Understory memory_add/memory_update incident (Oct 15 2026):";
+    const oldParagraph = `${heading} One MultiBFCL add recovered; nine sampled retries succeeded; queue canaries were paused.`;
+    const instruction = "Update the Understory memory_add/memory_update incident note (Oct 15 2026): nine sampled retries failed.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Pi Agent — Memory-Async Extension" },
+      oldParagraph, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: "Nine sampled retries failed." } })
+      .mockResolvedValueOnce({ object: { new_text: "" } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
   it("does not broaden a named-section correction to an unrelated paragraph", async () => {
     staged();
     const owner = "/repos/pi-agent/memory-async.md";
