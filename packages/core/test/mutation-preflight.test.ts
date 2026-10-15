@@ -408,7 +408,7 @@ describe("mutation owner preflight", () => {
     });
     const result = await runMutation(kb, fact, { ownerHint: hintedPath, preflightInput: fact, directAdd: true });
     expect(result).toMatchObject({ ok: true, result: { filesChanged: [hintedPath] } });
-    expect((await kb.readConcept(hintedPath)).body).toBe(`${fact}\\n`);
+    expect((await kb.readConcept(hintedPath)).body).toBe(`${fact}\n`);
     expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
   });
 
@@ -478,7 +478,7 @@ describe("mutation owner preflight", () => {
     });
     expect(await runMutation(kb, fact, { ownerHint: hintedPath, preflightInput: fact, directAdd: true }))
       .toMatchObject({ ok: false, status: "failed" });
-    expect((await kb.readConcept(hintedPath)).body).toBe("Concurrent content.\\n");
+    expect((await kb.readConcept(hintedPath)).body).toBe("Concurrent content.\n");
   });
 
   it("allows a fact explicitly naming the selected project despite generic dataset terms", async () => {
@@ -572,10 +572,8 @@ describe("mutation owner preflight", () => {
       return { object: { safe: false, reason: "Owner does not fit." } };
     });
     expect(await runMutation(kb, "Remember a Customers billing incident response fact.", { ownerHint: "/tables/customers.md", preflightInput: "Remember a Customers billing incident response fact.", directAdd: true })).toMatchObject({ ok: false, status: "failed" });
-    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
-      .mockResolvedValueOnce({ object: { ...baseProposal, action: "defer", reason: "No owner." } });
     expect(await runMutation(kb, "Remember a billing incident response fact.", { ownerHint: "/other/unsearched.md", preflightInput: "Remember a billing incident response fact.", directAdd: true })).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
   it("appends to a relevant existing hinted owner even when broad search ranks another", async () => {

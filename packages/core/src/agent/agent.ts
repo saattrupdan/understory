@@ -960,6 +960,9 @@ async function runStagedMutation(
         }
         evidence.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
       }
+      if (evidence.some((candidate) => candidate.body.includes(raw.trim()))) {
+        throw new Error("Staged mutation deferred: exact fact already belongs to an observed concept.");
+      }
       const evidenceText = JSON.stringify(evidence);
       if (evidenceText.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
         throw new Error("Staged mutation deferred: new-concept evidence exceeds prompt budget.");
