@@ -1474,7 +1474,7 @@ async function runStagedMutation(
       const localEdit = stagedSingleClauseEdit(p.old_text, p.new_text) || boundedParagraphRepair;
       if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 || !localEdit) {
-        const reason = !target ? "owner missing" : p.old_text.length < 12 ? "old text too short" :
+        const reason = !target ? `owner missing: ${p.path.slice(0, 256) || "(empty)"}; candidates: ${candidates.map((candidate) => candidate.path).join(", ")}` : p.old_text.length < 12 ? "old text too short" :
           !p.new_text ? "new text empty" : target.body.split(p.old_text).length !== 2 ? "old text not unique" :
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ? "new text lacks support" : "change spans clauses";
         throw new Error(`Staged mutation rejected: replacement is not one supported local change (${reason}).`);
