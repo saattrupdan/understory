@@ -1347,7 +1347,10 @@ describe("mutation owner preflight", () => {
   it("finds a named Mimir correction owner outside the broad top five without bypassing verification", async () => {
     staged();
     const paper = "/papers/dfm-mimir-v1.md";
+    const incidental = "/papers/mimir-news.md";
     const unrelated = [1, 2, 3, 4, 5].map((n) => `/projects/unrelated-${n}.md`);
+    await kb.writeConcept(incidental, { type: "Paper", title: "Mimir News" },
+      "A separate article about Mimir news, not the zero-shot evaluation.", "seed");
     await kb.writeConcept(paper, { type: "Paper", title: "DFM Mimir v1" },
       "Mimir validation-zero-shot-by-language.csv and validation-zero-shot-mimir-matched-by-language.csv reports exist.", "seed");
     for (const [i, owner] of unrelated.entries()) {
@@ -1355,8 +1358,10 @@ describe("mutation owner preflight", () => {
         `Unrelated project ${i + 1} notes.`, "seed");
     }
     const search = vi.spyOn(kb, "search").mockImplementation(async (query) => {
-      if (query === "mimir") return [{ path: paper, type: "Paper", title: "DFM Mimir v1",
-        score: 10, confidenceQualified: false }];
+      if (query === "mimir") return [
+        { path: incidental, type: "Paper", title: "Mimir News", score: 11, confidenceQualified: false },
+        { path: paper, type: "Paper", title: "DFM Mimir v1", score: 10, confidenceQualified: false },
+      ];
       if (query === "claes") return [];
       return unrelated.map((owner, i) => ({ path: owner, type: "Project", title: `Unrelated ${i + 1}`,
         score: 10, confidenceQualified: false }));
@@ -1364,6 +1369,7 @@ describe("mutation owner preflight", () => {
     const instruction = "Correct Claes zero-shot evaluation: Mimir validation-zero-shot-by-language.csv and validation-zero-shot-mimir-matched-by-language.csv reports were removed, not retained.";
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain(`"path":"${paper}"`);
+      expect(prompt).toContain(`"path":"${incidental}"`);
       expect(prompt).toContain(`"path":"${unrelated[0]}"`);
       return { object: { ...baseProposal, action: "replace", path: paper,
         old_text: "reports exist", new_text: "reports were removed" } };
@@ -1375,6 +1381,37 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
       .toMatchObject({ ok: false, status: "failed" });
     expect(search.mock.calls.map(([query]) => query)).toContain("mimir");
+    expect((await kb.readConcept(paper)).body).toContain("reports exist");
+  });
+
+  it("selects from metadata before a focused correction overfills the proposer", async () => {
+    staged();
+    const paper = "/papers/dfm-mimir-v1.md";
+    const other = [1, 2, 3].map((n) => `/projects/unrelated-${n}.md`);
+    await kb.writeConcept(paper, { type: "Paper", title: "DFM Mimir v1" },
+      `Mimir CSV reports exist. ${"Mimir checkpoint context. ".repeat(200)}`, "seed");
+    for (const [i, owner] of other.entries()) {
+      await kb.writeConcept(owner, { type: "Project", title: `Unrelated ${i + 1}` },
+        `Unrelated context ${i + 1}. `.repeat(400), "seed");
+    }
+    vi.spyOn(kb, "search").mockImplementation(async (query) =>
+      query === "mimir" ? [{ path: paper, type: "Paper", title: "DFM Mimir v1",
+        score: 10, confidenceQualified: false }]
+        : other.map((owner, i) => ({ path: owner, type: "Project", title: `Unrelated ${i + 1}`,
+          score: 10, confidenceQualified: false })));
+    const instruction = "Correct the Mimir evaluation: CSV reports were removed rather than retained.";
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("CANDIDATE METADATA");
+      expect(prompt).toContain(`"path":"${paper}"`);
+      expect(prompt).toContain(`"path":"${other[2]}"`);
+      return { object: { path: paper } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`"path":"${paper}"`);
+      expect(prompt).not.toContain(`"path":"${other[0]}"`);
+      return { object: { ...baseProposal, action: "defer", reason: "Test only." } };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
     expect((await kb.readConcept(paper)).body).toContain("reports exist");
   });
 

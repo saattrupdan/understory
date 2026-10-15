@@ -1000,14 +1000,14 @@ async function runStagedMutation(
         .slice(0, 2);
       for (const name of names) {
         state.checkCancellation();
-        const matches = (await kb.search(name)).slice(0, 5);
-        recorder.record("search_knowledge", name, matches.map((hit) => hit.path));
-        const match = matches.find((hit) =>
+        const matches = await kb.search(name);
+        recorder.record("search_knowledge", name, matches.slice(0, 20).map((hit) => hit.path));
+        for (const match of matches.filter((hit) =>
           !hits.some((old) => old.path === hit.path) &&
-          !focused.some((old) => old.path === hit.path) &&
           (stagedWords(hit.title ?? "").includes(name) ||
-            stagedWords(path.posix.basename(hit.path, ".md")).includes(name)));
-        if (match) focused.push(match);
+            stagedWords(path.posix.basename(hit.path, ".md")).includes(name))).slice(0, 2)) {
+          if (!focused.some((old) => old.path === match.path)) focused.push(match);
+        }
       }
       hits = [...hits, ...focused];
     }
@@ -1151,19 +1151,23 @@ async function runStagedMutation(
       }
     }
     let evidence = JSON.stringify(candidates);
+    // Select by metadata sooner when multiple focused matches would force a
+    // large correction prompt. Selection remains a locator; the chosen owner
+    // is always re-read in full for the independent write check.
+    const selectionBudget = focused.length ? 24_000 : STAGED_MAX_EVIDENCE_CHARS;
     let selectedPath: string | undefined;
     let verifiedMetadataOwner = false;
-    if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS && candidates.length <= 1) {
+    if (evidence.length + raw.length > selectionBudget && candidates.length <= 1) {
       throw new Error("Staged mutation deferred: evidence exceeds prompt budget.");
     }
-    if (candidates.length > 1 && evidence.length + raw.length <= STAGED_MAX_EVIDENCE_CHARS &&
+    if (candidates.length > 1 && evidence.length + raw.length <= selectionBudget &&
         candidates.some((candidate) => candidate.body.length > STAGED_MAX_OWNER_CHARS)) {
       throw new Error("Staged mutation deferred: candidate body exceeds evidence limit.");
     }
     state.checkCancellation();
     const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
     modelChain = resolved.modelChain;
-    if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
+    if (evidence.length + raw.length > selectionBudget) {
       if (raw.length > 8_000) throw new Error("Staged mutation deferred: instruction exceeds selector budget.");
       // Selection is only a locator, never write authorization. Do not send
       // truncated bodies to the proposer or silently drop competing owners:
@@ -1391,8 +1395,9 @@ async function runStagedMutation(
       claim: z.string(),
       reason: z.string(),
     }).strict();
+    const proposer = await resolveAgentModel(options, "mutate", { ...process.env, MUTATION_ENABLE_THINKING: "false" }, (call) => providerCalls.push(call));
     const proposal = await generateObject({
-      model: resolved.model,
+      model: proposer.model,
       schema: proposalSchema,
       temperature: 0,
       abortSignal: options.signal,
@@ -1406,7 +1411,7 @@ async function runStagedMutation(
       // Try one exact, local replacement instead; the ordinary replacement
       // branch below still enforces support, independent review and CAS.
       const repair = await generateObject({
-        model: resolved.model,
+        model: proposer.model,
         schema: z.object({ path: z.string(), old_text: z.string(), new_text: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
