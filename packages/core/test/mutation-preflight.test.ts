@@ -566,7 +566,7 @@ describe("mutation owner preflight", () => {
     vi.spyOn(kb, "search").mockResolvedValue([{ path: unrelated, type: "Repository", title: "Pi Node Runtime",
       score: 100, confidence: 100, confidenceQualified: true }]);
     const fact = "Prezzi PR #18 testing gotchas: deck-local Slidev 52.16.0 differs from root Slidev 52.19.1. Restart the Vite server after changing visual-sync.ts.";
-    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: false } })
       .mockImplementationOnce(async (request: { prompt: string }) => {
         expect(request.prompt).toContain(`OWNER ${owner}`);
         expect(request.prompt).toContain("Pi Node Runtime");
@@ -586,7 +586,7 @@ describe("mutation owner preflight", () => {
     vi.spyOn(kb, "search").mockResolvedValue([{ path: unrelated, type: "Repository", title: "Pi Node Runtime",
       score: 100, confidence: 100, confidenceQualified: true }]);
     const fact = "Prezzi PR #18 testing gotchas: deck-local Slidev 52.16.0 differs from root Slidev 52.19.1. Restart the Vite server after changing visual-sync.ts.";
-    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: false } })
       .mockImplementationOnce(async (request: { prompt: string }) => {
         expect(request.prompt).toContain("FULL EXISTING SEARCH EVIDENCE");
         expect(request.prompt).toContain("Pi uses a Node runtime");
@@ -653,6 +653,22 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
       .toMatchObject({ ok: false, status: "failed" });
     expect(await kb.bundle.exists("/repos/prezzi.md")).toBe(false);
+  });
+
+  it("does not infer a repository from a named PR without software-checkout evidence", async () => {
+    staged();
+    const unrelated = "/repos/pi-agent/node-runtime.md";
+    await kb.writeConcept(unrelated, { type: "Repository", title: "Pi Node Runtime" },
+      "Pi uses a Node runtime for its extensions.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: unrelated, type: "Repository", title: "Pi Node Runtime",
+      score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "Rate PR #18 policy decides who is allowed to approve billing invoices.";
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: false } })
+      .mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { ...baseProposal, action: "defer", reason: "No owner." } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(await kb.bundle.exists("/repos/rate.md")).toBe(false);
   });
 
   it("rejects a missing hinted path unrelated to the exact fact", async () => {

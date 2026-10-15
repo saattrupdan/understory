@@ -1150,6 +1150,12 @@ async function runStagedMutation(
       raw.trim().match(/^([A-Z][a-z]{2,})\s+PR\s+#\d+\b/)?.[1];
     const possibleRepository = !options.ownerHint && options.directAdd && options.preflightInput &&
       (raw.trim().match(/^([A-Z][a-z0-9]+(?:-[a-z0-9]+)+)\b/)?.[1] ?? leadingPullRequest);
+    // A named PR plus concrete source/dependency paths and its development
+    // stack identifies a software checkout even if the fast classifier declines.
+    // A policy/feature with only PR syntax never qualifies on that basis.
+    const softwarePullRequest = !!leadingPullRequest &&
+      /(?:\b(?:src|packages|presentations|node_modules)\/[\w@<./-]+|[\w-]+\.(?:ts|tsx|vue|py)\b)/i.test(raw) &&
+      /\b(?:Slidev|Vite|Vue|pnpm|npm|Docker|dev server)\b/i.test(raw);
     let namedApplication: string | undefined;
     if (possibleRepository && (leadingPullRequest || /\bon main at [0-9a-f]{7,40}\b/i.test(raw.slice(0, 250)))) {
       const classifier = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
@@ -1162,7 +1168,9 @@ async function runStagedMutation(
         prompt: `Read-only subject check. Does the opening name ${JSON.stringify(possibleRepository)} unambiguously identify the software repository or application owning the named pull request or deployed commit in this exact fact? Return repositorySubject=false for a policy, feature, limit, check, or other topic that merely belongs to a different named application. Do not infer identity from capitalization, PR syntax or a hyphen alone. JSON only.\nFACT:\n${raw.trim()}`,
       });
       state.checkCancellation();
-      if (judgement.object.repositorySubject) namedApplication = possibleRepository;
+      if (judgement.object.repositorySubject || (softwarePullRequest && possibleRepository === leadingPullRequest)) {
+        namedApplication = possibleRepository;
+      }
     }
     // A broad fact query can miss the repository entirely. Search the
     // independently classified subject before considering a new owner, so an
