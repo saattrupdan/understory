@@ -538,6 +538,35 @@ describe("mutation owner preflight", () => {
     }
   });
 
+  it.each(["unique", "shared", "negated"])('grounds an exact add in a unique existing item ID (%s)', async (caseName) => {
+    staged();
+    const paths = Array.from({ length: 5 }, (_, i) => `/projects/record-${i}.md`);
+    for (let i = 0; i < paths.length; i++) {
+      const body = i === 3 ? 'Owner baseline mentions godkendt_id9.' :
+        i === 4 && caseName === 'shared' ? 'Another baseline mentions godkendt_id9.' :
+        `Other validation details ${i}. `.repeat(i < 3 ? 1_700 : 2);
+      await kb.writeConcept(paths[i], { type: 'Project', title: `Record ${i}` }, body, 'seed');
+    }
+    vi.spyOn(kb, 'search').mockResolvedValue(paths.map((conceptPath, i) => ({
+      path: conceptPath, type: 'Project', title: `Record ${i}`,
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const fact = caseName === 'negated'
+      ? 'FS Fotovalidering records an unrelated observation, not about godkendt_id9.'
+      : 'FS Fotovalidering godkendt_id9 measured head height at 79.37 percent.';
+    generateObjectMock.mockResolvedValueOnce({ object: { path: paths[3] } });
+    if (caseName === 'unique') generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    if (caseName === 'unique') {
+      expect(result).toMatchObject({ ok: true, result: { filesChanged: [paths[3]] } });
+      expect((await kb.readConcept(paths[3])).body).toContain(fact);
+    } else {
+      expect(result).toMatchObject({ ok: false, status: 'failed' });
+      expect((await kb.readConcept(paths[3])).body).not.toContain(fact);
+      expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("does not authorize a title-less owner using an incidental unique date or negated name", async () => {
     staged();
     const selected = "/projects/archive-record.md";

@@ -774,7 +774,8 @@ function stagedDiscriminativeOwnerAnchor(
   input: string,
   selectedPath: string,
   candidates: Array<{ path: string; frontmatter: { title?: string }; body?: string }>,
-  hits: Array<{ path: string; title?: string }>
+  hits: Array<{ path: string; title?: string }>,
+  directAdd: boolean,
 ): boolean {
   const index = hits.findIndex((hit) => hit.path === selectedPath);
   if (index < 0 || !candidates.some((candidate) => candidate.path === selectedPath)) return false;
@@ -816,9 +817,16 @@ function stagedDiscriminativeOwnerAnchor(
     input.match(/\bnot\s+(?:the\s+)?(?:intermediate|previous|old)\s+`([^`]{12,2000})`/i)?.[1],
   ].filter((claim): claim is string => !!claim);
   const allCompetitorBodiesObserved = otherBodies.length === hits.length - 1;
-  return oldClaims.some((claim) => allCompetitorBodiesObserved && selectedBody.includes(claim) &&
-    !otherBodies.some((body) => body.includes(claim)) &&
-    !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term))));
+  const uniqueUnnegated = (claim: string): boolean => allCompetitorBodiesObserved &&
+    selectedBody.includes(claim) && !otherBodies.some((body) => body.includes(claim)) &&
+    !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term)));
+  if (directAdd) {
+    // An item ID already in one complete owner body can locate an exact fact
+    // about that item. Generic dates, hashes and ungrounded IDs cannot.
+    const itemIds = input.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [];
+    return itemIds.some(uniqueUnnegated);
+  }
+  return oldClaims.some(uniqueUnnegated);
 }
 
 /** Knowledge add/update — full toolset, low temperature. */
@@ -878,6 +886,7 @@ async function runStagedMutation(
     }
     let evidence = JSON.stringify(candidates);
     let selectedPath: string | undefined;
+    let verifiedMetadataOwner = false;
     if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS && candidates.length <= 1) {
       throw new Error("Staged mutation deferred: evidence exceeds prompt budget.");
     }
@@ -920,7 +929,7 @@ async function runStagedMutation(
       }
       const selected = { path: owner.path, frontmatter: owner.frontmatter, body: owner.body };
       const evidenceCandidates = [...candidates.filter((candidate) => candidate.path !== selectedPath), selected];
-      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits)) {
+      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd)) {
         // A title-less exact claim needs complete competing bodies, not just
         // the three bodies that fit in the proposal prompt. These reads are
         // used for the uniqueness check only; the proposer sees the owner.
@@ -934,10 +943,11 @@ async function runStagedMutation(
           }
           evidenceCandidates.push({ path: competitor.path, frontmatter: competitor.frontmatter, body: competitor.body });
         }
-        if (!stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits)) {
+        if (!stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd)) {
           throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
         }
       }
+      verifiedMetadataOwner = true;
       candidates.splice(0, candidates.length, selected);
       evidence = JSON.stringify(candidates);
       if (evidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
@@ -1001,7 +1011,7 @@ async function runStagedMutation(
         raw.trim().length >= 30 && raw.trim().length <= 4_000) {
       const target = candidates.find((candidate) => candidate.path === directPath)!;
       const fact = raw.trim();
-      if (!stagedOwnerAnchor(fact, target.path) ||
+      if (!(stagedOwnerAnchor(fact, target.path) || (verifiedMetadataOwner && selectedPath === target.path)) ||
           (target.frontmatter.title && fact.toLowerCase().includes(target.frontmatter.title.toLowerCase()) &&
             !stagedTitleMention(fact, target.frontmatter.title))) {
         throw new Error("Staged mutation deferred: suggested owner lacks a positive entity anchor.");
