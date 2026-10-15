@@ -555,6 +555,106 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body).toContain(fact);
   });
 
+  it("routes a named pull-request fact to its existing repository despite unrelated search hits", async () => {
+    staged();
+    const owner = "/repos/prezzi.md";
+    const unrelated = "/repos/pi-agent/node-runtime.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "Syv.ai Slidev Visual Editor (prezzi)" },
+      "Prezzi edits Slidev presentation decks and maintains its visual editor.", "seed");
+    await kb.writeConcept(unrelated, { type: "Repository", title: "Pi Node Runtime" },
+      "Pi uses a Node runtime for its extensions.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: unrelated, type: "Repository", title: "Pi Node Runtime",
+      score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "Prezzi PR #18 testing gotchas: deck-local Slidev 52.16.0 differs from root Slidev 52.19.1. Restart the Vite server after changing visual-sync.ts.";
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
+      .mockImplementationOnce(async (request: { prompt: string }) => {
+        expect(request.prompt).toContain(`OWNER ${owner}`);
+        expect(request.prompt).toContain("Pi Node Runtime");
+        return { object: { safe: true } };
+      });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
+  });
+
+  it("creates a distinct named pull-request owner only after checking complete competing bodies", async () => {
+    staged();
+    const unrelated = "/repos/pi-agent/node-runtime.md";
+    await kb.writeConcept(unrelated, { type: "Repository", title: "Pi Node Runtime" },
+      "Pi uses a Node runtime for its extensions.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: unrelated, type: "Repository", title: "Pi Node Runtime",
+      score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "Prezzi PR #18 testing gotchas: deck-local Slidev 52.16.0 differs from root Slidev 52.19.1. Restart the Vite server after changing visual-sync.ts.";
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
+      .mockImplementationOnce(async (request: { prompt: string }) => {
+        expect(request.prompt).toContain("FULL EXISTING SEARCH EVIDENCE");
+        expect(request.prompt).toContain("Pi uses a Node runtime");
+        expect(request.prompt).toContain("/repos/prezzi.md");
+        return { object: { safe: true } };
+      });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: ["/repos/prezzi.md"] } });
+    expect((await kb.readConcept("/repos/prezzi.md")).body).toBe(`${fact}\n`);
+  });
+
+  it("finds an existing named PR owner absent from the first search hits", async () => {
+    staged();
+    const owner = "/projects/prezzi-editor.md";
+    const unrelated = "/repos/pi-agent/node-runtime.md";
+    const fact = "Prezzi PR #18 testing gotchas: deck-local Slidev 52.16.0 differs from root Slidev 52.19.1.";
+    await kb.writeConcept(owner, { type: "Project", title: "Prezzi Editor" },
+      "Prezzi edits Slidev decks and supports a visual editor.", "seed");
+    await kb.writeConcept(unrelated, { type: "Repository", title: "Pi Node Runtime" },
+      "Pi uses a Node runtime for its extensions.", "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "Prezzi"
+      ? [{ path: owner, type: "Project", title: "Prezzi Editor", score: 5, confidenceQualified: false }]
+      : [{ path: unrelated, type: "Repository", title: "Pi Node Runtime", score: 100,
+        confidence: 100, confidenceQualified: true }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
+      .mockImplementationOnce(async (request: { prompt: string }) => {
+        expect(request.prompt).toContain(`OWNER ${owner}`);
+        return { object: { safe: true } };
+      });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect(await kb.bundle.exists("/repos/prezzi.md")).toBe(false);
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+  });
+
+  it("does not duplicate an exact fact in a named PR owner absent from initial hits", async () => {
+    staged();
+    const owner = "/projects/prezzi-editor.md";
+    const unrelated = "/repos/pi-agent/node-runtime.md";
+    const fact = "Prezzi PR #18 testing gotchas: deck-local Slidev 52.16.0 differs from root Slidev 52.19.1.";
+    await kb.writeConcept(owner, { type: "Project", title: "Prezzi Editor" }, fact, "seed");
+    await kb.writeConcept(unrelated, { type: "Repository", title: "Pi Node Runtime" },
+      "Pi uses a Node runtime for its extensions.", "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "Prezzi"
+      ? [{ path: owner, type: "Project", title: "Prezzi Editor", score: 5, confidenceQualified: false }]
+      : [{ path: unrelated, type: "Repository", title: "Pi Node Runtime", score: 100,
+        confidence: 100, confidenceQualified: true }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
+      .mockResolvedValueOnce({ object: { supported: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect(await kb.bundle.exists("/repos/prezzi.md")).toBe(false);
+    expect((await kb.readConcept(owner)).body.match(/deck-local Slidev/g)).toHaveLength(1);
+  });
+
+  it("rejects a named pull-request owner when the independent evidence detects a duplicate", async () => {
+    staged();
+    const existing = "/projects/prezzi-editor.md";
+    const fact = "Prezzi PR #18 testing gotchas: deck-local Slidev 52.16.0 differs from root Slidev 52.19.1.";
+    await kb.writeConcept(existing, { type: "Project", title: "Prezzi Editor" }, fact, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: existing, type: "Project", title: "Prezzi Editor",
+      score: 100, confidence: 100, confidenceQualified: true }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(await kb.bundle.exists("/repos/prezzi.md")).toBe(false);
+  });
+
   it("rejects a missing hinted path unrelated to the exact fact", async () => {
     staged();
     await kb.writeConcept("/projects/general-datasets.md", { type: "Project", title: "General Datasets" },

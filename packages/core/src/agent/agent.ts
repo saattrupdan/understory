@@ -1146,10 +1146,12 @@ async function runStagedMutation(
     // that a hyphenated word is an application (e.g. "Rate-limit policy").
     // Classification locates a candidate; the full independent owner check
     // below still controls any creation or write.
+    const leadingPullRequest = !options.ownerHint && options.directAdd && options.preflightInput &&
+      raw.trim().match(/^([A-Z][a-z]{2,})\s+PR\s+#\d+\b/)?.[1];
     const possibleRepository = !options.ownerHint && options.directAdd && options.preflightInput &&
-      raw.trim().match(/^([A-Z][a-z0-9]+(?:-[a-z0-9]+)+)\b/)?.[1];
+      (raw.trim().match(/^([A-Z][a-z0-9]+(?:-[a-z0-9]+)+)\b/)?.[1] ?? leadingPullRequest);
     let namedApplication: string | undefined;
-    if (possibleRepository && /\bon main at [0-9a-f]{7,40}\b/i.test(raw.slice(0, 250))) {
+    if (possibleRepository && (leadingPullRequest || /\bon main at [0-9a-f]{7,40}\b/i.test(raw.slice(0, 250)))) {
       const classifier = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
       modelChain = classifier.modelChain;
       const judgement = await generateObject({
@@ -1157,14 +1159,41 @@ async function runStagedMutation(
         schema: z.object({ repositorySubject: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Read-only subject check. Does the opening name ${JSON.stringify(possibleRepository)} unambiguously identify the software repository or application deployed on main in this exact fact? Return repositorySubject=false for a policy, feature, limit, check, or other topic that merely belongs to a different named application. Do not infer identity from capitalization or a hyphen alone. JSON only.\nFACT:\n${raw.trim()}`,
+        prompt: `Read-only subject check. Does the opening name ${JSON.stringify(possibleRepository)} unambiguously identify the software repository or application owning the named pull request or deployed commit in this exact fact? Return repositorySubject=false for a policy, feature, limit, check, or other topic that merely belongs to a different named application. Do not infer identity from capitalization, PR syntax or a hyphen alone. JSON only.\nFACT:\n${raw.trim()}`,
       });
       state.checkCancellation();
       if (judgement.object.repositorySubject) namedApplication = possibleRepository;
     }
-    const requestedPath = options.ownerHint ?? (namedApplication ? `/repos/${namedApplication.toLowerCase()}.md` : undefined);
+    // A broad fact query can miss the repository entirely. Search the
+    // independently classified subject before considering a new owner, so an
+    // existing owner at another path cannot be silently duplicated.
+    const namedOwnerHits: typeof hits = [];
+    if (namedApplication) {
+      const subjectHits = await kb.search(namedApplication, { limit: 200 });
+      recorder.record("search_knowledge", namedApplication, subjectHits.map((hit) => hit.path));
+      state.checkCancellation();
+      if (subjectHits.length >= 200) {
+        throw new Error("Staged mutation deferred: named owner search exceeds evidence limit.");
+      }
+      for (const hit of subjectHits) {
+        const slug = path.posix.basename(hit.path, ".md").replace(/[-_]/g, " ");
+        if (!stagedWords(`${hit.title ?? ""} ${slug}`).includes(namedApplication.toLowerCase())) continue;
+        namedOwnerHits.push(hit);
+        if (!hits.some((old) => old.path === hit.path)) hits.push(hit);
+      }
+      if (namedOwnerHits.length > 12) {
+        throw new Error("Staged mutation deferred: too many named owner candidates.");
+      }
+    }
+    const canonicalPath = namedApplication ? `/repos/${namedApplication.toLowerCase()}.md` : undefined;
+    const existingNamedPath = canonicalPath && await kb.bundle.exists(canonicalPath)
+      ? canonicalPath : namedOwnerHits.length === 1 ? namedOwnerHits[0].path : undefined;
+    const requestedPath = options.ownerHint ?? existingNamedPath ?? canonicalPath;
     const missingDirectPath = !!(options.directAdd && options.preflightInput && requestedPath &&
       !(await kb.bundle.exists(requestedPath)));
+    if (missingDirectPath && namedOwnerHits.length) {
+      throw new Error("Staged mutation deferred: a named owner already exists outside the proposed new path.");
+    }
     if (missingDirectPath && (correction || raw.trim().length < 30 || raw.trim().length > 4_000)) {
       throw new Error("Staged mutation deferred: missing suggested path cannot safely own this fact.");
     }
@@ -1176,7 +1205,7 @@ async function runStagedMutation(
       const distinctiveOverlap = [...pathTerms].filter((term) => factTerms.has(term));
       // The proposed new concept must be specifically named by the exact fact;
       // generic search overlap is not evidence that an arbitrary path belongs.
-      if (distinctiveOverlap.length < 2 || hits.length === 0) {
+      if (distinctiveOverlap.length < (leadingPullRequest && namedApplication === leadingPullRequest ? 1 : 2) || hits.length === 0) {
         throw new Error("Staged mutation deferred: missing suggested path lacks a positive fact-topic anchor.");
       }
       const evidence = [];
@@ -1406,6 +1435,18 @@ async function runStagedMutation(
         raw.trim().length >= 30 && raw.trim().length <= 4_000) {
       let target = candidates.find((candidate) => candidate.path === directPath)!;
       const fact = raw.trim();
+      for (const hit of namedOwnerHits) {
+        if (hit.path === target.path) continue;
+        const competitor = await kb.readConcept(hit.path);
+        recorder.record("read_concept", competitor.path, [competitor.path]);
+        state.checkCancellation();
+        if (competitor.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: competing named owner exceeds evidence limit.");
+        }
+        if (competitor.body.includes(fact)) {
+          throw new Error("Staged mutation deferred: exact fact already belongs to another named owner.");
+        }
+      }
       // A continuation may match only by a broad project prefix. When it does
       // not mention the requested item, verify against its parent instead of
       // appending to an unrelated continuation or dropping the fact.
