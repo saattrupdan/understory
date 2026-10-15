@@ -769,6 +769,32 @@ function stagedTitleMention(input: string, title: string): boolean {
     !new RegExp(`\\b(?:unrelated to|rather than changing|do not change)\\s+(?:the\\s+)?${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(input);
 }
 
+/** Metadata selection locates a possible owner; it never authorizes a write. */
+function stagedDiscriminativeOwnerAnchor(
+  input: string,
+  selectedPath: string,
+  candidates: Array<{ path: string; frontmatter: { title?: string } }>,
+  hits: Array<{ path: string; title?: string; description?: string }>
+): boolean {
+  const index = candidates.findIndex((candidate) => candidate.path === selectedPath);
+  if (index < 0) return false;
+  const terms = candidates.map((candidate) => {
+    const hit = hits.find((item) => item.path === candidate.path);
+    const slug = candidate.path.split("/").pop()?.replace(/\.md$/, "").replace(/[-_]/g, " ") ?? "";
+    return new Set(stagedWords([
+      candidate.frontmatter.title ?? "", slug,
+      typeof hit?.description === "string" ? hit.description : "",
+    ].join(" ")));
+  });
+  const competitors = new Set(terms.flatMap((set, i) => i === index ? [] : [...set]));
+  const inputTerms = new Set(stagedWords(input));
+  return [...terms[index]].some((term) => {
+    if (competitors.has(term) || !inputTerms.has(term)) return false;
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return !new RegExp(`\\b(?:unrelated to|rather than changing|not about|do not change|instead of)\\s+(?:the\\s+)?${escaped}\\b`, "i").test(input);
+  });
+}
+
 /** Knowledge add/update — full toolset, low temperature. */
 async function runStagedMutation(
   kb: KnowledgeBase,
@@ -857,11 +883,11 @@ async function runStagedMutation(
       state.checkCancellation();
       const selected = candidates.find((candidate) => candidate.path === selection.object.path);
       if (!selected) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
-      // A metadata-only selector cannot distinguish specific owners from shared
-      // slug vocabulary. Without an explicit path hint, require the caller to
-      // positively name the selected owner's complete title before proceeding.
-      if (!hintedPath && (!selected.frontmatter.title || !stagedTitleMention(raw, selected.frontmatter.title))) {
-        throw new Error("Staged mutation deferred: metadata-selected owner was not explicitly named.");
+      // Metadata selection cannot authorize a write. Require positive evidence
+      // that distinguishes the selected candidate from competitors, then
+      // independently verify against the complete re-read owner body.
+      if (!hintedPath && !stagedDiscriminativeOwnerAnchor(raw, selected.path, candidates, hits)) {
+        throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
       }
       selectedPath = selected.path;
       // Re-read the selected concept after the metadata-only choice; the

@@ -497,7 +497,7 @@ describe("mutation owner preflight", () => {
       title: conceptPath === wrongOwner ? "FS Fotovalidering Tono Onot" : "FS Fotovalidering General",
       score: 10, confidence: 10, confidenceQualified: false,
     })));
-    const fact = "FS Fotovalidering General experiment 69 records a project observation.";
+    const fact = "General experiment 69 records a project observation for the relevant project.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: rightOwner } })
       .mockResolvedValueOnce({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
@@ -520,7 +520,7 @@ describe("mutation owner preflight", () => {
     const fact = "Billing logs request IDs for charges created by support tooling.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: api } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
-      ok: false, status: "failed", error: expect.stringContaining("metadata-selected owner was not explicitly named"),
+      ok: false, status: "failed", error: expect.stringContaining("metadata-selected owner lacks a positive discriminative anchor"),
     });
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
     expect((await kb.readConcept(api)).body).not.toContain(fact);
