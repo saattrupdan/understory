@@ -791,10 +791,11 @@ function stagedDiscriminativeOwnerAnchor(
   });
   const competitors = new Set(terms.flatMap((set, i) => i === index ? [] : [...set]));
   const inputTerms = new Set(stagedWords(input));
+  const negatedMentions = [...input.matchAll(/\\b(?:unrelated to|rather than changing|not about|do not change|instead of)\\s+(?:the\\s+)?([^.!?;,:]+)/gi)]
+    .map((match) => new Set(stagedWords(match[1])));
   return [...terms[index]].some((term) => {
     if (competitors.has(term) || !inputTerms.has(term)) return false;
-    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return !new RegExp(`\\b(?:unrelated to|rather than changing|not about|do not change|instead of)\\s+(?:the\\s+)?${escaped}\\b`, "i").test(input);
+    return !negatedMentions.some((mention) => mention.has(term));
   });
 }
 
@@ -845,9 +846,9 @@ async function runStagedMutation(
       if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
     } else if (hits.length > 0) {
-      // Give the proposer complete bodies for up to three competing owners.
+      // Give the proposer complete bodies for up to five competing owners.
       // Its choice is checked again against the alternative titles below.
-      for (const hit of hits.slice(0, 3)) {
+      for (const hit of hits.slice(0, 5)) {
         const concept = await kb.readConcept(hit.path);
         recorder.record("read_concept", concept.path, [concept.path]);
         candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
@@ -870,7 +871,7 @@ async function runStagedMutation(
       // Selection is only a locator, never write authorization. Do not send
       // truncated bodies to the proposer or silently drop competing owners:
       // the independent verifier still sees the other search-hit titles.
-      const metadata = hits.slice(0, 3).map((hit) => ({
+      const metadata = hits.slice(0, 5).map((hit) => ({
         path: hit.path.slice(0, 512),
         title: typeof hit.title === "string" ? hit.title.slice(0, 256) : "",
         description: typeof hit.description === "string" ? hit.description.slice(0, 512) : "",
