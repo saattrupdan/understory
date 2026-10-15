@@ -1406,8 +1406,8 @@ async function runStagedMutation(
     state.checkCancellation();
     const p = proposal.object;
     let repairedCorrection = false;
-    if (correction && p.action === "append") {
-      // Appending a correction leaves the contradicted old assertion in place.
+    if (correction && (p.action === "append" || p.action === "create")) {
+      // Appending or creating a correction leaves the contradicted old assertion in place.
       // Try one exact, local replacement instead; the ordinary replacement
       // branch below still enforces support, independent review and CAS.
       const repair = await generateObject({
@@ -1415,7 +1415,7 @@ async function runStagedMutation(
         schema: z.object({ path: z.string(), old_text: z.string(), new_text: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `The proposed append cannot correct an existing claim. Choose ONE exact old clause in an observed candidate body that the instruction supersedes, and replace it with text that addresses ALL applicable requested corrections while preserving unrelated claims. The old_text must be a unique verbatim substring of the owner; new_text must be supported by the instruction. Do not invent an old claim, use an unrelated owner, or append elsewhere. Return empty strings if a single local replacement cannot safely do this. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATES:\n${evidence}`,
+        prompt: `The proposed append/create cannot correct an existing claim. Choose ONE exact old clause in an observed candidate body that the instruction supersedes, and replace it with text that addresses ALL applicable requested corrections while preserving unrelated claims. The old_text must be a unique verbatim substring of the owner; new_text must be supported by the instruction. Do not invent an old claim, use an unrelated owner, or append elsewhere. Return empty strings if a single local replacement cannot safely do this. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATES:\n${evidence}`,
       });
       state.checkCancellation();
       repairedCorrection = true;

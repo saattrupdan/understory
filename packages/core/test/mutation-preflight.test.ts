@@ -1301,6 +1301,21 @@ describe("mutation owner preflight", () => {
     expect(search.mock.calls[0][0]).toContain("godkendt_id9");
   });
 
+  it("repairs an unsafe correction create without making a duplicate concept", async () => {
+    await billingFixture(); staged();
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "create",
+      path: "/apis/billing-approval.md", body: updateInstruction,
+      frontmatter: { type: "API Endpoint", title: "Billing Approval", description: "Approval." } } })
+      .mockResolvedValueOnce({ object: { path: "/apis/billing-api.md",
+        old_text: "ad-hoc charges come from support tooling.",
+        new_text: "ad-hoc charges come from support tooling only after approval." } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "verified" } });
+    expect(await runMutation(kb, updateInstruction, { preflightInput: updateInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    expect(await kb.bundle.exists("/apis/billing-approval.md")).toBe(false);
+    expect((await kb.readConcept("/apis/billing-api.md")).body).toContain("only after approval");
+  });
+
   it("repairs an unsafe correction append as one exact verified replacement", async () => {
     await billingFixture(); staged();
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "append",
