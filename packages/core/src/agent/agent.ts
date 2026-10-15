@@ -1471,7 +1471,7 @@ async function runStagedMutation(
           !(stagedOwnerAnchor(fact, target.path) || (verifiedMetadataOwner && selectedPath === target.path)) ||
           (target.frontmatter.title && fact.toLowerCase().includes(target.frontmatter.title.toLowerCase()) &&
             !stagedTitleMention(fact, target.frontmatter.title))) {
-        throw new Error("Staged mutation deferred: suggested owner lacks a positive entity anchor.");
+        throw new Error(`Staged mutation deferred: suggested owner lacks a positive entity anchor (target=${target.path}, leading_pr=${leadingPullRequest ?? "none"}, named=${namedApplication ?? "none"}, requested=${requestedPath ?? "none"}, hinted=${hintedPath ?? "none"}, selected=${selectedPath ?? "none"}, named_hits=${namedOwnerHits.length}).`);
       }
       if (!target.body.includes(fact)) {
         const wouldOverflow = `${target.body.trimEnd()}\n\n${fact}\n`.length > STAGED_MAX_OWNER_CHARS;
