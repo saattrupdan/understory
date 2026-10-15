@@ -271,10 +271,12 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockResolvedValueOnce({ object: {
       ...baseProposal, action: "replace", old_text: oldBody,
       new_text: "Monthly charges are scheduled; support tooling creates ad-hoc charges only after approval and records customer SSNs.",
-    } }).mockResolvedValueOnce({ object: { safe: true, reason: "Model overlooked the added assertion." } });
+    } }).mockResolvedValueOnce({ object: {
+      new_text: "Monthly charges are scheduled; support tooling creates ad-hoc charges only after approval and records customer SSNs.",
+    } });
     const result = await runMutation(kb, updateInstruction);
     expect(result).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(oldBody);
   });
 
@@ -1290,6 +1292,50 @@ describe("mutation owner preflight", () => {
     const result = await runMutation(kb, "Update the Billing API: support tooling creates ad-hoc charges. Approval is required.");
     expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain("ad-hoc charges. Approval is required.");
+  });
+
+  it("repairs unsupported paraphrase words in a Holi icon correction before independent verification", async () => {
+    staged();
+    const owner = "/repos/holi.md";
+    const oldText = "Option 17's right page has a distinct title squiggle above thin note lines.";
+    const instruction = "Correct the Holi app-icon option 17 exploration fact: the right page no longer has a distinct title squiggle. Dan rejected the heavier title stroke and asked for ordinary, evenly weighted, gently curved note lines on the right page. Left page remains a checklist. No final icon selected.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Holi" },
+      `${oldText} Left page remains a checklist. No final icon selected.`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      action: "replace", path: owner, old_text: oldText,
+      new_text: "Option 17's right page has gracefully curved note lines and no distinct title squiggle.",
+    } }).mockResolvedValueOnce({ object: {
+      new_text: "Option 17's right page has ordinary, evenly weighted, gently curved note lines and no distinct title squiggle.",
+    } }).mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain("NEW TEXT:\nOption 17's right page has ordinary, evenly weighted");
+      expect(request.prompt).not.toContain("NEW TEXT:\nOption 17's right page has gracefully curved");
+      return { object: { safe: true, reason: "Local correction supported." } };
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain("ordinary, evenly weighted, gently curved note lines");
+    expect(body).toContain("Left page remains a checklist. No final icon selected.");
+    expect(body).not.toContain("above thin note lines");
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects a repaired Holi icon correction that still adds an unrequested feature", async () => {
+    staged();
+    const owner = "/repos/holi.md";
+    const oldText = "Option 17's right page has a distinct title squiggle above thin note lines.";
+    const instruction = "Correct Holi option 17: no distinct title squiggle; use ordinary, evenly weighted, gently curved note lines.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Holi" }, oldText, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      action: "replace", path: owner, old_text: oldText,
+      new_text: "Option 17's right page has gently curved note lines and a glitter border.",
+    } }).mockResolvedValueOnce({ object: {
+      new_text: "Option 17's right page has ordinary, gently curved note lines and a gold border.",
+    } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("replacement introduces facts absent") });
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect((await kb.readConcept(owner)).body.trim()).toBe(oldText);
   });
 
   it("rejects generated replacements that edit separated clauses", async () => {

@@ -1356,15 +1356,33 @@ async function runStagedMutation(
           !stagedSingleClauseEdit(p.old_text, p.new_text)) throw new Error("Staged mutation rejected: replacement is not one supported local change.");
       const oldWords = new Set(stagedWords(p.old_text));
       const requestedWords = new Set(stagedWords(raw));
-      if (stagedWords(p.new_text).some((word) => !oldWords.has(word) && !requestedWords.has(word))) {
+      const unsupportedWords = (text: string): string[] => stagedWords(text)
+        .filter((word) => !oldWords.has(word) && !requestedWords.has(word));
+      let newText = p.new_text;
+      if (unsupportedWords(newText).length) {
+        // A paraphrase can fail the lexical guard even when the correction is
+        // supported. Give the proposer one chance to use only observed words;
+        // never authorize the first proposal or weaken the independent check.
+        const repair = await generateObject({
+          model: resolved.model,
+          schema: z.object({ new_text: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Rewrite ONLY the proposed NEW TEXT for this one local correction. Use wording from the instruction or OLD TEXT; introduce no other content words or claims. Preserve unrelated old claims, and do not change the owner or old operand. If the correction cannot be expressed faithfully using those words, return an empty new_text. JSON only.\nINSTRUCTION:\n${raw}\nOLD TEXT:\n${p.old_text}\nPROPOSED NEW TEXT:\n${p.new_text}\nUNSUPPORTED WORDS:\n${JSON.stringify(unsupportedWords(newText))}`,
+        });
+        state.checkCancellation();
+        newText = repair.object.new_text;
+      }
+      if (!newText || !stagedSingleClauseEdit(p.old_text, newText) ||
+          stagedOverlap(newText, `${raw} ${p.old_text}`) < 0.65 || unsupportedWords(newText).length) {
         throw new Error("Staged mutation rejected: replacement introduces facts absent from the request.");
       }
       const addedNegations = ["not", "never", "without", "cannot", "doesn't", "don't"].filter((word) =>
-        stagedWords(p.new_text).includes(word) && !stagedWords(p.old_text).includes(word));
+        stagedWords(newText).includes(word) && !stagedWords(p.old_text).includes(word));
       if (addedNegations.some((word) => !stagedWords(raw).includes(word))) {
         throw new Error("Staged mutation rejected: an added negation was not requested.");
       }
-      const replacement = target.body.replace(p.old_text, p.new_text);
+      const replacement = target.body.replace(p.old_text, newText);
       if (replacement === target.body || replacement.length > STAGED_MAX_OWNER_CHARS) {
         throw new Error("Staged mutation rejected: replacement is empty or oversized.");
       }
@@ -1373,7 +1391,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent safety check. Does the exact proposed replacement faithfully apply the instruction to the observed owner, remove the superseded claim, preserve unrelated claims, avoid a new contradiction, and positively fit this owner even if another search hit could also plausibly fit? Reject negative/unrelated mentions. Metadata selection is not proof of relevance. If uncertain about support or relevance, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${p.old_text}\nNEW TEXT:\n${p.new_text}`,
+        prompt: `Independent safety check. Does the exact proposed replacement faithfully apply the instruction to the observed owner, remove the superseded claim, preserve unrelated claims, avoid a new contradiction, and positively fit this owner even if another search hit could also plausibly fit? Reject negative/unrelated mentions. Metadata selection is not proof of relevance. If uncertain about support or relevance, safe=false.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nALTERNATIVE SEARCH HITS (path and title only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}\nOLD TEXT:\n${p.old_text}\nNEW TEXT:\n${newText}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: replacement failed independent consistency check.");
