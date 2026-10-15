@@ -130,6 +130,48 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
 
+  it("removes only one uniquely endpoint-anchored paragraph after checking its middle", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
+    const paragraph = "Claes Jev diagnostics decision (Oct 2026): keep strict _valid_answer. The Claes-only validation report passed. orchestrator fixed and verified 110 tests.";
+    const instruction = `In \`${owner}\`, remove ONLY the exact paragraph beginning \`Claes Jev diagnostics decision (Oct 2026): keep strict _valid_answer\` and ending \`orchestrator fixed and verified 110 tests.\` This paragraph describes the unrelated Claes Jev project. Do not change any other material, and do not add it anywhere else.`;
+    await kb.writeConcept(owner, { type: "Project", title: "Synthetic Dataset Generation" },
+      `FS generation facts.\n\n${paragraph}\n\nRetain FS review results.`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`PARAGRAPH TO REMOVE:\n${paragraph}`);
+      expect(prompt).toContain(`OWNER ${owner}:`);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toBe("FS generation facts.\n\nRetain FS review results.\n");
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects ambiguous, incomplete, mismatched, and stale endpoint-anchored removals", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
+    const paragraph = "Claes Jev diagnostics decision (Oct 2026): keep strict _valid_answer. Claes-only content. orchestrator fixed and verified 110 tests.";
+    const instruction = `In \`${owner}\`, remove ONLY the exact paragraph beginning \`Claes Jev diagnostics decision (Oct 2026): keep strict _valid_answer\` and ending \`orchestrator fixed and verified 110 tests.\` Do not change any other material.`;
+    const seed = async (body: string) => kb.writeConcept(owner, { type: "Project", title: "Synthetic Dataset Generation" }, body, "seed");
+    await seed(`Before.\n\n${paragraph}\n\n${paragraph}\n\nAfter.`);
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed" });
+    await seed(`Before.\n\n${paragraph} Added material.\n\nAfter.`);
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed" });
+    await seed(`Before.\n\n${paragraph}\n\nAfter.`);
+    expect(await runMutation(kb, instruction, { ownerHint: "/projects/other.md" }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed" });
+    generateObjectMock.mockImplementationOnce(async () => {
+      await seed("Concurrent external revision.");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toBe("Concurrent external revision.\n");
+  });
+
   it("requires a verified claim matching the requested knowledge for a no-op", async () => {
     await billingFixture(); staged();
     generateObjectMock.mockResolvedValueOnce({ object: {

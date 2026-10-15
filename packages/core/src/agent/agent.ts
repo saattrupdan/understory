@@ -235,6 +235,19 @@ function parseExactParagraphRetraction(input: string): { path: string; paragraph
   return { path: match[1], paragraph: match[2] };
 }
 
+function parseAnchoredParagraphRetraction(input: string): { path: string; beginning: string; ending: string } | null {
+  const match = input.match(/^In `(\/[a-z0-9_/-]+\.md)`, remove ONLY the exact paragraph beginning `([^`\n]{12,512})` and ending `([^`\n]{12,512})`\.?(?:[ \n][\s\S]{0,2000})?$/);
+  if (!match) return null;
+  return { path: match[1], beginning: match[2], ending: match[3] };
+}
+
+function uniquelyAnchoredParagraph(body: string, beginning: string, ending: string): string | null {
+  const matches = body.split("\n\n").filter((paragraph) =>
+    paragraph.length < MAX_EXACT_RETRACTION_CHARS && paragraph.startsWith(beginning) &&
+    (paragraph.endsWith(ending) || paragraph.endsWith(`${ending}\n`)));
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function removeUniqueParagraph(body: string, paragraph: string): string | null {
   const matches: Array<{ start: number; end: number }> = [];
   let offset = 0;
@@ -898,27 +911,45 @@ async function runStagedMutation(
         !/^\/[a-z0-9_/-]+\.md$/.test(options.ownerHint) || options.ownerHint.split("/").includes(".."))) {
       throw new Error("Staged mutation deferred: owner hint is not a bounded concept path.");
     }
-    if (raw.startsWith("Retract exact paragraph from ")) {
-      const retraction = parseExactParagraphRetraction(raw);
-      if (options.directAdd || !retraction || retraction.path.length > 512 ||
-          retraction.paragraph.length === 0 || retraction.paragraph.length >= MAX_EXACT_RETRACTION_CHARS) {
+    if (raw.startsWith("Retract exact paragraph from ") || /^In `\/[a-z0-9_/-]+\.md`, remove ONLY the exact paragraph beginning /i.test(raw)) {
+      const exact = parseExactParagraphRetraction(raw);
+      const anchored = parseAnchoredParagraphRetraction(raw);
+      if (options.directAdd || (!exact && !anchored) || (exact?.path ?? anchored!.path).length > 512 ||
+          (exact && (exact.paragraph.length === 0 || exact.paragraph.length >= MAX_EXACT_RETRACTION_CHARS))) {
         throw new Error("Staged mutation rejected: exact paragraph retraction syntax or size is invalid.");
       }
-      if (options.ownerHint && options.ownerHint !== retraction.path) {
+      const ownerPath = (exact?.path ?? anchored!.path);
+      if (options.ownerHint && options.ownerHint !== ownerPath) {
         throw new Error("Staged mutation rejected: explicit owner path does not match the retraction path.");
       }
-      if (!(await kb.bundle.exists(retraction.path))) {
-        throw new Error(`Staged mutation rejected: owner concept does not exist: ${retraction.path}`);
+      if (!(await kb.bundle.exists(ownerPath))) {
+        throw new Error(`Staged mutation rejected: owner concept does not exist: ${ownerPath}`);
       }
       state.checkCancellation();
-      const target = await kb.readConcept(retraction.path);
+      const target = await kb.readConcept(ownerPath);
       recorder.record("read_concept", target.path, [target.path]);
       if (target.body.length > STAGED_MAX_OWNER_CHARS) {
         throw new Error("Staged mutation rejected: owner body exceeds evidence limit.");
       }
-      const replacement = removeUniqueParagraph(target.body, retraction.paragraph);
-      if (replacement === null) {
+      const paragraph = exact?.paragraph ?? uniquelyAnchoredParagraph(target.body, anchored!.beginning, anchored!.ending);
+      const replacement = paragraph && removeUniqueParagraph(target.body, paragraph);
+      if (replacement === null || !paragraph) {
         throw new Error("Staged mutation rejected: paragraph is not one exact unique owner paragraph.");
+      }
+      if (anchored) {
+        // The caller supplied only endpoints: check the actual intervening
+        // content before deleting it. Exact full-paragraph retractions need no model.
+        const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+        modelChain = resolved.modelChain;
+        const judgement = await generateObject({
+          model: resolved.model,
+          schema: z.object({ safe: z.boolean() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Independent deletion check. Is this WHOLE observed paragraph exactly the one the instruction asks to remove from the named owner? Refuse if its middle includes unrelated material, or the instruction does not clearly authorize its complete removal. A path alone is not proof. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nPARAGRAPH TO REMOVE:\n${paragraph}`,
+        });
+        state.checkCancellation();
+        if (!judgement.object.safe) throw new Error("Staged mutation deferred: anchored paragraph removal failed consistency check.");
       }
       const current = await kb.readConcept(target.path);
       if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
