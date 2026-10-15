@@ -538,6 +538,28 @@ describe("mutation owner preflight", () => {
     }
   });
 
+  it("does not authorize a title-less owner using an incidental unique date or negated name", async () => {
+    staged();
+    const selected = "/projects/archive-record.md";
+    const other = "/projects/current-record.md";
+    await kb.writeConcept(selected, { type: "Project", title: "Archive Record" },
+      "Archive dated 2026-10-14 contains old-value-id9.", "seed");
+    await kb.writeConcept(other, { type: "Project", title: "Current Record" },
+      "Current record also contains old-value-id9.", "seed");
+    const filler = "/projects/unrelated-record.md";
+    await kb.writeConcept(filler, { type: "Project", title: "Unrelated Record" }, "Unrelated details. ".repeat(5_000), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([selected, other, filler].map((conceptPath) => ({
+      path: conceptPath, type: "Project", title: conceptPath === selected ? "Archive Record" : "Current Record",
+      score: 10, confidence: 10, confidenceQualified: false,
+    })));
+    const instruction = "Correct the dated 2026-10-14 record, not Archive: replace old-value-id9 with new-value-id9.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: selected } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction })).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(selected)).body).toContain("old-value-id9");
+    expect((await kb.readConcept(other)).body).toContain("old-value-id9");
+  });
+
   it("rejects a metadata-selected specific owner when only shared slug words are mentioned", async () => {
     staged();
     const wrongOwner = "/projects/fs-fotovalidering-tono-onot.md";
@@ -694,7 +716,20 @@ describe("mutation owner preflight", () => {
     await runMutation(kb, `Remember the detailed project status and operational follow-up: ${fact}`, {
       ownerHint: "/apis/billing-api.md", preflightInput: fact, directAdd: true,
     });
-    expect(search.mock.calls[0][0].split(" ")[0]).toBe("godkendt_id9");
+    expect(search.mock.calls[0][0]).toContain("godkendt_id9");
+  });
+
+  it("keeps a late named owner in the bounded search when the new identifier is absent", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering" }, "Photo validation baseline.", "seed");
+    const search = vi.spyOn(kb, "search");
+    const fact = "Remember the detailed operational project status and evaluation follow-up: FS Fotovalidering godkendt_id9 measured 79.37 percent head height.";
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "defer", reason: "Test only." } });
+    await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(search.mock.calls[0][0]).toContain("fotovalidering");
+    expect(search.mock.results[0].value).toBeDefined();
+    expect((await kb.search(search.mock.calls[0][0])).some((hit) => hit.path === owner)).toBe(true);
   });
 
   it("matches a hyphenated entity to its owner slug on an unhinted add", async () => {

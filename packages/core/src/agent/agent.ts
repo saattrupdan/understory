@@ -807,18 +807,18 @@ function stagedDiscriminativeOwnerAnchor(
   if (!selectedBody) return false;
   const otherBodies = candidates.filter((candidate) => candidate.path !== selectedPath)
     .map((candidate) => candidate.body).filter((body): body is string => typeof body === "string");
-  const identifiers = input.match(/[\p{L}\p{N}][\p{L}\p{N}_-]*\d[\p{L}\p{N}_-]*/gu) ?? [];
-  const quotedClaims = [...input.matchAll(/`([^`]{12,2000})`/g)].map((match) => match[1]);
+  // Only the explicit old operand of a correction can establish ownership.
+  // An incidental date, filename, new hash or negated reference in the same
+  // request must not authorize a different concept.
+  const oldClaims = [
+    input.match(/\breplace\s+(?:the\s+)?(?:exact\s+)?(?:phrase|text|claim)?\s*`([^`]{12,2000})`\s+with\b/i)?.[1],
+    input.match(/\breplace\s+([\p{L}\p{N}][\p{L}\p{N}_-]*\d[\p{L}\p{N}_-]*)\s+with\b/iu)?.[1],
+    input.match(/\bnot\s+(?:the\s+)?(?:intermediate|previous|old)\s+`([^`]{12,2000})`/i)?.[1],
+  ].filter((claim): claim is string => !!claim);
   const allCompetitorBodiesObserved = otherBodies.length === hits.length - 1;
-  const uniqueInBody = (evidence: string) => allCompetitorBodiesObserved && selectedBody.includes(evidence) &&
-    !otherBodies.some((body) => body.includes(evidence));
-  return identifiers.some((identifier) => inputTerms.has(identifier.toLowerCase()) &&
-    uniqueInBody(identifier) && !negatedMentions.some((mention) => mention.has(identifier.toLowerCase()))) ||
-    quotedClaims.some((claim) => {
-      const claimTerms = stagedWords(claim);
-      return claimTerms.length >= 3 && uniqueInBody(claim) &&
-        !negatedMentions.some((mention) => claimTerms.every((term) => mention.has(term)));
-    });
+  return oldClaims.some((claim) => allCompetitorBodiesObserved && selectedBody.includes(claim) &&
+    !otherBodies.some((body) => body.includes(claim)) &&
+    !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term))));
 }
 
 /** Knowledge add/update — full toolset, low temperature. */
@@ -1220,9 +1220,16 @@ function mutationSearchQuery(input: string): string {
   // Identifiers often appear in the decisive tail of an otherwise generic
   // instruction (e.g. godkendt_id2). Keep these ahead of leading boilerplate.
   const identifiers = retained.filter((word) => /\d|_/.test(word));
-  const descriptive = retained.filter((word) => !identifiers.includes(word));
-  // Preserve the named topic even in a request containing many hashes/dates.
-  return [...identifiers.slice(0, 4), ...descriptive.slice(0, 6)].join(" ").slice(0, 500);
+  // Retain proper names wherever they occur; new identifiers have no index
+  // entry yet, so an owner name buried after boilerplate is still essential.
+  const named = [...input.matchAll(/\b(?:[A-Z]{2,}|[A-Z][a-z]{3,})\b/g)]
+    .map((match) => match[0].toLowerCase())
+    .filter((word) => !stop.has(word) && !["correct", "remember", "record", "final"].includes(word));
+  const leading = retained.slice(0, 6);
+  const lateIdentifiers = identifiers.filter((word) => !leading.includes(word)).slice(0, 2);
+  const lateNames = named.filter((word) => !leading.includes(word)).slice(0, 2);
+  return [...new Set([...leading, ...lateIdentifiers, ...lateNames, ...retained.slice(-2)])]
+    .slice(0, 10).join(" ").slice(0, 500);
 }
 
 export async function runMutation(
