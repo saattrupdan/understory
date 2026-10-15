@@ -1400,6 +1400,7 @@ async function runStagedMutation(
     });
     state.checkCancellation();
     const p = proposal.object;
+    let repairedCorrection = false;
     if (correction && p.action === "append") {
       // Appending a correction leaves the contradicted old assertion in place.
       // Try one exact, local replacement instead; the ordinary replacement
@@ -1412,6 +1413,7 @@ async function runStagedMutation(
         prompt: `The proposed append cannot correct an existing claim. Choose ONE exact old clause in an observed candidate body that the instruction supersedes, and replace it with text that addresses ALL applicable requested corrections while preserving unrelated claims. The old_text must be a unique verbatim substring of the owner; new_text must be supported by the instruction. Do not invent an old claim, use an unrelated owner, or append elsewhere. Return empty strings if a single local replacement cannot safely do this. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATES:\n${evidence}`,
       });
       state.checkCancellation();
+      repairedCorrection = true;
       p.action = "replace";
       p.path = repair.object.path;
       p.old_text = repair.object.old_text;
@@ -1466,9 +1468,17 @@ async function runStagedMutation(
       await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
     } else if (p.action === "replace") {
       const target = candidates.find((c) => c.path === p.path);
+      const boundedParagraphRepair = repairedCorrection && p.old_text.length <= 4_000 &&
+        p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
+        stagedOverlap(p.old_text, p.new_text) >= 0.5;
+      const localEdit = stagedSingleClauseEdit(p.old_text, p.new_text) || boundedParagraphRepair;
       if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
-          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ||
-          !stagedSingleClauseEdit(p.old_text, p.new_text)) throw new Error("Staged mutation rejected: replacement is not one supported local change.");
+          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 || !localEdit) {
+        const reason = !target ? "owner missing" : p.old_text.length < 12 ? "old text too short" :
+          !p.new_text ? "new text empty" : target.body.split(p.old_text).length !== 2 ? "old text not unique" :
+          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ? "new text lacks support" : "change spans clauses";
+        throw new Error(`Staged mutation rejected: replacement is not one supported local change (${reason}).`);
+      }
       const oldWords = new Set(stagedWords(p.old_text));
       const requestedWords = new Set(stagedWords(raw));
       const unsupportedWords = (text: string): string[] => stagedWords(text)
@@ -1488,7 +1498,9 @@ async function runStagedMutation(
         state.checkCancellation();
         newText = repair.object.new_text;
       }
-      if (!newText || !stagedSingleClauseEdit(p.old_text, newText) ||
+      if (!newText || !(stagedSingleClauseEdit(p.old_text, newText) ||
+          (boundedParagraphRepair && newText.length <= 4_000 && !/\n\s*\n/.test(newText) &&
+            stagedOverlap(p.old_text, newText) >= 0.5)) ||
           stagedOverlap(newText, `${raw} ${p.old_text}`) < 0.65 || unsupportedWords(newText).length) {
         throw new Error("Staged mutation rejected: replacement introduces facts absent from the request.");
       }
