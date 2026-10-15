@@ -88,8 +88,19 @@ describe("mutation owner preflight", () => {
     const result = await runMutation(kb, `Retract exact paragraph from \`/projects/fs-fotovalidering/synthetic-dataset-generation.md\`:\n<<<\n${paragraph}\n>>>`);
     expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/projects/fs-fotovalidering/synthetic-dataset-generation.md"] } });
     expect((await kb.readConcept("/projects/fs-fotovalidering/synthetic-dataset-generation.md")).body)
-      .toBe(`${retained}\n\nAnother unrelated paragraph remains.`);
+      .toBe(`${retained}\n\nAnother unrelated paragraph remains.\n`);
     expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("retracts an exact final paragraph with the normal body trailing newline", async () => {
+    staged();
+    const ownerPath = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
+    const paragraph = "Claes Jev diagnostics were filed under the wrong owner. This sentence is part of the same paragraph.";
+    await kb.writeConcept(ownerPath, { type: "Project", title: "Synthetic Dataset Generation" },
+      `Unrelated existing fact.\n\n${paragraph}\n`, "seed");
+    const result = await runMutation(kb, `Retract exact paragraph from \`${ownerPath}\`:\n<<<\n${paragraph}\n>>>`);
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [ownerPath] } });
+    expect((await kb.readConcept(ownerPath)).body).toBe("Unrelated existing fact.\n");
   });
 
   it("refuses stale, ambiguous, nonexact, and mismatched-path retractions", async () => {

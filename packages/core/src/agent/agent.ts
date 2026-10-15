@@ -241,13 +241,13 @@ function removeUniqueParagraph(body: string, paragraph: string): string | null {
   while ((offset = body.indexOf(paragraph, offset)) !== -1) {
     const end = offset + paragraph.length;
     const startsParagraph = offset === 0 || body.slice(0, offset).endsWith("\n\n");
-    const endsParagraph = end === body.length || body.slice(end).startsWith("\n\n");
+    const endsParagraph = end === body.length || body.slice(end) === "\n" || body.slice(end).startsWith("\n\n");
     if (startsParagraph && endsParagraph) matches.push({ start: offset, end });
     offset += 1;
   }
   if (matches.length !== 1) return null;
   const { start, end } = matches[0];
-  if (body.slice(end).startsWith("\n\n")) return body.slice(0, end) + body.slice(end + 2);
+  if (body.slice(end).startsWith("\n\n")) return body.slice(0, start) + body.slice(end + 2);
   if (body.slice(0, start).endsWith("\n\n")) return body.slice(0, start - 2) + body.slice(end);
   return body.slice(0, start) + body.slice(end);
 }
@@ -896,7 +896,8 @@ async function runStagedMutation(
     }
     if (raw.startsWith("Retract exact paragraph from ")) {
       const retraction = parseExactParagraphRetraction(raw);
-      if (!retraction || retraction.paragraph.length === 0 || retraction.paragraph.length >= MAX_EXACT_RETRACTION_CHARS) {
+      if (options.directAdd || !retraction || retraction.path.length > 512 ||
+          retraction.paragraph.length === 0 || retraction.paragraph.length >= MAX_EXACT_RETRACTION_CHARS) {
         throw new Error("Staged mutation rejected: exact paragraph retraction syntax or size is invalid.");
       }
       if (options.ownerHint && options.ownerHint !== retraction.path) {
