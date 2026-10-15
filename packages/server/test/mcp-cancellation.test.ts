@@ -82,7 +82,28 @@ describe("MCP cancellation", () => {
     expect(runMutationMock).toHaveBeenCalledWith(
       expect.anything(),
       "change it",
-      { signal: controller.signal }
+      { signal: controller.signal, preflightInput: "change it" }
+    );
+  });
+
+  it("forwards the exact quoted correction instruction to staged preflight", async () => {
+    runMutationMock.mockResolvedValue({
+      ok: false,
+      status: "failed",
+      error: "deferred",
+    });
+    const registered = await registeredTools();
+    const instruction = "Correct `/apis/billing-api.md`: replace the exact phrase `ad-hoc charges come from support tooling.` with `ad-hoc charges require approval.`";
+
+    await registered.memory_update.handler(
+      { instruction },
+      { signal: new AbortController().signal }
+    );
+
+    expect(runMutationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      instruction,
+      { signal: expect.anything(), preflightInput: instruction }
     );
   });
 

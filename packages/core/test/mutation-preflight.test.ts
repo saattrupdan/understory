@@ -486,18 +486,18 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(rightOwner)).body).not.toContain(fact);
   });
 
-  it("allows a positively named owner through the independent check", async () => {
+  it("allows a positively named domain-specific owner through the independent check", async () => {
     staged();
-    const wrongOwner = "/projects/fs-fotovalidering-tono-onot.md";
-    const rightOwner = "/projects/fs-fotovalidering-general.md";
-    await kb.writeConcept(wrongOwner, { type: "Project", title: "FS Fotovalidering Tono Onot" }, "Project context. ".repeat(2_000), "seed");
-    await kb.writeConcept(rightOwner, { type: "Project", title: "FS Fotovalidering General" }, "General project context. ".repeat(2_000), "seed");
+    const wrongOwner = "/projects/fs-fotovalidering-general.md";
+    const rightOwner = "/projects/fs-fotovalidering-tono-onot.md";
+    await kb.writeConcept(wrongOwner, { type: "Project", title: "FS Fotovalidering General" }, "General project context. ".repeat(2_000), "seed");
+    await kb.writeConcept(rightOwner, { type: "Project", title: "FS Fotovalidering Tono Onot" }, "Tono Onot project context. ".repeat(2_000), "seed");
     vi.spyOn(kb, "search").mockResolvedValue([wrongOwner, rightOwner].map((conceptPath) => ({
       path: conceptPath, type: "Project",
-      title: conceptPath === wrongOwner ? "FS Fotovalidering Tono Onot" : "FS Fotovalidering General",
+      title: conceptPath === wrongOwner ? "FS Fotovalidering General" : "FS Fotovalidering Tono Onot",
       score: 10, confidence: 10, confidenceQualified: false,
     })));
-    const fact = "General experiment 69 records a project observation for the relevant project.";
+    const fact = "Tono Onot experiment 69 records a camera calibration observation for this project.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: rightOwner } })
       .mockResolvedValueOnce({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
@@ -505,6 +505,25 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
     expect((await kb.readConcept(rightOwner)).body).toContain(fact);
     expect((await kb.readConcept(wrongOwner)).body).not.toContain(fact);
+  });
+
+  it("does not use description-only incidental mentions as metadata owner anchors", async () => {
+    staged();
+    const first = "/projects/project-alpha.md";
+    const second = "/projects/project-beta.md";
+    await kb.writeConcept(first, { type: "Project", title: "Project Alpha", description: "Status overview for the camera calibration project." }, "Alpha context. ".repeat(3_500), "seed");
+    await kb.writeConcept(second, { type: "Project", title: "Project Beta", description: "Beta project context." }, "Beta context. ".repeat(3_500), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([
+      { path: first, type: "Project", title: "Project Alpha", description: "Status overview for the camera calibration project.", score: 10, confidence: 10, confidenceQualified: false },
+      { path: second, type: "Project", title: "Project Beta", description: "Beta project context.", score: 10, confidence: 10, confidenceQualified: false },
+    ]);
+    const fact = "The camera calibration status overview records the lens alignment result.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: first } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
+      ok: false, status: "failed", error: expect.stringContaining("metadata-selected owner lacks a positive discriminative anchor"),
+    });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept(first)).body).not.toContain(fact);
   });
 
   it("defers an oversized selected owner without sending a truncated body for verification", async () => {
@@ -594,16 +613,28 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept("/tables/customers.md")).body).not.toContain(fact);
   });
 
-  it("applies a caller-quoted correction with one verified model call", async () => {
+  it("applies a caller-quoted correction with independent verification and compare-and-swap", async () => {
     await billingFixture(); staged();
     const instruction = "Correct `/apis/billing-api.md`: replace the exact phrase `ad-hoc charges come from support tooling.` with `ad-hoc charges come from support tooling only after approval.` Preserve monthly charges.";
+    const patchSpy = vi.spyOn(kb, "patchConcept");
     generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
       expect(request.prompt).toContain(oldBody);
+      expect(request.prompt).toContain("ALTERNATIVE SEARCH HITS");
+      expect(request.prompt).toContain("OLD TEXT:");
+      expect(request.prompt).toContain("NEW TEXT:");
       return { object: { safe: true } };
     });
     const result = await runMutation(kb, instruction, { preflightInput: instruction });
     expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(patchSpy).toHaveBeenCalledWith(
+      "/apis/billing-api.md",
+      { replaceBody: expect.stringContaining("ad-hoc charges come from support tooling only after approval.") },
+      "Staged mutation: exact quoted correction",
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+      undefined,
+      expect.any(Function),
+    );
     const body = (await kb.readConcept("/apis/billing-api.md")).body;
     expect(body).toContain("Monthly charges are scheduled");
     expect(body).toContain("only after approval");

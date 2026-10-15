@@ -173,6 +173,7 @@ export async function buildMcpServer(kb: KnowledgeBase): Promise<McpServer> {
       throwIfAborted(extra.signal);
       const outcome = await runMutation(kb, instruction, {
         signal: extra.signal,
+        preflightInput: instruction,
       });
       if (!extra.signal.aborted) await refreshSeed(extra.signal);
       return mutationOutcomeResponse(outcome);
