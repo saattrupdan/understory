@@ -320,6 +320,39 @@ describe("mutation owner preflight", () => {
     expect((await fs.readdir(path.join(root, "apis"))).filter((name) => name.includes("continuation"))).toHaveLength(1);
   });
 
+  it("does not append a differently named project's generic dataset fact to the selected owner", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
+    await kb.writeConcept(owner, { type: "Project", title: "Synthetic Dataset Generation" }, "Synthetic datasets are generated for FS Fotovalidering.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: owner, type: "Project", title: "Synthetic Dataset Generation",
+      score: 10, confidence: 10, confidenceQualified: false,
+    }]);
+    const fact = "Claes Jev diagnostics use the dataset validation pipeline for their independent project.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: owner } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+  });
+
+  it("allows a fact explicitly naming the selected project despite generic dataset terms", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
+    await kb.writeConcept(owner, { type: "Project", title: "Synthetic Dataset Generation" }, "Synthetic datasets are generated for FS Fotovalidering.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: owner, type: "Project", title: "Synthetic Dataset Generation",
+      score: 10, confidence: 10, confidenceQualified: false,
+    }]);
+    const fact = "Synthetic Dataset Generation diagnostics use the dataset validation pipeline.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: owner } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+  });
+
   it("routes an unrelated unhinted continuation to its relevant parent", async () => {
     await billingFixture(); staged();
     const wrongPath = "/apis/billing-api-continuation-abc123abc123abcd.md";
