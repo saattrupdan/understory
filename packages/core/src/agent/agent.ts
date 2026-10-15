@@ -1278,13 +1278,13 @@ async function runStagedMutation(
         }
         const judgement = await generateObject({
           model: resolved.model,
-          schema: z.object({ safe: z.boolean() }).strict(),
+          schema: z.object({ safe: z.boolean(), reason: z.enum(["unsupported", "wrong_owner", "duplicate", "contradiction", "uncertain"]).optional() }).strict(),
           temperature: 0,
           abortSignal: options.signal,
-          prompt: `Independent safety check for appending the caller's EXACT fact, without rewriting it. Is every assertion supported by the caller, positively relevant to this owner (even if another existing owner could also plausibly fit), not already recorded, and consistent with the full existing body? Reject negative/unrelated mentions. The suggested path is not proof. If uncertain about relevance or support, safe=false.\nFACT:\n${fact}\nOWNER ${target.path} (${target.frontmatter.title ?? "untitled"}):\n${target.body}\nOTHER SEARCH HITS (titles and paths only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}`,
+          prompt: `Independent safety check for appending the caller's EXACT fact, without rewriting it. Is every assertion supported by the caller, positively relevant to this owner (even if another existing owner could also plausibly fit), not already recorded AS A COMPLETE FACT, and consistent with the full existing body? Partial overlap with prior facts is not duplication. Reject negative/unrelated mentions. The suggested path is not proof. If safe=false, return one reason: unsupported, wrong_owner, duplicate, contradiction, or uncertain. If uncertain about relevance or support, safe=false.\nFACT:\n${fact}\nOWNER ${target.path} (${target.frontmatter.title ?? "untitled"}):\n${target.body}\nOTHER SEARCH HITS (titles and paths only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}`,
         });
         state.checkCancellation();
-        if (!judgement.object.safe) throw new Error("Staged mutation deferred: exact-fact append failed consistency check.");
+        if (!judgement.object.safe) throw new Error(`Staged mutation deferred: exact-fact append failed consistency check (${judgement.object.reason ?? "uncertain"} at ${target.path}).`);
         const appended = `${target.body.trimEnd()}\n\n${fact}\n`;
         const current = await kb.readConcept(target.path);
         if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);

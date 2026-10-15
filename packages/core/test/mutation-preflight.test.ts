@@ -819,6 +819,18 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
+  it("reports the rejected exact-fact owner and reason without appending", async () => {
+    await billingFixture(); staged();
+    const fact = "Billing API logs a request ID for each charge created by support tooling.";
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "/apis/billing-api.md" } })
+      .mockResolvedValueOnce({ object: { safe: false, reason: "contradiction" } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed",
+      error: expect.stringContaining("(contradiction at /apis/billing-api.md)"),
+    });
+    expect((await kb.readConcept("/apis/billing-api.md")).body).not.toContain(fact);
+  });
+
   it("selects one owner from bounded metadata when competing complete bodies exceed the prompt budget", async () => {
     staged();
     const api = "/apis/billing-api.md";
