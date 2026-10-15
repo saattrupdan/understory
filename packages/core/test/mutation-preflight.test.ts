@@ -819,6 +819,78 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
+  it("considers a named existing repository excluded by long-note search ranking", async () => {
+    staged();
+    const owner = "/repos/understory.md";
+    const wrong = "/repos/pi-agent/understory-query-latency.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "Understory Repository" },
+      "Understory stores agent memory through an async mutation queue.", "seed");
+    await kb.writeConcept(wrong, { type: "Repository", title: "Understory Query Latency" },
+      "Understory recall latency depends on search throughput.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: wrong, type: "Repository",
+      title: "Understory Query Latency", score: 10, confidenceQualified: false }]);
+    const fact = "Understory memory-queue recovery checks historical done receipts before replaying a failed update.";
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`"path":"${owner}"`);
+      expect(prompt).toContain(`"path":"${wrong}"`);
+      return { object: { path: owner } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
+      ok: true, result: { filesChanged: [owner] },
+    });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(wrong)).body).not.toContain(fact);
+  });
+
+  it("retains all five original owners when a named repository enters metadata selection", async () => {
+    staged();
+    const named = "/repos/understory.md";
+    const original = [1, 2, 3, 4, 5].map((i) => `/repos/understory-topic-${i}.md`);
+    await kb.writeConcept(named, { type: "Repository", title: "Understory Repository" },
+      "General Understory context. ".repeat(1_800), "seed");
+    for (const [i, owner] of original.entries()) {
+      await kb.writeConcept(owner, { type: "Repository", title: `Understory Topic ${i + 1}` },
+        `Understory topic ${i + 1} context. `.repeat(500), "seed");
+    }
+    vi.spyOn(kb, "search").mockResolvedValue(original.map((owner, i) => ({
+      path: owner, type: "Repository", title: `Understory Topic ${i + 1}`,
+      score: 10 - i, confidenceQualified: false,
+    })));
+    const fact = "Understory's topic 5 already records this incident fact.";
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("CANDIDATE METADATA");
+      expect(prompt).toContain(`"path":"${named}"`);
+      expect(prompt).toContain(`"path":"${original[4]}"`);
+      return { object: { path: original[4] } };
+    }).mockImplementationOnce(async () => ({ object: { safe: false, reason: "duplicate" } }));
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("duplicate") });
+    expect((await kb.readConcept(named)).body).not.toContain(fact);
+    expect((await kb.readConcept(original[4])).body).not.toContain(fact);
+  });
+
+  it("does not let an oversized named repository hide a valid search owner", async () => {
+    staged();
+    const named = "/repos/understory.md";
+    const relevant = "/repos/understory-memory.md";
+    await kb.writeConcept(named, { type: "Repository", title: "Understory Repository" },
+      "General Understory context. ".repeat(2_600), "seed");
+    await kb.writeConcept(relevant, { type: "Repository", title: "Understory Memory" },
+      "Understory memory facts are retained in an async queue.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: relevant, type: "Repository",
+      title: "Understory Memory", score: 10, confidenceQualified: false }]);
+    const fact = "Understory Memory queue checks completed receipts before retrying a failed write.";
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).not.toContain(`"path":"${named}"`);
+      return { object: { path: relevant } };
+    }).mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [relevant] } });
+  });
+
   it("reports the rejected exact-fact owner and reason without appending", async () => {
     await billingFixture(); staged();
     const fact = "Billing API logs a request ID for each charge created by support tooling.";

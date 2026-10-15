@@ -985,9 +985,27 @@ async function runStagedMutation(
     const query = mutationSearchQuery(raw);
     if (!query) throw new Error("Staged mutation deferred: no bounded search terms.");
     state.checkCancellation();
-    const hits = (await kb.search(query)).slice(0, 5);
+    let hits = (await kb.search(query)).slice(0, 5);
     recorder.record("search_knowledge", query, hits.map((hit) => hit.path));
     state.checkCancellation();
+    // A long incident note can rank a tangential owner above the repository
+    // explicitly named at its start. Include that existing owner as a candidate;
+    // its name is only retrieval evidence, never permission to append.
+    const leadingRepository = options.directAdd && options.preflightInput &&
+      raw.trim().match(/^([A-Z][a-z]{2,}(?:-[A-Za-z0-9]+)*)\b/)?.[1];
+    const leadingPath = leadingRepository ? `/repos/${leadingRepository.toLowerCase()}.md` : undefined;
+    if (leadingPath && !hits.some((hit) => hit.path === leadingPath) && await kb.bundle.exists(leadingPath)) {
+      const owner = await kb.readConcept(leadingPath);
+      recorder.record("read_concept", owner.path, [owner.path]);
+      state.checkCancellation();
+      // Do not displace any original hit or add a body that would make the
+      // multi-owner evidence fail before a smaller existing owner is checked.
+      if (owner.body.length <= STAGED_MAX_OWNER_CHARS) {
+        hits = [{ path: owner.path, type: owner.frontmatter.type,
+          title: owner.frontmatter.title, description: owner.frontmatter.description,
+          score: 0, confidenceQualified: false }, ...hits];
+      }
+    }
     const first = hits[0];
     const second = hits[1];
     // A deployed, named application may identify its own repository when the
@@ -1097,9 +1115,10 @@ async function runStagedMutation(
       if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
     } else if (hits.length > 0) {
-      // Give the proposer complete bodies for up to three competing owners.
-      // All five hit titles are still checked as potential competitors.
-      for (const hit of hits.slice(0, 3)) {
+      // Give the proposer complete bodies for the original top three owners
+      // plus a bounded named repository, if it was added. All original five
+      // hits remain visible to the independent verifier.
+      for (const hit of hits.slice(0, leadingPath && hits[0]?.path === leadingPath ? 4 : 3)) {
         const concept = await kb.readConcept(hit.path);
         recorder.record("read_concept", concept.path, [concept.path]);
         candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
@@ -1123,7 +1142,7 @@ async function runStagedMutation(
       // Selection is only a locator, never write authorization. Do not send
       // truncated bodies to the proposer or silently drop competing owners:
       // the independent verifier still sees the other search-hit titles.
-      const metadata = hits.slice(0, 5).map((hit) => ({
+      const metadata = hits.map((hit) => ({
         path: hit.path.slice(0, 512),
         title: typeof hit.title === "string" ? hit.title.slice(0, 256) : "",
         description: typeof hit.description === "string" ? hit.description.slice(0, 512) : "",
