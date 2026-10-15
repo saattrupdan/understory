@@ -793,8 +793,9 @@ function stagedConflictingNamedOwner(input: string, title: string | undefined, c
   // A leading preposition is framing, not part of a named subject. In
   // particular, facts phrased "For Holi's ..." must be anchored to Holi,
   // rather than misread as a person named "For Holi".
-  const subject = input.trim().match(/^(?:[Ff]or\s+)?([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*)\b/)?.[1];
-  if (!subject) return false;
+  const trimmed = input.trim();
+  const subject = trimmed.match(/^(?:[Ff]or\s+)?([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*)\b/)?.[1];
+  if (!subject || (subject.split(/\s+/).length < 2 && !/^For\s+[A-Z][a-z]{2,}'s\b/.test(trimmed))) return false;
   const identity = `${title ?? ""} ${conceptPath.split("/").pop()?.replace(/\.md$/, "").replace(/[-_]/g, " ") ?? ""}`.toLowerCase();
   return !identity.includes(subject.toLowerCase()) && !(title && stagedTitleMention(input, title));
 }
