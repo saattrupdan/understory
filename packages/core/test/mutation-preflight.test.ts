@@ -725,6 +725,75 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
   });
 
+  it("routes an exact EuroEval PR outcome to its canonical Repository despite a misleading PR #2157 hit", async () => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    const misleading = "/procedures/euroeval-sklep-slovak-datasets-pr-2157.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval Repository" },
+      "EuroEval is the repository for evaluation datasets.", "seed");
+    await kb.writeConcept(misleading, { type: "Procedure", title: "EuroEval SkLEP Slovak Datasets PR #2157" },
+      "A Slovak dataset procedure unrelated to MKQA publication outcomes.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: misleading, type: "Procedure",
+      title: "EuroEval SkLEP Slovak Datasets PR #2157", score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "EuroEval PR #2237 operational outcome (16 Oct 2026): Ran src/scripts/dataset_creation/create_mkqa.py on contributor branch, publishing all 13 EuroEval/mkqa-{da,de,en,es,fi,fr,hu,it,nl,no,pl,pt,sv}-mini Hugging Face dataset repositories privately; authenticated load_dataset verified each has train=1024, val=256, test=2048 text/label rows. CHECK_DATASET=mkqa-en tests passed (15, 1 skipped). Pushed 690fc448 to avalyset/EuroEval:add-mkqa-unofficial, adding NORWEGIAN_NYNORSK to MKQA_NO_CONFIG because upstream MKQA only labels 'no' as Norwegian and does not specify an exclusion. PR review 5545034216 remains PENDING and its publication request comment 4292481293 was deleted. IMPORTANT: dataset_utils.upload_private deletes the target repository before republishing; check no existing targets before re-running the script. Known review issues (cross-split duplicate questions and unit-cued distractors) still apply to the published private datasets.";
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("COMPETING OWNER")) {
+        expect(prompt).toContain(`COMPETING OWNER ${misleading}`);
+        expect(prompt).toContain("A Slovak dataset procedure unrelated to MKQA publication outcomes.");
+      } else {
+        expect(prompt).toContain(`OWNER ${owner}`);
+        expect(prompt).toContain(fact);
+      }
+      return { object: { safe: true, reason: "The outcome belongs to EuroEval." } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(misleading)).body).not.toContain(fact);
+  });
+
+  it.each([
+    { type: "Repository", title: "EuroEval Repository Archive" },
+    { type: "Project", title: "EuroEval Repository" },
+  ])("does not route to a canonical path with noncanonical metadata ($type)", async ({ type, title }) => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    const misleading = "/procedures/euroeval-sklep-slovak-datasets-pr-2157.md";
+    await kb.writeConcept(owner, { type, title }, "Existing EuroEval-related content.", "seed");
+    await kb.writeConcept(misleading, { type: "Procedure", title: "EuroEval SkLEP Slovak Datasets PR #2157" },
+      "A Slovak dataset procedure.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: misleading, type: "Procedure",
+      title: "EuroEval SkLEP Slovak Datasets PR #2157", score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "EuroEval PR #2237 operational outcome (16 Oct 2026): Verified the private dataset publication outcome.";
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: false } })
+      .mockResolvedValueOnce({ object: { safe: false, reason: "The selected procedure is not the owner." } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+    expect((await kb.readConcept(misleading)).body).not.toContain(fact);
+  });
+
+  it("does not append a canonical EuroEval fact when a competing PR owner conflicts", async () => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    const competitor = "/procedures/euroeval-sklep-slovak-datasets-pr-2157.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval Repository" },
+      "EuroEval is the repository for evaluation datasets.", "seed");
+    await kb.writeConcept(competitor, { type: "Procedure", title: "EuroEval SkLEP Slovak Datasets PR #2157" },
+      "The EuroEval PR #2237 operational outcome contradicts the supplied fact.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: competitor, type: "Procedure",
+      title: "EuroEval SkLEP Slovak Datasets PR #2157", score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "EuroEval PR #2237 operational outcome (16 Oct 2026): Verified the private dataset publication outcome.";
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`COMPETING OWNER ${competitor}`);
+      expect(prompt).toContain("contradicts the supplied fact");
+      return { object: { safe: false, reason: "The competing owner conflicts." } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+  });
+
   it("creates a distinct named pull-request owner only after checking complete competing bodies", async () => {
     staged();
     const unrelated = "/repos/pi-agent/node-runtime.md";

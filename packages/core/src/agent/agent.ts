@@ -1241,8 +1241,10 @@ async function runStagedMutation(
       recorder.record("read_concept", canonicalRepo.path, [canonicalRepo.path]);
       state.checkCancellation();
       const normalizeIdentity = (value: string) => value.toLowerCase().replace(/[-_\s]+/g, " ").trim();
+      const normalizedRepoName = normalizeIdentity(leadingRepoName!);
+      const normalizedRepoTitle = normalizeIdentity(canonicalRepo.frontmatter.title ?? "");
       if (canonicalRepo.frontmatter.type === "Repository" &&
-          normalizeIdentity(canonicalRepo.frontmatter.title ?? "") === normalizeIdentity(leadingRepoName!)) {
+          (normalizedRepoTitle === normalizedRepoName || normalizedRepoTitle === `${normalizedRepoName} repository`)) {
         if (canonicalRepo.body.length > STAGED_MAX_OWNER_CHARS) {
           throw new Error("Staged mutation deferred: named repository owner exceeds evidence limit.");
         }
