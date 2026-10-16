@@ -2267,6 +2267,71 @@ describe("mutation owner preflight", () => {
     expect(body).toContain("only after approval");
   });
 
+  it("repairs a duplicate old operand using its unique stale-claim context", async () => {
+    staged();
+    const owner = "/projects/cover-letter.md";
+    const stale = "The cover letter uses the legacy JSON schema.";
+    const paragraph = `${stale} The applicant's research experience remains relevant.`;
+    const retained = "The resume uses the legacy JSON schema.";
+    const instruction = `Correct the cover letter schema in \`${owner}\`: replace the legacy JSON schema with the current YAML schema. Preserve the research experience.`;
+    await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, `${paragraph}\n\n${retained}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      action: "replace", path: owner, old_text: stale,
+      new_text: "The cover letter uses the current YAML schema.",
+    } }).mockResolvedValueOnce({ object: {
+      old_text: paragraph,
+      new_text: "The cover letter uses the current YAML schema. The applicant's research experience remains relevant.",
+    } }).mockResolvedValueOnce({ object: { safe: true, reason: "Only the stale cover-letter schema claim changed." } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain("current YAML schema");
+    expect(body).toContain(retained);
+    expect(body).toContain("applicant's research experience remains relevant");
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("defers when duplicate old operands have ambiguous active claims", async () => {
+    staged();
+    const owner = "/projects/cover-letter.md";
+    const stale = "The cover letter uses the legacy JSON schema.";
+    const body = `${stale}\n\n${stale}`;
+    const instruction = `Correct the cover letter schema in \`${owner}\`: replace the legacy JSON schema with the current YAML schema.`;
+    await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, body, "seed");
+    const patchSpy = vi.spyOn(kb, "patchConcept");
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      action: "replace", path: owner, old_text: stale,
+      new_text: "The cover letter uses the current YAML schema.",
+    } }).mockResolvedValueOnce({ object: { old_text: "", new_text: "" } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(patchSpy).not.toHaveBeenCalled();
+    expect((await kb.readConcept(owner)).body.trim()).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a repaired duplicate-operand correction if the owner changes before CAS", async () => {
+    staged();
+    const owner = "/projects/cover-letter.md";
+    const stale = "The cover letter uses the legacy JSON schema.";
+    const paragraph = `${stale} The applicant's research experience remains relevant.`;
+    const instruction = `Correct the cover letter schema in \`${owner}\`: replace the legacy JSON schema with the current YAML schema.`;
+    await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, `${paragraph}\n\nUnrelated note.`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      action: "replace", path: owner, old_text: stale,
+      new_text: "The cover letter uses the current YAML schema.",
+    } }).mockResolvedValueOnce({ object: {
+      old_text: paragraph,
+      new_text: "The cover letter uses the current YAML schema. The applicant's research experience remains relevant.",
+    } }).mockImplementationOnce(async () => {
+      await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, "External revision.", "external");
+      return { object: { safe: true, reason: "Approved." } };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body.trim()).toBe("External revision.");
+  });
+
   it("accepts a quoted correction that changes sentence punctuation locally", async () => {
     await billingFixture(); staged();
     const instruction = "Correct `/apis/billing-api.md`: replace the exact phrase `ad-hoc charges come from support tooling.` with `ad-hoc charges come from support tooling. Approval is required.` Preserve monthly charges.";
