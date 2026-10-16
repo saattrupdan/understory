@@ -2485,6 +2485,26 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
+  it("replaces only a whole sentence when every clause is superseded PR status", async () => {
+    staged();
+    const owner = "/users/dan-smart.md";
+    const oldText = "PR #2234 remains open, and its CHANGES_REQUESTED review remains active.";
+    const status = "Dan approved it with a review thanking Eirik, then squash-merged it on 15 Oct 2026 as commit ac33731f88806b1a45593c83dbfd473f1cc877fa. Remote feature branch feat/invalid-model-dataset-1453 was deleted; no local branch of that name existed. Local main was fast-forwarded to ac33731f and is clean/up-to-date.";
+    const instruction = `EuroEval PR #2234 final status: ${status} Replace any prior status saying PR is open/changes requested.`;
+    await kb.writeConcept(owner, { type: "Person", title: "Dan Smart" },
+      `EuroEval PR #2234: Prior six review threads were resolved. ${oldText}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Person", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { old_text: "" } })
+      .mockResolvedValueOnce({ object: { safe: true } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(status);
+    expect(body).toContain("Prior six review threads were resolved");
+    expect(body).not.toContain(oldText);
+  });
+
   it("replaces only the isolated stale PR span inside a mixed sentence", async () => {
     staged();
     const owner = "/users/dan-smart.md";

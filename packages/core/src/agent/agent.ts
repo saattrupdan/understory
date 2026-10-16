@@ -1678,13 +1678,29 @@ async function runStagedMutation(
           oldText = selected;
         }
       }
+      let verifiedWholeStatus = false;
+      if (target && paragraphs.length === 1 && stale.length === 1 && !statusOnly && oldText === stale[0] && newText) {
+        const oldIds = [...oldText.matchAll(/\bPR\s*#(\d+)\b/gi)].map((match) => match[1]);
+        if (oldIds.every((id) => id === finalPrStatus[2])) {
+          const scope = await generateObject({
+            model: resolved.model,
+            schema: z.object({ safe: z.boolean() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Independent whole-sentence PR review scope check. Does EVERY assertion in OLD SENTENCE concern ONLY the currently stale open/changes-requested review status of PR #${finalPrStatus[2]}, with no unrelated review-thread, CI, branch, historical, or other PR fact that would be lost? The caller's final status must explicitly supersede every old assertion. If any claim is unrelated, historically true, or uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nOLD SENTENCE:\n${oldText}\nNEW STATUS:\n${newText}`,
+          });
+          state.checkCancellation();
+          verifiedWholeStatus = scope.object.safe;
+        }
+      }
       if (!target || paragraphs.length !== 1 || stale.length !== 1 ||
-          (!statusOnly && oldText === stale[0]) || !newText || newText.length > 2_000 ||
+          (!statusOnly && oldText === stale[0] && !verifiedWholeStatus) || !newText || newText.length > 2_000 ||
           target.body.split(oldText).length !== 2 ||
           !/\bapproved\b/i.test(newText) || !/\bsquash-merged\b/i.test(newText)) {
         console.warn("[understory] final PR status scope declined", {
           owner: target?.path, paragraphs: paragraphs.length, stale: stale.length,
-          statusOnly, scoped: oldText !== stale[0], oldLength: oldText.length, newLength: newText?.length ?? 0,
+          statusOnly, scoped: oldText !== stale[0], verifiedWholeStatus,
+          oldLength: oldText.length, newLength: newText?.length ?? 0,
           uniqueOld: !!target && target.body.split(oldText).length === 2,
           oldHasComma: /[,;]/.test(statusClause), oldHasConjunction: /\b(?:but|while|also|whereas|with|and)\b/i.test(statusClause),
         });
