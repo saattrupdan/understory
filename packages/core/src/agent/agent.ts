@@ -1762,7 +1762,33 @@ async function runStagedMutation(
           prompt: `Independent safety check for appending the caller's EXACT fact, without rewriting it. Is every assertion supported by the caller, positively relevant to this owner (even if another existing owner could also plausibly fit), not already recorded AS A COMPLETE FACT, and consistent with the full existing body? Partial overlap with prior facts is not duplication. Reject negative/unrelated mentions. The suggested path is not proof. If safe=false, return one reason: unsupported, wrong_owner, duplicate, contradiction, or uncertain. If uncertain about relevance or support, safe=false.\nFACT:\n${fact}\nOWNER ${target.path} (${target.frontmatter.title ?? "untitled"}):\n${target.body}\nOTHER SEARCH HITS (titles and paths only):\n${JSON.stringify(hits.filter((hit) => hit.path !== target.path).map((hit) => ({ path: hit.path, title: hit.title })))}`,
         });
         state.checkCancellation();
-        if (!judgement.object.safe) throw new Error(`Staged mutation deferred: exact-fact append failed consistency check (${judgement.object.reason ?? "uncertain"} at ${target.path}).`);
+        if (!judgement.object.safe) {
+          // A duplicate verdict may conflate a shared topic with the complete
+          // multi-claim fact. Never override it from the first judgement alone:
+          // require an independent, structured full-body adjudication of every
+          // safety dimension. Any false/uncertain field keeps the write deferred.
+          if (judgement.object.reason !== "duplicate") {
+            throw new Error(`Staged mutation deferred: exact-fact append failed consistency check (${judgement.object.reason ?? "uncertain"} at ${target.path}).`);
+          }
+          const recheck = await generateObject({
+            model: resolved.model,
+            schema: z.object({
+              non_duplicate: z.boolean(),
+              relevant: z.boolean(),
+              supported: z.boolean(),
+              consistent: z.boolean(),
+              certain: z.boolean(),
+            }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Independent full-body recheck of a disputed duplicate verdict. Re-evaluate the EXACT FACT claim by claim against the COMPLETE OWNER BODY, independently of the prior verdict. Return true for non_duplicate only when the full fact is NOT already recorded as a complete fact (paraphrases count); partial-topic overlap is not duplication. Return true for relevant only when the fact is positively relevant to this owner, supported only when every claim is supplied by the caller, consistent only when no existing assertion contradicts any claim, and certain only when all these conclusions are clear. Do not infer missing claims from broad context. Any uncertainty, contradiction, unsupported claim, or complete duplicate must be false. JSON only.\nFACT:\n${fact}\nCOMPLETE OWNER ${target.path} (${target.frontmatter.title ?? "untitled"}):\n${target.body}`,
+          });
+          state.checkCancellation();
+          const check = recheck.object;
+          if (!(check.non_duplicate && check.relevant && check.supported && check.consistent && check.certain)) {
+            throw new Error(`Staged mutation deferred: exact-fact append failed independent duplicate recheck (${target.path}).`);
+          }
+        }
         const appended = `${target.body.trimEnd()}\n\n${fact}\n`;
         const current = await kb.readConcept(target.path);
         if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
