@@ -548,6 +548,32 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
   });
 
+  it("routes a leading repository decision to its canonical owner without PR syntax", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const misleading = "/repos/pi-agent/rate-limit-retry.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "Job-bot" },
+      "Job-bot manages account verification.", "seed");
+    await kb.writeConcept(misleading, { type: "Extension", title: "Rate Limit Retry" },
+      "Pi retries provider HTTP 429 responses.", "seed");
+    const fact = "Job-bot verification recovery UI decision (Dan, 13 Oct 2026): A blocked login should not show both 'Send verification link' and 'Sign out and sign in again' simultaneously. Deployed e55d148: initially only Send verification link; after successful send replace it with sign-out action. Generic non-verification 401 still offers sign-out. Both AppView and LoggedInView follow this pattern.";
+    const search = vi.spyOn(kb, "search").mockResolvedValue([{
+      path: misleading, type: "Extension", title: "Rate Limit Retry", score: 100,
+      confidence: 100, confidenceQualified: true,
+    }]);
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("Pi retries provider HTTP 429 responses.");
+      expect(prompt).toContain(`OWNER ${owner}`);
+      return prompt.includes("Choose ONE positively relevant") ? { object: { path: owner } }
+        : { object: { safe: true, reason: "Supported by the explicit repository identity." } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect(search.mock.calls.some(([query]) => query.toLowerCase() === "job-bot")).toBe(false);
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(misleading)).body).not.toContain(fact);
+  });
+
   it("does not infer a repository from a hyphenated policy belonging to another application", async () => {
     staged();
     const unrelated = "/repos/pi-agent/rate-limit-retry.md";
