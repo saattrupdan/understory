@@ -2101,6 +2101,55 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(playbook)).body).not.toContain(fact);
   });
 
+  it.each([
+    { ownerHasOldHash: true, peerHasOldHash: false, ownerHasItem: true, passesAnchor: true },
+    { ownerHasOldHash: false, peerHasOldHash: true, ownerHasItem: true, passesAnchor: false },
+    { ownerHasOldHash: true, peerHasOldHash: true, ownerHasItem: true, passesAnchor: false },
+    { ownerHasOldHash: true, peerHasOldHash: false, ownerHasItem: false, passesAnchor: false },
+    { ownerHasOldHash: true, peerHasOldHash: false, ownerHasItem: true, laterHasOldHash: true, passesAnchor: false },
+  ])("anchors metadata-selected hash corrections to one complete owner ($ownerHasOldHash, $peerHasOldHash, $ownerHasItem, $laterHasOldHash)",
+    async ({ ownerHasOldHash, peerHasOldHash, ownerHasItem, laterHasOldHash, passesAnchor }) => {
+      staged();
+      const owner = "/projects/label-ledger.md";
+      const peer = "/projects/experiment-history.md";
+      const oldHash = "e27ae2eaab586175e6952d2411a39904a24817dd57f509cb36925dc43e57c7b3";
+      const newHash = "c18af64b9a88cd7ce06f5679d0d3709c6d1fa8b099cd1fb9159349ce70077421";
+      const instruction = `Correct the FS Fotovalidering 2026-10-14 baseline owner-blur correction (godkendt_id2): the FINAL authoritative XLSX SHA-256 is \`${newHash}\`, not intermediate \`${oldHash}\`. The current Godkendt!C2 tick was cleared to blank.`;
+      const ownerBody = `FS Fotovalidering corrected ${ownerHasItem ? "godkendt_id2" : "godkendt_id9"} on 15 Oct. Workbook SHA old f253 → new ${ownerHasOldHash ? oldHash : "another hash"}. ` +
+        "Other baseline observations and notes. ".repeat(1_200);
+      const peerBody = `The TONO+ONOT experiment ${peerHasOldHash ? `reused ${oldHash}` : "used synthetic photos"}. ` +
+        "Separate experiment history. ".repeat(1_600);
+      await kb.writeConcept(owner, { type: "Project Continuation", title: "Label Ledger" }, ownerBody, "seed");
+      await kb.writeConcept(peer, { type: "Project", title: "September Experiment" }, peerBody, "seed");
+      const neutral = "/projects/neutral-notes.md";
+      const late = "/projects/later-source.md";
+      if (laterHasOldHash) {
+        await kb.writeConcept(neutral, { type: "Project", title: "Neutral Notes" }, "Different project notes.", "seed");
+        await kb.writeConcept(late, { type: "Project", title: "Later Source" },
+          `A copied historical workbook hash ${oldHash}, from another record.`, "seed");
+      }
+      vi.spyOn(kb, "search").mockResolvedValue([owner, peer, ...(laterHasOldHash ? [neutral, late] : [])]
+        .map((conceptPath) => ({
+          path: conceptPath, type: "Project", title: conceptPath === owner
+            ? "Label Ledger" : conceptPath === peer ? "September Experiment" : "Other Project",
+          score: 10, confidenceQualified: false,
+        })));
+      generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+        if (prompt.includes("CANDIDATE METADATA")) {
+          expect(prompt).not.toContain("Workbook SHA old f253");
+          return { object: { path: owner } };
+        }
+        expect(prompt).toContain(`CANDIDATES:`);
+        expect(prompt).toContain(ownerBody);
+        return { object: { ...baseProposal, action: "defer", reason: "owner anchor passed" } };
+      });
+      const result = await runMutation(kb, instruction, { preflightInput: instruction });
+      expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining(
+        passesAnchor ? "owner anchor passed" : "metadata-selected owner lacks a positive discriminative anchor") });
+      expect(generateObjectMock).toHaveBeenCalledTimes(passesAnchor ? 2 : 1);
+      expect((await kb.readConcept(owner)).body).toBe(`${ownerBody}\n`);
+    });
+
   it.each([3, 4])("re-reads and accepts the selected metadata hit at rank %s", async (rank) => {
     staged();
     const paths = Array.from({ length: 5 }, (_, i) => `/projects/candidate-${i + 1}.md`);

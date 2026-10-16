@@ -901,6 +901,12 @@ function stagedNamedSection(input: string): RegExp | undefined {
   return new RegExp(`^(?:#{1,6}\\s+|\\*\\*)?${escaped}(?:\\*\\*)?\\s*:(?:\\*\\*)?(?=\\s|$)`, "mi");
 }
 
+function stagedContrastedOldHash(input: string): string | undefined {
+  // A correction of the form "final SHA is X, not intermediate Y" supplies
+  // Y as the old operand, not merely a negative mention of another concept.
+  return input.match(/\b(?:final|authoritative)\b[^.!?;]{0,160}\b(?:hash|sha-?256)\b[^.!?;]{0,80}`[a-f0-9]{64}`\s*,?\s*not\s+(?:the\s+)?(?:intermediate|previous|old)\s+`([a-f0-9]{64})`/i)?.[1];
+}
+
 function stagedDiscriminativeOwnerAnchor(
   input: string,
   selectedPath: string,
@@ -948,7 +954,7 @@ function stagedDiscriminativeOwnerAnchor(
     if (!inputTerms.has(term)) return false;
     return !negatedMentions.some((mention) => mention.has(term));
   });
-  if (titleAnchor) return true;
+  if (titleAnchor && !stagedContrastedOldHash(input)) return true;
 
   // A title-less correction can still be grounded by a verbatim old claim or
   // an identifier that occurs in this complete body. Generic overlap and model
@@ -958,10 +964,11 @@ function stagedDiscriminativeOwnerAnchor(
   // Only the explicit old operand of a correction can establish ownership.
   // An incidental date, filename, new hash or negated reference in the same
   // request must not authorize a different concept.
+  const contrastedOldHash = stagedContrastedOldHash(input);
   const oldClaims = [
     input.match(/\breplace\s+(?:the\s+)?(?:exact\s+)?(?:phrase|text|claim)?\s*`([^`]{12,2000})`\s+with\b/i)?.[1],
     input.match(/\breplace\s+([\p{L}\p{N}][\p{L}\p{N}_-]*\d[\p{L}\p{N}_-]*)\s+with\b/iu)?.[1],
-    input.match(/\bnot\s+(?:the\s+)?(?:intermediate|previous|old)\s+`([^`]{12,2000})`/i)?.[1],
+    contrastedOldHash,
     // Workbook/content hashes are common correction operands but are not
     // identifier-shaped like domain IDs (e.g. godkendt_id2).
     input.match(/\breplace\s+(?:the\s+)?(?:old\s+)?(?:workbook\s+)?(?:hash\s+)?([a-f0-9]{8,64})\s+with\b/i)?.[1],
@@ -973,8 +980,14 @@ function stagedDiscriminativeOwnerAnchor(
     return occurrences(selectedBody) === 1 &&
       candidates.filter((candidate) => candidate.path !== selectedPath)
         .every((candidate) => !candidate.body?.includes(claim)) &&
-      !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term)));
+      (claim === contrastedOldHash ||
+        !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term)))) &&
+      (claim !== contrastedOldHash ||
+        (input.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [])
+          .some((id) => selectedBody.includes(id)));
   };
+  if (contrastedOldHash) return positivelyPresent(contrastedOldHash);
+  if (titleAnchor) return true;
   if (directAdd) {
     // An item ID already in one complete owner body can locate an exact fact
     // about that item. Generic dates, hashes and ungrounded IDs cannot.
@@ -1566,6 +1579,7 @@ async function runStagedMutation(
       const selected = { path: owner.path, frontmatter: owner.frontmatter, body: owner.body };
       const evidenceCandidates = [...candidates.filter((candidate) => candidate.path !== selectedPath), selected];
       if (!hintedPath && (namedSection ||
+          (!options.directAdd && stagedContrastedOldHash(raw)) ||
           !stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd))) {
         // A named section or title-less exact claim needs complete competing bodies, not just
         // the three bodies that fit in the proposal prompt. These reads are
