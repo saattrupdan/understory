@@ -1753,27 +1753,34 @@ async function runStagedMutation(
       await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
     } else if (p.action === "replace") {
       const target = candidates.find((c) => c.path === p.path);
-      if (target && p.old_text.length > 0 && target.body.split(p.old_text).length !== 2) {
-        // A duplicate short operand may occur in both a stale claim and an
-        // unrelated clause. Ask once for the exact containing paragraph, but
-        // accept it only when that complete context is uniquely present.
-        const repair = await generateObject({
-          model: proposer.model,
-          schema: z.object({ old_text: z.string(), new_text: z.string() }).strict(),
-          temperature: 0,
-          abortSignal: options.signal,
-          prompt: `Repair ONLY the non-unique old operand. Identify the single exact paragraph or clause in this owner that contains the actively stale assertion addressed by the instruction, and return it as old_text. Return a local corrected new_text that preserves every unrelated clause and statement verbatim. Do not combine separate passages or choose an already negated/historical mention. If there is not exactly one clearly active target, return both fields empty. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nNON-UNIQUE OLD OPERAND:\n${p.old_text}\nPROPOSED CORRECTION:\n${p.new_text}`,
-        });
-        state.checkCancellation();
-        const repairedOld = repair.object.old_text;
-        const repairedNew = repair.object.new_text;
-        if (repairedOld.length >= 12 && repairedOld.length <= 4_000 &&
-            repairedNew.length > 0 && repairedNew.length <= 4_000 &&
-            !/\\n\\s*\\n/.test(repairedOld) && !/\\n\\s*\\n/.test(repairedNew) &&
-            repairedOld.includes(p.old_text) && target.body.split(repairedOld).length === 2) {
-          p.old_text = repairedOld;
-          p.new_text = repairedNew;
-          repairedCorrection = true;
+      let duplicateRepair = "not attempted";
+      if (target && p.old_text.length >= 12 && target.body.split(p.old_text).length !== 2) {
+        // Select from exact, bounded owner paragraphs rather than asking the
+        // model to reproduce whitespace-sensitive text. Selection alone never
+        // authorizes a replacement: the full-owner verifier and CAS still apply.
+        const paragraphs = target.body.split(/\n\s*\n/).filter((part) =>
+          part.includes(p.old_text) && part.length <= 4_000 && target.body.split(part).length === 2);
+        duplicateRepair = paragraphs.length === 0 ? "no unique bounded paragraph" :
+          paragraphs.length > 12 ? "too many candidate paragraphs" : "model declined indexed repair";
+        if (paragraphs.length > 0 && paragraphs.length <= 12) {
+          const repair = await generateObject({
+            model: proposer.model,
+            schema: z.object({ index: z.number().int(), new_text: z.string() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Repair ONLY one actively stale claim in this owner. Select its index from the exact paragraphs below, and supply a local corrected new_text preserving every unrelated clause and statement verbatim. If more than one paragraph asserts the old claim, none is clearly active, or the instruction cannot be fully satisfied by one local replacement, return index=-1 and new_text="". Do not select a historical or negated mention. The original old operand is not unique; its presence is not evidence of an active stale claim. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}\nNON-UNIQUE OLD OPERAND:\n${p.old_text}\nPROPOSED CORRECTION:\n${p.new_text}\nEXACT CANDIDATE PARAGRAPHS:\n${JSON.stringify(paragraphs.map((text, index) => ({ index, text })))}`,
+          });
+          state.checkCancellation();
+          const repairedOld = paragraphs[repair.object.index];
+          const repairedNew = repair.object.new_text;
+          if (repairedOld && repairedOld.length >= 12 &&
+              repairedNew.length > 0 && repairedNew.length <= 4_000 &&
+              !/\n\s*\n/.test(repairedNew)) {
+            p.old_text = repairedOld;
+            p.new_text = repairedNew;
+            repairedCorrection = true;
+            duplicateRepair = "selected unique paragraph";
+          }
         }
       }
       const namedParagraph = target && namedSection && sectionOwnerPath === p.path
@@ -1887,7 +1894,7 @@ async function runStagedMutation(
       if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 || !localEdit) {
         const reason = !target ? `owner missing: ${p.path.slice(0, 256) || "(empty)"}; candidates: ${candidates.map((candidate) => candidate.path).join(", ")}` : p.old_text.length < 12 ? "old text too short" :
-          !p.new_text ? "new text empty" : target.body.split(p.old_text).length !== 2 ? "old text not unique" :
+          !p.new_text ? "new text empty" : target.body.split(p.old_text).length !== 2 ? `old text not unique; repair=${duplicateRepair}` :
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ? "new text lacks support" :
             `change spans clauses (section=${!!sectionOwnerPath}, scoped=${!!namedParagraph && namedParagraph.includes(p.old_text)}, status=${!!statusSubject}, status_paragraph=${!!statusParagraph}, status_unique=${statusUniqueAcrossHits}, status_clause=${statusClauseIssue ?? "ok"}, subject=${statusWords.length}/${statusWords.filter((word) => oldStatusWords.has(word)).length}/${statusWords.filter((word) => identityWords.has(word)).length}, owners=${candidates.filter((candidate) => candidate.body.includes(p.old_text)).length}, old=${p.old_text.length}, new=${p.new_text.length}, overlap=${stagedOverlap(p.old_text, p.new_text).toFixed(2)}, paragraph_break=${/\n\s*\n/.test(p.old_text) || /\n\s*\n/.test(p.new_text)})`;
         throw new Error(`Staged mutation rejected: replacement is not one supported local change (${reason}).`);

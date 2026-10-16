@@ -2279,7 +2279,7 @@ describe("mutation owner preflight", () => {
       action: "replace", path: owner, old_text: "legacy JSON schema",
       new_text: "The cover letter uses the current YAML schema.",
     } }).mockResolvedValueOnce({ object: {
-      old_text: paragraph,
+      index: 0,
       new_text: "The cover letter uses the current YAML schema. The applicant's research experience remains relevant.",
     } }).mockResolvedValueOnce({ object: { safe: true, reason: "Only the stale cover-letter schema claim changed." } });
     const result = await runMutation(kb, instruction, { preflightInput: instruction });
@@ -2295,14 +2295,14 @@ describe("mutation owner preflight", () => {
     staged();
     const owner = "/projects/cover-letter.md";
     const stale = "The cover letter uses the legacy JSON schema.";
-    const body = `${stale}\n\n${stale}`;
+    const body = `${stale}\n\n${stale} It is repeated in the active storage specification.`;
     const instruction = `Correct the cover letter schema in \`${owner}\`: replace the legacy JSON schema with the current YAML schema.`;
     await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, body, "seed");
     const patchSpy = vi.spyOn(kb, "patchConcept");
     generateObjectMock.mockResolvedValueOnce({ object: {
       action: "replace", path: owner, old_text: "legacy JSON schema",
       new_text: "The cover letter uses the current YAML schema.",
-    } }).mockResolvedValueOnce({ object: { old_text: "", new_text: "" } });
+    } }).mockResolvedValueOnce({ object: { index: -1, new_text: "" } });
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
       .toMatchObject({ ok: false, status: "failed" });
     expect(patchSpy).not.toHaveBeenCalled();
@@ -2321,7 +2321,7 @@ describe("mutation owner preflight", () => {
       action: "replace", path: owner, old_text: "legacy JSON schema",
       new_text: "The cover letter uses the current YAML schema.",
     } }).mockResolvedValueOnce({ object: {
-      old_text: paragraph,
+      index: 0,
       new_text: "The cover letter uses the current YAML schema. The applicant's research experience remains relevant.",
     } }).mockImplementationOnce(async () => {
       await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, "External revision.", "external");
