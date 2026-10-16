@@ -2056,9 +2056,16 @@ async function runStagedMutation(
         // evidence than its generic project prefix, even without a title hint.
         const negativeSpans = [...fact.matchAll(/\b(?:unrelated to|not about|not)\s+([^.!?;,:]+)/gi)]
           .map((match) => match[1].toLowerCase());
+        const continuationClauses = fact.split(/;\s*|(?<=[.!?])\s+|\n+/)
+          .map((clause) => clause.trim()).filter((clause) => stagedWords(clause).length >= 4);
+        const groundedMultiFactContinuation = target.path.includes("-continuation-") && !wouldOverflow &&
+          continuationClauses.length >= 2 && continuationClauses.every((clause) =>
+            stagedOverlap(clause, target.body) >= 0.25) &&
+          stagedOverlap(fact, target.body) >= 0.35 &&
+          !negativeSpans.some((span) => stagedOverlap(span, target.body) >= 0.5);
         const groundedContinuation = target.path.includes("-continuation-") && !wouldOverflow &&
-          itemIds.some((id) => target.body.includes(id) &&
-            !negativeSpans.some((span) => span.includes(id.toLowerCase())));
+          (itemIds.some((id) => target.body.includes(id) &&
+            !negativeSpans.some((span) => span.includes(id.toLowerCase()))) || groundedMultiFactContinuation);
         if (!hintedPath && !artifactAnchoredPeer && (wouldOverflow || target.path.includes("-continuation-")) &&
             !groundedContinuation && !derivedParent &&
             (!target.frontmatter.title || !stagedTitleMention(raw, target.frontmatter.title))) {

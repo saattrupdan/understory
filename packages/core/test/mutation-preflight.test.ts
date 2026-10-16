@@ -1801,6 +1801,38 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(fact);
   });
 
+  it("accepts grounded multi-fact provenance in an unhinted project continuation", async () => {
+    staged();
+    const continuation = "/projects/fs-fotovalidering-continuation-873508413abcdef0.md";
+    await kb.writeConcept(continuation, { type: "Project Continuation", title: "FS Fotovalidering — Label Audit" },
+      "FS Fotovalidering validation labels are checked against the source annotation. Train labels retain their original provenance, while validation labels are verified separately.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: continuation, type: "Project Continuation", title: "FS Fotovalidering — Label Audit",
+      score: 100, confidence: 100, confidenceQualified: true,
+    }]);
+    const fact = "FS Fotovalidering train labels retain source-row provenance; validation labels are checked against held-out annotations.";
+    generateObjectMock.mockResolvedValue({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [continuation] } });
+    expect((await kb.readConcept(continuation)).body).toContain(fact);
+  });
+
+  it("does not treat broad project overlap as grounding for an unrelated continuation", async () => {
+    staged();
+    const continuation = "/projects/fs-fotovalidering-continuation-873508413abcdef0.md";
+    await kb.writeConcept(continuation, { type: "Project Continuation", title: "FS Fotovalidering — Label Audit" },
+      "FS Fotovalidering photo navigation records arrow-key position and review counts.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: continuation, type: "Project Continuation", title: "FS Fotovalidering — Label Audit",
+      score: 100, confidence: 100, confidenceQualified: true,
+    }]);
+    const fact = "FS Fotovalidering train labels retain source-row provenance; validation labels are checked against held-out annotations.";
+    generateObjectMock.mockResolvedValue({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(continuation)).body).not.toContain(fact);
+  });
+
   it("appends to a selected continuation that already records the fact's item ID", async () => {
     await billingFixture(); staged();
     const continuation = "/apis/billing-api-continuation-abc123abc123abcd.md";
