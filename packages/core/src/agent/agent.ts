@@ -2526,6 +2526,51 @@ async function runStagedMutation(
         p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
         (prStatusUnique || stagedOverlap(p.old_text, p.new_text) >= 0.5);
       const localEdit = stagedSingleClauseEdit(p.old_text, p.new_text) || boundedParagraphRepair;
+      if (!localEdit && paragraphUniquelyOwned && target && statusParagraph &&
+          p.old_text.length >= 100 && target.body.split(p.old_text).length === 2) {
+        // A dated audit can state a true historical omission or residual risk
+        // while a later paragraph records the fix. Replacing the old claim
+        // would erase history; a strictly verified current follow-up can
+        // instead clarify accepted decisions and subsequent mitigations.
+        const followUp = await generateObject({
+          model: resolved.model,
+          schema: z.object({ qualifiable: z.boolean(), certain: z.boolean(), addition: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Can this correction be satisfied by ONE follow-up without retracting a false CURRENT assertion? Approve only if every old assertion that would remain is a true historical observation or residual risk, and later owner updates resolve any apparent conflict. Include only novel caller-supported facts and current qualifications in addition; do not assert an old vulnerability is still open if the full owner records its fix. If any current assertion must be removed, any requested correction cannot be captured here, or uncertain, return qualifiable=false, certain=false and empty addition. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nUNSAFE OLD SPAN:\n${p.old_text}\nREJECTED REPLACEMENT:\n${p.new_text}`,
+        });
+        state.checkCancellation();
+        const { qualifiable, certain, addition } = followUp.object;
+        if (qualifiable && certain && addition.length >= 30 && addition.length <= 2_000 &&
+            !/\n\s*\n/.test(addition) && !target.body.includes(addition.trim()) &&
+            stagedOverlap(addition, `${raw} ${target.body}`) >= 0.8) {
+          const judgement = await generateObject({
+            model: resolved.model,
+            schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Independent complete-owner consistency check for a correction follow-up. Verify that EVERY applicable caller correction is reflected either in the proposed addition or ALREADY in the full owner, and that all preserved old assertions remain true historical observations rather than false active findings. Reject duplicate content, unsupported new claims, omitted corrections, or any assertion contradicted by later owner updates. If a replacement/retraction is necessary instead, safe=false. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nHISTORICAL OLD SPAN:\n${p.old_text}\nFOLLOW-UP:\n${addition}`,
+          });
+          state.checkCancellation();
+          if (judgement.object.safe) {
+            const appended = `${target.body.trimEnd()}\n\n${addition.trim()}\n`;
+            if (appended.length > STAGED_MAX_OWNER_CHARS) {
+              throw new Error("Staged mutation deferred: correction follow-up exceeds owner limit.");
+            }
+            const current = await kb.readConcept(target.path);
+            if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+            state.checkCancellation();
+            await kb.patchConcept(target.path, { replaceBody: appended },
+              "Staged mutation: verified correction follow-up", sha256(target.body), options.signal,
+              (writtenPath) => { changed = [writtenPath]; });
+            const summary = `Staged mutation changed ${changed.join(", ")}.`;
+            const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain,
+              undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+            await traceStore(kb).save(trace);
+            return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+          }
+        }
+      }
       if (!localEdit && correction && statusParagraph && !statusSubject) {
         console.warn("[understory] multi-clause correction scope declined", {
           owner: target?.path, boundedCorrection, repairedCorrection,

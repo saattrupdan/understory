@@ -3049,6 +3049,50 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(4);
   });
 
+  it("qualifies a true historical audit instead of erasing it when later mitigation exists", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const oldParagraph = "Job-bot audit (Oct 2026): No site-wide provider spending ceiling was added; " +
+      "multiple accounts could exhaust budgets; Tika could consume resources before hard limits were added.";
+    const later = "Later hardening: the Tika parser runs in a subprocess with a 30s deadline, and production Selenium port 4444 has no host mapping.";
+    const instruction = "Update job-bot security findings: Dan does not want a site-wide provider spending ceiling; " +
+      "successful cover letters were not fully logged, only malformed output in HTTP 422 was sanitised; " +
+      "production Selenium port 4444 is not host-exposed; Tika no longer lacks a hard timeout after later hardening.";
+    const addition = "Job-bot security follow-up: Dan does not want a site-wide provider spending ceiling. " +
+      "Successful cover letters were not fully logged: only malformed output in HTTP 422 was sanitised. " +
+      "The later Tika 30s deadline and production Selenium port 4444 host-mapping fix close those older findings.";
+    await kb.writeConcept(owner, { type: "Application", title: "Job-bot" }, `${oldParagraph}\n\n${later}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: "Job-bot security findings are closed." } })
+      .mockResolvedValueOnce({ object: { new_text: oldParagraph } })
+      .mockResolvedValueOnce({ object: { qualifiable: true, certain: true, addition } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Old audit remains historical; later fixes remain current." } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toBe(`${oldParagraph}\n\n${later}\n\n${addition}\n`);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("rejects a follow-up when a current false assertion must instead be retracted", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const oldParagraph = "Job-bot security findings: successful cover letters are fully logged on every request; " +
+      "Selenium port 4444 is exposed in production and the audit marks both as current vulnerabilities.";
+    const instruction = "Update job-bot security findings: successful cover letters were not fully logged; " +
+      "only malformed HTTP 422 returned model output, and production Selenium port 4444 was not exposed.";
+    await kb.writeConcept(owner, { type: "Application", title: "Job-bot" }, oldParagraph, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: "Job-bot security findings were corrected." } })
+      .mockResolvedValueOnce({ object: { new_text: oldParagraph } })
+      .mockResolvedValueOnce({ object: { qualifiable: true, certain: true,
+        addition: "Successful cover letters were not fully logged; production Selenium port 4444 was not exposed." } })
+      .mockResolvedValueOnce({ object: { safe: false, reason: "Active false assertions remain." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toBe(`${oldParagraph}\n`);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+  });
+
   it("blocks an unscoped multi-clause correction when the paragraph has another owner", async () => {
     staged();
     const owner = "/repos/job-bot.md";
@@ -3109,12 +3153,12 @@ describe("mutation owner preflight", () => {
       old_text: oldParagraph, new_text: unsafe } })
       .mockResolvedValueOnce({ object: { new_text: unsafe } })
       .mockResolvedValueOnce({ object: { new_text: unsafe } })
-      .mockResolvedValueOnce({ object: { supersededClauses: [], certain: false } })
+      .mockResolvedValueOnce({ object: { qualifiable: false, certain: false, addition: "" } })
       .mockResolvedValueOnce({ object: { safe: true, reason: "Should never approve lost staging assertion." } });
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
       .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
     expect((await kb.readConcept(owner)).body).toContain("staging authentication remains mandatory");
-    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
   });
 
   it("refuses a job-bot paragraph repair that removes unrelated claims even if the verifier approves", async () => {
@@ -3129,11 +3173,12 @@ describe("mutation owner preflight", () => {
       .mockResolvedValueOnce({ object: { new_text: "Job-bot security findings: Dan does not want a spending ceiling; only malformed cover-letter output was sent in HTTP 422." } })
       .mockResolvedValueOnce({ object: { new_text: "Job-bot security findings: Dan does not want a spending ceiling; only malformed cover-letter output was sent in HTTP 422." } })
       .mockResolvedValueOnce({ object: { supersededClauses: ["Auth0 subjects remain isolated for account rate limits"], certain: true } })
+      .mockResolvedValueOnce({ object: { qualifiable: false, certain: false, addition: "" } })
       .mockResolvedValueOnce({ object: { safe: true, reason: "Not sufficient to remove Auth0." } });
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
       .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
     expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
-    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+    expect(generateObjectMock).toHaveBeenCalledTimes(5);
   });
 
   it("refuses a correction append when independent replacement verification fails", async () => {
