@@ -1337,7 +1337,10 @@ async function runStagedMutation(
     // A canonical locator must not hide other ranked owners. Inspect every
     // retained competing body before appending to the named repository.
     const namedOwnerHits: typeof hits = positivelyMatchedCanonicalRepo ? [...hits] : [];
-    if (namedApplication && !positivelyMatchedCanonicalRepo) {
+    if (namedApplication && (!positivelyMatchedCanonicalRepo || canonicalRepo?.frontmatter.type === "Knowledge")) {
+      // A generic Knowledge type does not establish exclusive repository
+      // ownership. Search other named concepts before accepting the canonical
+      // title/path, then check their full bodies against the proposed fact.
       const subjectHits = await kb.search(namedApplication, { limit: 200 });
       recorder.record("search_knowledge", namedApplication, subjectHits.map((hit) => hit.path));
       state.checkCancellation();
@@ -1347,7 +1350,7 @@ async function runStagedMutation(
       for (const hit of subjectHits) {
         const slug = path.posix.basename(hit.path, ".md").replace(/[-_]/g, " ");
         if (!stagedWords(`${hit.title ?? ""} ${slug}`).includes(namedApplication.toLowerCase())) continue;
-        namedOwnerHits.push(hit);
+        if (!namedOwnerHits.some((old) => old.path === hit.path)) namedOwnerHits.push(hit);
         if (!hits.some((old) => old.path === hit.path)) hits.push(hit);
       }
       if (namedOwnerHits.length > 12) {

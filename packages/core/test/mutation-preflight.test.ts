@@ -1020,15 +1020,18 @@ describe("mutation owner preflight", () => {
     staged();
     const owner = "/repos/job-bot.md";
     const unrelated = "/repos/other-tool.md";
-    const fact = "Job Bot retries failed webhook deliveries with exponential backoff.";
+    const fact = "Job-bot PWA install nudge (commit 224557e, deployed 2026-10-14): Browser-only mobile banner appears for authenticated AppView after 3 separate visits to the app on that device, counting a new visit only after at least 30 minutes between foreground openings (not every route change or Auth0 redirect). " +
+      "Standalone Home Screen apps and desktop are excluded; offline view excludes it. iOS shows Safari Share → Add to Home Screen instructions; Android uses beforeinstallprompt if available, else Chrome menu instructions. " +
+      "Dismissing snoozes 30 days via localStorage key `job-bot-install-visits`; passive install information remains available in Settings, but first-visit landing install card was removed. Tests cover visit threshold/snooze/storage failure. Production SW uses content-hash cache version and precaches updated AppView.";
     await kb.writeConcept(owner, { type: "Knowledge", title: "Job Bot" },
-      "Job Bot handles scheduled automation tasks.", "seed");
+      "Job-bot has a PWA install guide for authenticated users.", "seed");
     await kb.writeConcept(unrelated, { type: "Repository", title: "Other Tool" },
       "Other Tool stores unrelated deployment notes.", "seed");
-    vi.spyOn(kb, "search").mockResolvedValue([{ path: unrelated, type: "Repository", title: "Other Tool",
+    const search = vi.spyOn(kb, "search").mockResolvedValue([{ path: unrelated, type: "Repository", title: "Other Tool",
       score: 100, confidence: 100, confidenceQualified: true }]);
     generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
-      expect(prompt).toContain(`OWNER ${owner}`);
+      expect(prompt).toContain(owner);
+      expect(prompt).toContain(fact);
       return { object: { safe: true } };
     });
 
@@ -1036,6 +1039,25 @@ describe("mutation owner preflight", () => {
       .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
     expect((await kb.readConcept(owner)).body).toContain(fact);
     expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
+    expect(search.mock.calls.some(([query]) => query.toLowerCase() === "job-bot")).toBe(true);
+  });
+
+  it("blocks a Knowledge repo append when an unranked named owner has the full fact", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const competitor = "/features/job-bot-pwa.md";
+    const fact = "Job-bot PWA install nudge (commit 224557e): Three mobile visits show an install banner after 30-minute foreground gaps.";
+    await kb.writeConcept(owner, { type: "Knowledge", title: "Job Bot" },
+      "Job-bot has a PWA install guide.", "seed");
+    await kb.writeConcept(competitor, { type: "Feature", title: "Job-bot PWA" }, fact, "seed");
+    const search = vi.spyOn(kb, "search").mockImplementation(async (query: string) =>
+      query.toLowerCase() === "job-bot" ? [{ path: competitor, type: "Feature", title: "Job-bot PWA", score: 100 }]
+        : [{ path: owner, type: "Knowledge", title: "Job Bot", score: 100 }]);
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed",
+      error: expect.stringContaining("exact fact already belongs to another named owner") });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+    expect(search.mock.calls.some(([query]) => query.toLowerCase() === "job-bot")).toBe(true);
   });
 
   it("routes a project add to the unique continuation owning its exact artifact, while checking parent and peers", async () => {
