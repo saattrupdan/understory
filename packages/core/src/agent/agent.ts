@@ -2166,6 +2166,8 @@ async function runStagedMutation(
       const statusParagraph = target?.body.split(/\n\s*\n/).find((paragraph) =>
         paragraph.includes(p.old_text));
       let boundedCorrection = false;
+      let boundedSpanCorrection = false;
+      let paragraphUniquelyOwned = false;
       let correctionEvidence = raw;
       if (target && correction && !options.directAdd && !repairedCorrection &&
           !statusSubject && !namedParagraph &&
@@ -2216,6 +2218,7 @@ async function runStagedMutation(
             }
           }
         }
+        paragraphUniquelyOwned = uniquelyOwned;
         if (uniquelyOwned) {
           const repair = await generateObject({
             model: proposer.model,
@@ -2289,7 +2292,7 @@ async function runStagedMutation(
             supportedOverlap: corrected ? stagedOverlap(corrected, `${raw} ${statusParagraph}`) : 0,
           });
           if (corrected && ungroundedOldWords.length === 0 && corrected.length <= 4_000 &&
-              !/\n\s*\n/.test(corrected) && corrected !== statusParagraph &&
+              !/\n\s*\n/.test(corrected) && corrected.trimEnd() !== statusParagraph.trimEnd() &&
               stagedOverlap(statusParagraph, corrected) >= 0.5 &&
               stagedOverlap(corrected, `${raw} ${statusParagraph}`) >= 0.65 &&
               !clauseIssue) {
@@ -2297,6 +2300,40 @@ async function runStagedMutation(
             p.new_text = corrected;
             boundedCorrection = true;
           }
+        }
+      }
+      if (!boundedCorrection && paragraphUniquelyOwned && target && statusParagraph &&
+          statusParagraph.length >= 500 && p.old_text.length < statusParagraph.length / 2) {
+        // The proposer may have selected a short run of stale findings inside
+        // a long historical paragraph. Repair that exact span instead of
+        // rewriting the whole paragraph and dropping unrelated history.
+        const scoped = await generateObject({
+          model: proposer.model,
+          schema: z.object({ old_text: z.string(), new_text: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Repair ONLY the smallest contiguous OLD SPAN that the caller corrects inside this uniquely owned paragraph. Return an exact verbatim old_text substring and its replacement new_text. Preserve every unrelated assertion inside the span verbatim, and leave all text OUTSIDE the span unchanged. Apply all applicable corrections to this owner; if they cannot fit in one local span without dropping unrelated claims, return empty strings. Do not roll back later owner updates. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nEXACT PARAGRAPH:\n${statusParagraph}\nPROPOSED OLD SPAN:\n${p.old_text}\nREJECTED REWRITE:\n${p.new_text}`,
+        });
+        state.checkCancellation();
+        const { old_text: oldSpan, new_text: newSpan } = scoped.object;
+        const supported = stagedWords(`${raw} ${newSpan}`);
+        const ungrounded = stagedWords(oldSpan).filter((word) => !supported.some((candidate) =>
+          candidate === word || (word.length >= 5 && candidate.length >= 4 &&
+            word.slice(0, 4) === candidate.slice(0, 4))));
+        const issue = oldSpan && newSpan ? stagedStatusClauseIssue(oldSpan, newSpan, raw) : "empty span";
+        console.warn("[understory] bounded correction span verdict", {
+          owner: target.path, oldLength: oldSpan.length, newLength: newSpan.length,
+          ungroundedWords: ungrounded.length, clauseIssue: issue?.split(" (")[0] ?? null,
+        });
+        if (oldSpan.length >= 12 && oldSpan.length <= 4_000 && newSpan.length > 0 &&
+            newSpan.length <= 4_000 && !/\n\s*\n/.test(oldSpan) && !/\n\s*\n/.test(newSpan) &&
+            statusParagraph.split(oldSpan).length === 2 && target.body.split(oldSpan).length === 2 &&
+            oldSpan !== newSpan && stagedOverlap(oldSpan, newSpan) >= 0.5 &&
+            stagedOverlap(newSpan, `${raw} ${oldSpan}`) >= 0.65 &&
+            ungrounded.length === 0 && !issue) {
+          p.old_text = oldSpan;
+          p.new_text = newSpan;
+          boundedSpanCorrection = true;
         }
       }
       let statusUniqueAcrossHits = false;
@@ -2482,7 +2519,7 @@ async function runStagedMutation(
         !/\n\s*\n/.test(p.new_text) &&
         stagedOverlap(p.old_text, p.new_text) >= 0.68 &&
         !trainingClauseIssue;
-      const boundedParagraphRepair = (repairedCorrection || boundedCorrection ||
+      const boundedParagraphRepair = (repairedCorrection || boundedCorrection || boundedSpanCorrection ||
         (!!quotedOwner && quotedOwner === p.path) ||
         (!!namedParagraph && namedParagraph.includes(p.old_text)) || boundedStatus || prStatusUnique || trainingDesignCorrection) &&
         p.old_text.length <= 4_000 &&
@@ -2534,8 +2571,9 @@ async function runStagedMutation(
       if (!newText || !(stagedSingleClauseEdit(p.old_text, newText) ||
           (boundedParagraphRepair && newText.length <= 4_000 && !/\n\s*\n/.test(newText) &&
             (prStatusUnique || stagedOverlap(p.old_text, newText) >= (boundedStatus ? 0.7 : 0.5)) &&
-            (!(boundedStatus || boundedCorrection) || !stagedStatusClauseIssue(p.old_text, newText,
-              boundedCorrection ? correctionEvidence : raw)) &&
+            (!(boundedStatus || boundedCorrection || boundedSpanCorrection) ||
+              !stagedStatusClauseIssue(p.old_text, newText,
+                boundedCorrection ? correctionEvidence : raw)) &&
             (!trainingDesignCorrection ||
               (!newText.includes("For strict <1M multilingual student") &&
                 !stagedStatusClauseIssue(p.old_text, newText, trainingInstruction,

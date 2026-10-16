@@ -3024,6 +3024,31 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(4);
   });
 
+  it("repairs a bounded stale span inside a long job-bot audit without rewriting its history", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const oldSpan = "Job-bot security findings: a site-wide provider spending ceiling is recommended; " +
+      "successful cover letters were fully logged; Selenium port 4444 is exposed in production.";
+    const newSpan = "Job-bot security findings: Dan does not want a site-wide provider spending ceiling; " +
+      "only malformed cover-letter output was included in HTTP 422; Selenium port 4444 was not exposed in production.";
+    const history = Array.from({ length: 10 }, (_, index) =>
+      `Historical audit checkpoint ${index + 1} retains the Auth0 rate-limit reservation and CV upload budget.`).join(" ");
+    const paragraph = `${oldSpan} ${history}`;
+    const instruction = "Update job-bot security findings: remove the site-wide provider spending ceiling recommendation because Dan does not want it; " +
+      "correct the claim that successful cover letters were fully logged: only malformed cover-letter output was included in HTTP 422; " +
+      "Selenium port 4444 is not exposed in production.";
+    await kb.writeConcept(owner, { type: "Application", title: "Job-bot" }, paragraph, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldSpan, new_text: newSpan } })
+      .mockResolvedValueOnce({ object: { new_text: paragraph } })
+      .mockResolvedValueOnce({ object: { old_text: oldSpan, new_text: newSpan } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Only the stale span changes." } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toBe(`${newSpan} ${history}\n`);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+  });
+
   it("blocks an unscoped multi-clause correction when the paragraph has another owner", async () => {
     staged();
     const owner = "/repos/job-bot.md";
