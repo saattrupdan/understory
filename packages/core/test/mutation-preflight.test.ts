@@ -463,6 +463,26 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(project)).body).not.toContain(fact);
   });
 
+  it("refuses a personal boundary when a competing owner claims it", async () => {
+    staged();
+    const person = "/users/dan-smart.md";
+    const competitor = "/reviews/euroeval-pr-2237.md";
+    await kb.writeConcept(person, { type: "Person", title: "Dan Smart" }, "Dan reviews pull requests.", "seed");
+    await kb.writeConcept(competitor, { type: "Review", title: "EuroEval PR #2237" },
+      "Dan's GitHub PR review boundary is already recorded here.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: competitor, type: "Review",
+      title: "EuroEval PR #2237", score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "Dan's GitHub PR review boundary: Do not commit to a contributor branch while only reviewing their PR.";
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`COMPETING OWNER ${competitor}`);
+      expect(prompt).toContain("already recorded here");
+      return { object: { safe: false } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(person)).body).not.toContain(fact);
+  });
+
   it("routes an explicitly named personal preference to its positively matched Person despite misleading hits", async () => {
     staged();
     const person = "/users/dan-smart.md";
