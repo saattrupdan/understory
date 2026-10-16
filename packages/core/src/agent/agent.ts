@@ -2548,6 +2548,12 @@ async function runStagedMutation(
           /docker-compose-local\.yaml[^.!?]{0,100}(?:maps?\b|0\.0\.0\.0)/i.test(addition);
         const staleTikaDeadline = /asyncio\.wait[\s\S]{0,300}\b30s deadline/i.test(target.body) &&
           /(?:Tika|CV pars(?:er|ing))[^.!?]{0,180}\b(?:still has no|has no|without a?) (?:true )?hard timeout/i.test(addition);
+        console.warn("[understory] correction follow-up proposal verdict", {
+          owner: target.path, qualifiable, certain, additionLength: addition.length,
+          copiedInstruction: !!addition && raw.includes(addition.trim()),
+          staleLocalPort, staleTikaDeadline,
+          lexicalSupport: addition ? stagedOverlap(addition, `${raw} ${target.body}`) : 0,
+        });
         if (qualifiable && certain && !staleLocalPort && !staleTikaDeadline &&
             !raw.includes(addition.trim()) && addition.length >= 30 && addition.length <= 2_000 &&
             !/\n\s*\n/.test(addition) && !target.body.includes(addition.trim()) &&
@@ -2560,6 +2566,9 @@ async function runStagedMutation(
             prompt: `Independent complete-owner consistency check for a correction follow-up. Verify that EVERY applicable caller correction is reflected either in the proposed addition or ALREADY in the full owner, and that all preserved old assertions remain true historical observations rather than false active findings. Compare every proposed technical claim against LATER owner paragraphs, not just the historical audit: a removed local port mapping must not be called present, and an implemented hard parser deadline must not be called absent. Reject duplicate content, unsupported new claims, omitted corrections, or any assertion contradicted by later owner updates. If a replacement/retraction is necessary instead, safe=false. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nHISTORICAL OLD SPAN:\n${p.old_text}\nFOLLOW-UP:\n${addition}`,
           });
           state.checkCancellation();
+          if (!judgement.object.safe) {
+            console.warn("[understory] correction follow-up independent veto", { owner: target.path });
+          }
           if (judgement.object.safe) {
             const appended = `${target.body.trimEnd()}\n\n${addition.trim()}\n`;
             if (appended.length > STAGED_MAX_OWNER_CHARS) {
