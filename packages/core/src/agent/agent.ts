@@ -1860,6 +1860,21 @@ async function runStagedMutation(
         await traceStore(kb).save(trace);
         return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
       }
+      const requestedPr = raw.trim().match(/^update\s+(?:the\s+)?([\p{L}\p{N}./_-]+)\s+PR\s*#(\d+)\s+status\s*:/iu);
+      if (target && requestedPr && p.old_text.includes("CHANGES_REQUESTED")) {
+        const containingParagraph = target.body.split(/\n\s*\n/).find((part) => part.includes(p.old_text));
+        const ids = containingParagraph ? [...containingParagraph.matchAll(/\bPR\s*#(\d+)\b/gi)]
+          .map((match) => match[1]) : [];
+        const exactReview = p.old_text.match(/\b(?:The |A )?(?:prior|previous|earlier|existing) CHANGES_REQUESTED (?:GitHub )?review (?:remains|is still active)(?: unless (?:he|Dan) explicitly asks to update it)?[.!?]?/i)?.[0];
+        if (containingParagraph?.toLowerCase().includes(requestedPr[1].toLowerCase()) &&
+            ids.length > 0 && ids.every((id) => id === requestedPr[2]) && exactReview &&
+            target.body.split(exactReview).length === 2 &&
+            !/\b(?:and|but|while|also|whereas)\b|[,;\n]/i.test(exactReview)) {
+          // A model may quote this review sentence together with adjacent
+          // history. Narrow to the uniquely observed review-only operand.
+          p.old_text = exactReview;
+        }
+      }
       const statusSubject = !options.directAdd && options.preflightInput
         ? raw.trim().match(/^update\s+(?:the\s+)?([A-Z][\p{L}\p{N}\s-]{8,80}?)\s+status\s*:/iu)?.[1] : undefined;
       const statusWords = statusSubject ? stagedWords(statusSubject) : [];
@@ -1926,9 +1941,10 @@ async function runStagedMutation(
       // this status. The surrounding paragraph must identify exactly this PR.
       const reviewOnly = /^(?:The |A )?(?:prior|previous|earlier|existing) CHANGES_REQUESTED (?:GitHub )?review (?:remains|is still active)(?: unless (?:he|Dan) explicitly asks to update it)?[.!?]?$/i.test(p.old_text.trim());
       let prStatusUnique = !!target && !!prStatus && !!repoSlug && !!statusParagraph &&
-        (target.path === `/repos/${repoSlug}.md` || statusParagraph.toLowerCase().includes(prStatus[1].toLowerCase())) &&
+        statusParagraph.toLowerCase().includes(prStatus[1].toLowerCase()) &&
         prIdentities.length > 0 && prIdentities.every((id) => id === prStatus[2]) &&
-        reviewOnly && /\bCHANGES_REQUESTED\b/.test(raw) && /\bAPPROVED\b/.test(raw) &&
+        reviewOnly && !/\b(?:and|but|while|also|whereas)\b|[,;\n]/i.test(p.old_text) &&
+        /\bCHANGES_REQUESTED\b/.test(raw) && /\bAPPROVED\b/.test(raw) &&
         /\bAPPROVED\b/.test(p.new_text) &&
         p.old_text.length <= 200 && p.new_text.length <= 4_000 &&
         !/\n\s*\n/.test(p.new_text) &&
@@ -1957,7 +1973,8 @@ async function runStagedMutation(
           !p.new_text ? "new text empty" : target.body.split(p.old_text).length !== 2 ? `old text not unique; repair=${duplicateRepair}` :
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ? "new text lacks support" :
             `change spans clauses (section=${!!sectionOwnerPath}, scoped=${!!namedParagraph && namedParagraph.includes(p.old_text)}, status=${!!statusSubject}, status_paragraph=${!!statusParagraph}, status_unique=${statusUniqueAcrossHits}, status_clause=${statusClauseIssue ?? "ok"}, subject=${statusWords.length}/${statusWords.filter((word) => oldStatusWords.has(word)).length}/${statusWords.filter((word) => identityWords.has(word)).length}, owners=${candidates.filter((candidate) => candidate.body.includes(p.old_text)).length}, old=${p.old_text.length}, new=${p.new_text.length}, overlap=${stagedOverlap(p.old_text, p.new_text).toFixed(2)}, paragraph_break=${/\n\s*\n/.test(p.old_text) || /\n\s*\n/.test(p.new_text)})`;
-        throw new Error(`Staged mutation rejected: replacement is not one supported local change (${reason}).`);
+        const prScope = prStatus ? `PR scope(owner=${target?.path ?? "none"}, ids=${prIdentities.join(",") || "none"}, review_only=${reviewOnly}, unique=${prStatusUnique}); ` : "";
+        throw new Error(`Staged mutation rejected: replacement is not one supported local change (${prScope}${reason}).`);
       }
       const oldWords = new Set(stagedWords(p.old_text));
       const requestedWords = new Set(stagedWords(raw));

@@ -1673,6 +1673,32 @@ describe("mutation owner preflight", () => {
     expect(body).not.toContain(oldStatus);
   });
 
+  it("narrows a broad proposed operand to the one uniquely scoped PR review sentence", async () => {
+    staged();
+    const owner = "/repos/syv-ai-agentbase.md";
+    const history = "Dan tested the follow-up and approved the nav behavior. ";
+    const oldReview = "The prior CHANGES_REQUESTED GitHub review remains unless he explicitly asks to update it.";
+    const newReview = "Dan explicitly approved the remaining nav behavior. GitHub reviewDecision is now APPROVED; the earlier CHANGES_REQUESTED review has been superseded.";
+    const instruction = `Update the Syv-ai/prezzi PR #21 status: ${newReview} Correct any older note saying the review still remains changes requested.`;
+    await kb.writeConcept(owner, { type: "Repository", title: "Syv-ai Agentbase" },
+      `Syv-ai/prezzi PR #21: ${history}${oldReview}\n\nUnrelated repository history remains.`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", title: "Syv-ai Agentbase", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: `${history}${oldReview}`, new_text: newReview } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain(`OLD TEXT:\n${oldReview}`);
+        expect(prompt).toContain(history);
+        return { object: { safe: true, reason: "Only the old review assertion changed." } };
+      });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(history);
+    expect(body).toContain(newReview);
+    expect(body).not.toContain(oldReview);
+    expect(body).toContain("Unrelated repository history remains.");
+  });
+
   it.each(["wrong PR", "mixed PR", "mixed claim", "wrong owner", "competing owner", "verifier refusal"])(
     "does not relax a superseded PR review when there is a %s", async (caseName) => {
       staged();
