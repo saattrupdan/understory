@@ -2540,7 +2540,29 @@ async function runStagedMutation(
           prompt: `Can this correction be satisfied by ONE follow-up without retracting a false CURRENT assertion? Approve only if every old assertion that would remain is a true historical observation or residual risk, and later owner updates resolve any apparent conflict. Include only novel caller-supported facts and current qualifications in addition. Do NOT copy the instruction as the addition: some caller observations may predate later owner updates. For every technical issue, compare the latest owner status first; if a local port mapping was later removed or a hard parser deadline was later added, state that CURRENT status rather than repeating an earlier remediation request. If any current assertion must be removed, any requested correction cannot be captured here, or uncertain, return qualifiable=false, certain=false and empty addition. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nUNSAFE OLD SPAN:\n${p.old_text}\nREJECTED REPLACEMENT:\n${p.new_text}`,
         });
         state.checkCancellation();
-        const { qualifiable, certain, addition } = followUp.object;
+        const { qualifiable, certain } = followUp.object;
+        let addition = followUp.object.addition;
+        const requestedAnchors = [...new Set((raw.match(/\b(?:[a-f0-9]{7,40}|Accelerate|422)\b/gi) ?? [])
+          .map((anchor) => anchor.toLowerCase()))];
+        const missingAnchors = (text: string): string[] => requestedAnchors.filter((anchor) =>
+          !`${target.body} ${text}`.toLowerCase().includes(anchor));
+        const missingDecision = (text: string): boolean =>
+          /Dan does NOT want a site-wide provider spending ceiling/i.test(raw) &&
+          !/Dan does not want a site-wide provider spending ceiling/i.test(`${target.body} ${text}`);
+        if (qualifiable && certain && (missingAnchors(addition).length || missingDecision(addition))) {
+          // A one-sentence follow-up is not a success for a multi-finding
+          // correction. Repair once, then require concrete evidence coverage
+          // before sending anything to the independent verifier.
+          const completion = await generateObject({
+            model: proposer.model,
+            schema: z.object({ new_text: z.string() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Complete this one-paragraph correction follow-up. Cover EVERY applicable requested finding, including these missing exact identifiers: ${JSON.stringify(missingAnchors(addition))}. Record Dan's no-site-wide-ceiling decision, the optional advisory disposition, and the malformed HTTP 422 exposure/fix where requested. Use the LATEST owner status for the local Selenium mapping and Tika's 30s hard deadline; do NOT copy obsolete caller assertions as current. Preserve historical audit facts and avoid duplicating later hardening. Return empty new_text if a supported, complete follow-up is impossible. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nINCOMPLETE FOLLOW-UP:\n${addition}`,
+          });
+          state.checkCancellation();
+          if (completion.object.new_text) addition = completion.object.new_text;
+        }
         // These later owner assertions contradict two common stale audit
         // requests. A model's yes/no verifier is not enough to ground the
         // temporal ordering; reject the concrete contradiction before CAS.
@@ -2551,10 +2573,13 @@ async function runStagedMutation(
         console.warn("[understory] correction follow-up proposal verdict", {
           owner: target.path, qualifiable, certain, additionLength: addition.length,
           copiedInstruction: !!addition && raw.includes(addition.trim()),
+          missingAnchors: missingAnchors(addition).length,
+          missingDecision: missingDecision(addition),
           staleLocalPort, staleTikaDeadline,
           lexicalSupport: addition ? stagedOverlap(addition, `${raw} ${target.body}`) : 0,
         });
-        if (qualifiable && certain && !staleLocalPort && !staleTikaDeadline &&
+        if (qualifiable && certain && !missingAnchors(addition).length && !missingDecision(addition) &&
+            !staleLocalPort && !staleTikaDeadline &&
             !raw.includes(addition.trim()) && addition.length >= 30 && addition.length <= 2_000 &&
             !/\n\s*\n/.test(addition) && !target.body.includes(addition.trim()) &&
             stagedOverlap(addition, `${raw} ${target.body}`) >= 0.8) {

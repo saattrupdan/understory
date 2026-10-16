@@ -3097,6 +3097,27 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
+  it("rejects an incomplete multi-finding follow-up even when the model claims it is sufficient", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const oldParagraph = "Job-bot security audit: no provider spending ceiling was added and multiple accounts can exhaust budgets; " +
+      "Tika was initially bounded only by upload and page limits.";
+    const instruction = "Update job-bot security findings: Dan does NOT want a site-wide provider spending ceiling; " +
+      "ignore optional Accelerate advisory; malformed HTTP 422 output was sanitised at 08a090c and deployed de3eedf.";
+    const incomplete = "Dan does not want a site-wide provider spending ceiling for job-bot.";
+    await kb.writeConcept(owner, { type: "Application", title: "Job-bot" }, oldParagraph, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: "Job-bot findings are closed." } })
+      .mockResolvedValueOnce({ object: { new_text: oldParagraph } })
+      .mockResolvedValueOnce({ object: { qualifiable: true, certain: true, addition: incomplete } })
+      .mockResolvedValueOnce({ object: { new_text: incomplete } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Should never approve omitted findings." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toBe(`${oldParagraph}\n`);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+  });
+
   it("rejects a follow-up when a current false assertion must instead be retracted", async () => {
     staged();
     const owner = "/repos/job-bot.md";
@@ -3110,11 +3131,12 @@ describe("mutation owner preflight", () => {
       .mockResolvedValueOnce({ object: { new_text: oldParagraph } })
       .mockResolvedValueOnce({ object: { qualifiable: true, certain: true,
         addition: "Successful cover letters were not fully logged; production Selenium port 4444 was not exposed." } })
+      .mockResolvedValueOnce({ object: { new_text: "Successful cover letters were not fully logged; malformed HTTP 422 exposed output; production Selenium port 4444 was not exposed." } })
       .mockResolvedValueOnce({ object: { safe: false, reason: "Active false assertions remain." } });
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
       .toMatchObject({ ok: false, status: "failed" });
     expect((await kb.readConcept(owner)).body).toBe(`${oldParagraph}\n`);
-    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+    expect(generateObjectMock).toHaveBeenCalledTimes(5);
   });
 
   it("blocks an unscoped multi-clause correction when the paragraph has another owner", async () => {
