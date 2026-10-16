@@ -1638,7 +1638,35 @@ async function runStagedMutation(
         raw.trim().length >= 30 && raw.trim().length <= 4_000) {
       let target = candidates.find((candidate) => candidate.path === directPath)!;
       const fact = raw.trim();
-      if (leadingProject && target.path === leadingProject.path && projectPeerPaths.length) {
+      // A leading project name locates its parent, but an exact private artifact
+      // named in one continuation is stronger positive ownership evidence.
+      // Keep all other project bodies (including the parent) in the peer check.
+      let artifactAnchoredPeer = false;
+      if (!options.ownerHint && leadingProject && target.path === leadingProject.path) {
+        const artifactUris = (text: string): string[] =>
+          [...text.matchAll(/\bfile:\/\/\/tmp\/[^\s`'",;:)]+/g)]
+            .map((match) => match[0].replace(/[.!?]+$/, ""));
+        const artifacts = artifactUris(fact);
+        if (artifacts.length) {
+          const matchingPeers = [];
+          for (const peerPath of projectPeerPaths) {
+            const peer = await kb.readConcept(peerPath);
+            recorder.record("read_concept", peer.path, [peer.path]);
+            state.checkCancellation();
+            if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
+              throw new Error("Staged mutation deferred: competing owner body exceeds evidence limit.");
+            }
+            const peerArtifacts = new Set(artifactUris(peer.body));
+            if (artifacts.some((artifact) => peerArtifacts.has(artifact))) matchingPeers.push(peer);
+          }
+          if (matchingPeers.length === 1) {
+            const peer = matchingPeers[0];
+            target = { path: peer.path, frontmatter: peer.frontmatter, body: peer.body };
+            artifactAnchoredPeer = true;
+          }
+        }
+      }
+      if (leadingProject && (target.path === leadingProject.path || artifactAnchoredPeer) && projectPeerPaths.length) {
         const batchLimit = STAGED_MAX_EVIDENCE_CHARS - fact.length - 3_000;
         if (batchLimit < 1_000) throw new Error("Staged mutation deferred: project fact exceeds peer-check budget.");
         let batch: Array<{ path: string; title?: string; body: string }> = [];
@@ -1675,7 +1703,9 @@ async function runStagedMutation(
           }
           batch = [];
         };
-        for (const peerPath of projectPeerPaths) {
+        for (const peerPath of artifactAnchoredPeer
+          ? [leadingProject!.path, ...projectPeerPaths.filter((candidate) => candidate !== target.path)]
+          : projectPeerPaths) {
           const peer = await kb.readConcept(peerPath);
           recorder.record("read_concept", peer.path, [peer.path]);
           state.checkCancellation();
@@ -1723,7 +1753,7 @@ async function runStagedMutation(
       const itemIds = fact.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [];
       const parentPath = target.path.replace(/-continuation-[a-f0-9]{8,16}\.md$/, ".md");
       let derivedParent = false;
-      if (!hintedPath && parentPath !== target.path &&
+      if (!hintedPath && !artifactAnchoredPeer && parentPath !== target.path &&
           !itemIds.some((id) => target.body.includes(id)) &&
           await kb.bundle.exists(parentPath)) {
         const parent = await kb.readConcept(parentPath);
@@ -1738,7 +1768,8 @@ async function runStagedMutation(
         }
       }
       if ((!hintedPath && stagedConflictingNamedOwner(fact, target.frontmatter.title, target.path)) ||
-          !(stagedOwnerAnchor(fact, target.path) || (verifiedMetadataOwner && selectedPath === target.path)) ||
+          !(stagedOwnerAnchor(fact, target.path) || artifactAnchoredPeer ||
+            (verifiedMetadataOwner && selectedPath === target.path)) ||
           (target.frontmatter.title && fact.toLowerCase().includes(target.frontmatter.title.toLowerCase()) &&
             !stagedTitleMention(fact, target.frontmatter.title))) {
         throw new Error(`Staged mutation deferred: suggested owner lacks a positive entity anchor (target=${target.path}, leading_pr=${leadingPullRequest ?? "none"}, named=${namedApplication ?? "none"}, requested=${requestedPath ?? "none"}, hinted=${hintedPath ?? "none"}, selected=${selectedPath ?? "none"}, named_hits=${namedOwnerHits.length}).`);
@@ -1753,7 +1784,7 @@ async function runStagedMutation(
         const groundedContinuation = target.path.includes("-continuation-") && !wouldOverflow &&
           itemIds.some((id) => target.body.includes(id) &&
             !negativeSpans.some((span) => span.includes(id.toLowerCase())));
-        if (!hintedPath && (wouldOverflow || target.path.includes("-continuation-")) &&
+        if (!hintedPath && !artifactAnchoredPeer && (wouldOverflow || target.path.includes("-continuation-")) &&
             !groundedContinuation && !derivedParent &&
             (!target.frontmatter.title || !stagedTitleMention(raw, target.frontmatter.title))) {
           throw new Error(`Staged mutation deferred: unhinted continuation owner was not explicitly named (target=${target.path}, named_tool=${leadingTool ?? "none"}, requested=${requestedPath ?? "none"}).`);

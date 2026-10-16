@@ -1016,6 +1016,64 @@ describe("mutation owner preflight", () => {
     expect(await kb.bundle.exists("/repos/rate.md")).toBe(false);
   });
 
+  it("routes a project add to the unique continuation owning its exact artifact, while checking parent and peers", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const continuation = "/projects/fs-fotovalidering-continuation-17a45f887bbc97ab.md";
+    const unrelated = "/projects/fs-fotovalidering/auto-crop-investigation.md";
+    const artifact = "file:///tmp/fs-test-all-labels-prior-ribbons-20261015.html";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering tracks the 257 test photos.", "seed");
+    await kb.writeConcept(continuation, { type: "Project Continuation", title: "FS Fotovalidering — Annotation UI" },
+      `Earlier annotation behavior in ${artifact}: Up/Down navigates without marking a photo reviewed.`, "seed");
+    await kb.writeConcept(unrelated, { type: "Note", title: "FS Fotovalidering — Auto Crop" },
+      `The YuNet auto-crop study uses separate images, including ${artifact}.bak.`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: continuation, type: "Project Continuation",
+      title: "FS Fotovalidering — Annotation UI", score: 100, confidenceQualified: true }]);
+    const fact = `FS Fotovalidering test-photo annotation HTML ${artifact}. Show the position progress bar independently of reviewed count, and manual heights for exactly 94 photos, never for the other 163.`;
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("COMPETING PROJECT OWNERS:")) {
+        expect(prompt).toContain(`The proposed owner is ${continuation}`);
+        expect(prompt).toContain(owner);
+        expect(prompt).toContain(unrelated);
+        expect(prompt).not.toContain(`"path":"${continuation}"`);
+      } else {
+        expect(prompt).toContain(`OWNER ${continuation}`);
+      }
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [continuation] } });
+    expect((await kb.readConcept(continuation)).body).toContain(fact);
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+  });
+
+  it("does not bypass a competing-project duplicate when rerouting to an artifact owner", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const continuation = "/projects/fs-fotovalidering-continuation-17a45f887bbc97ab.md";
+    const competitor = "/projects/fs-fotovalidering/auto-crop-investigation.md";
+    const artifact = "file:///tmp/fs-test-all-labels-prior-ribbons-20261015.html";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" }, "Parent project.", "seed");
+    await kb.writeConcept(continuation, { type: "Project Continuation", title: "FS Fotovalidering — Annotation UI" },
+      `Earlier UI behavior for ${artifact}.`, "seed");
+    await kb.writeConcept(competitor, { type: "Note", title: "FS Fotovalidering — Auto Crop" },
+      "Competing complete claim about the same review count.", "seed");
+    const fact = `FS Fotovalidering annotation HTML ${artifact}: display manual values for the 94 reviewed sample IDs.`;
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("COMPETING PROJECT OWNER:") && prompt.includes(`"path":"${competitor}"`)) {
+        return { object: { safe: false } };
+      }
+      return { object: { safe: !prompt.includes("COMPETING PROJECT OWNERS:") } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed",
+      error: "Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim." });
+    expect(generateObjectMock.mock.calls.some(([request]) =>
+      request.prompt.includes("COMPETING PROJECT OWNER:") && request.prompt.includes(`"path":"${competitor}"`))).toBe(true);
+    expect((await kb.readConcept(continuation)).body).not.toContain(fact);
+  });
+
   it("routes an explicitly named project add to its canonical owner despite a narrower search hit", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering.md";
