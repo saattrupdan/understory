@@ -2448,7 +2448,7 @@ describe("mutation owner preflight", () => {
       `EuroEval PR #2234: The six review threads were resolved. ${oldReview}\n\nPR #2213 remains independent.`, "seed");
     await kb.writeConcept(person, { type: "Person", title: "Dan Smart" },
       "Dan reviews EuroEval PRs. His prior preference for prompt reviews remains unchanged.", "seed");
-    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "PR #2234"
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "2234"
       ? [{ path: owner, type: "Repository", title: "EuroEval review history", score: 9 }]
       : [{ path: person, type: "Person", title: "Dan Smart", score: 10 }]);
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
@@ -2467,7 +2467,7 @@ describe("mutation owner preflight", () => {
     const person = "/users/dan-smart.md";
     await kb.writeConcept(person, { type: "Person", title: "Dan Smart" },
       "Dan reviews repositories and thanks maintainers for feedback.", "seed");
-    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "PR #2234" ? [] :
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "2234" ? [] :
       [{ path: person, type: "Person", title: "Dan Smart", score: 10 }]);
     const instruction = "EuroEval PR #2234 final status: Dan approved and squash-merged it. Replace any prior status saying PR is open.";
     expect(await runMutation(kb, instruction, { preflightInput: instruction })).toMatchObject({

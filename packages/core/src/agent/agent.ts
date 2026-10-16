@@ -1180,7 +1180,9 @@ async function runStagedMutation(
       /\bCHANGES_REQUESTED\b/.test(raw) && /\bAPPROVED\b/.test(raw)
       ? raw.trim().match(/^update\s+(?:the\s+)?([\p{L}\p{N}./_-]+)\s+PR\s*#(\d+)\s+status\s*:/iu) : null);
     if (requestedReview) {
-      const reviewQuery = finalPrStatus ? `PR #${requestedReview[2]}` : "CHANGES_REQUESTED";
+      // Search a single distinctive ID: multiword search ranks documents
+      // matching *any* term, so `PR #2234` floods the 200-hit safety cap.
+      const reviewQuery = finalPrStatus ? requestedReview[2] : "CHANGES_REQUESTED";
       const reviewHits = await kb.search(reviewQuery, { limit: 200 });
       recorder.record("search_knowledge", reviewQuery, reviewHits.map((hit) => hit.path));
       state.checkCancellation();
