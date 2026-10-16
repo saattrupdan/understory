@@ -1666,6 +1666,13 @@ async function runStagedMutation(
             /-continuation-[a-f0-9]{8,16}\.md$/.test(peer.path));
           const artifactOwner = matchingPeers.length === 1 ? matchingPeers[0]
             : continuations.length === 1 ? continuations[0] : undefined;
+          if (!artifactOwner) {
+            // Paths only: distinguish a genuinely ambiguous artifact from a
+            // missing match without logging private knowledge-body content.
+            console.warn("[understory] artifact owner not unique", {
+              project: leadingProject.path, matches: matchingPeers.map((peer) => peer.path),
+            });
+          }
           if (artifactOwner) {
             target = { path: artifactOwner.path, frontmatter: artifactOwner.frontmatter, body: artifactOwner.body };
             artifactAnchoredPeer = true;

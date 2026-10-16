@@ -1048,6 +1048,30 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body).not.toContain(fact);
   });
 
+  it("keeps the parent route and reports paths when two continuations own the same artifact", async () => {
+    staged();
+    const parent = "/projects/fs-fotovalidering.md";
+    const artifact = "file:///tmp/shared-review.html";
+    const first = "/projects/fs-fotovalidering-continuation-11111111.md";
+    const second = "/projects/fs-fotovalidering-continuation-22222222.md";
+    await kb.writeConcept(parent, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "The FS test-photo project has several annotation pages.", "seed");
+    for (const path of [first, second]) {
+      await kb.writeConcept(path, { type: "Project Continuation", title: "FS Fotovalidering — Annotation" },
+        `The annotation page is ${artifact}.`, "seed");
+    }
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    generateObjectMock.mockResolvedValue({ object: { safe: false } });
+    const fact = `FS Fotovalidering annotation page ${artifact} now has an independent position progress bar.`;
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(warning).toHaveBeenCalledWith("[understory] artifact owner not unique", {
+      project: parent, matches: expect.arrayContaining([first, second]),
+    });
+    expect((await kb.readConcept(first)).body).not.toContain(fact);
+    expect((await kb.readConcept(second)).body).not.toContain(fact);
+  });
+
   it("does not bypass a competing-project duplicate when rerouting to an artifact owner", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering.md";
