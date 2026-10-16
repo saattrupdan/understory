@@ -1518,7 +1518,25 @@ async function runStagedMutation(
           });
           state.checkCancellation();
           if (!judgement.object.safe) {
-            throw new Error("Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim.");
+            // An aggregate answer can conflate a shared dataset with the
+            // complete new observation. Recheck every FULL peer separately;
+            // one actual conflict or uncertain peer still blocks the write.
+            if (batch.length < 2) {
+              throw new Error("Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim.");
+            }
+            for (const peer of batch) {
+              const individual = await generateObject({
+                model: resolved.model,
+                schema: z.object({ safe: z.boolean() }).strict(),
+                temperature: 0,
+                abortSignal: options.signal,
+                prompt: `Independent single competing-project check after an aggregate conflict. The proposed owner is ${target.path} (${target.frontmatter.title ?? "untitled"}). Does the FULL peer below neither already record the complete FACT (including paraphrases), nor contradict it, nor unambiguously own it instead of the proposed owner? A shared project, corpus, or partial observation is NOT the complete fact. If uncertain, safe=false. JSON only.\nFACT:\n${fact}\nCOMPETING PROJECT OWNER:\n${JSON.stringify(peer)}`,
+              });
+              state.checkCancellation();
+              if (!individual.object.safe) {
+                throw new Error("Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim.");
+              }
+            }
           }
           batch = [];
         };

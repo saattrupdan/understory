@@ -728,6 +728,72 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(result.result!.filesChanged[0])).body).toContain(fact.trim());
   });
 
+  it("rechecks every complete peer when aggregate overlap mistakes a shared corpus for the new observation", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const corpus = "/projects/fs-fotovalidering-continuation-12345678abcdef90.md";
+    const history = "/projects/fs-fotovalidering/tono-onot.md";
+    const fact = "FS Fotovalidering 15 Oct 2026 near-80 head-height review: 24,285 verified images yielded 719 unreviewed choices (471 fitted, 248 excluded); measurement JSONL SHA fc0186ef8d647356c9f69113b8e134c781a4acee49055c358ce489a71d9fa8c0.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering tracks a dated baseline.", "seed");
+    await kb.writeConcept(corpus, { type: "Project Continuation", title: "FS Fotovalidering — Continuation" },
+      "An earlier YuNet factor calibration left synthetic 24,285 labels unchanged; no near-80 review was recorded.", "seed");
+    await kb.writeConcept(history, { type: "Note", title: "TONO+ONOT Experiment" },
+      "The earlier TONO+ONOT experiment uses a different image set.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: corpus, type: "Project Continuation",
+      title: "FS Fotovalidering — Continuation", score: 100, confidenceQualified: false }]);
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("COMPETING PROJECT OWNERS:");
+      expect(prompt).toContain(corpus);
+      expect(prompt).toContain(history);
+      return { object: { safe: false } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`\"path\":\"${corpus}\"`);
+      expect(prompt).toContain("24,285 labels unchanged");
+      return { object: { safe: true } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`\"path\":\"${history}\"`);
+      expect(prompt).toContain("different image set");
+      return { object: { safe: true } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(corpus)).body).not.toContain("719 unreviewed choices");
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("still rejects a single conflicting peer after a mixed aggregate refusal", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const partial = "/projects/fs-fotovalidering-continuation-12345678abcdef90.md";
+    const conflicting = "/projects/fs-fotovalidering/near-80-review.md";
+    const fact = "FS Fotovalidering 15 Oct 2026 near-80 head-height review: 719 images were selected.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering tracks a dated baseline.", "seed");
+    await kb.writeConcept(partial, { type: "Project Continuation", title: "FS Fotovalidering — Continuation" },
+      "The 24,285-image synthetic corpus predates the head-height review.", "seed");
+    await kb.writeConcept(conflicting, { type: "Note", title: "Near-80 review" },
+      "The near-80 review selected 721 images, not 719.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: partial, type: "Project Continuation",
+      title: "FS Fotovalidering — Continuation", score: 100, confidenceQualified: false }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain(partial);
+        return { object: { safe: true } };
+      }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain(conflicting);
+        return { object: { safe: false } };
+      });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
   it("rejects a named project's add when a competing project note already owns it", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering.md";
