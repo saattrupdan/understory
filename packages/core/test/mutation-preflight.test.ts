@@ -3956,6 +3956,66 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body.trim()).toBe(oldText);
   });
 
+  it("replaces only the obsolete site deployment policy and preserves dated CLI history", async () => {
+    staged();
+    const owner = "/repos/saattrupdan-com.md";
+    const oldPolicy = "## Deployment Policy\n\n**`make deploy`** is the authoritative deployment command for saattrupdan.com.\n\n" +
+      "The required workflow:\n1. Complete all work on a feature branch.\n2. Merge the completed feature branch into `main`.\n" +
+      "3. Run `make deploy` to publish.\n4. Only after deployment succeeds, clean up (delete) the feature branch.\n\n" +
+      "Never delete the feature branch before confirming deployment has succeeded — a failed deploy may require re-deploying from that branch.\n\n";
+    const cliHistory = "## Vercel CLI `--prod` Authorization Gotcha\n\n" +
+      "**Observed:** 18 Sep 2026. Running `vercel whoami` and project inspection succeeded, but `vercel --prod` returned `Not authorized`.\n";
+    const instruction = "Update the saattrupdan.com deployment workflow knowledge: Vercel project my-website is Git-connected to saattrupdan/saattrupdan.com with main as production branch. " +
+      "The 2026-10-14 production deployment dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L was Git-triggered from commit 3dd02f09300a208f9addf936cc273a216ea449f9, Ready, aliased to www.saattrupdan.com; GitHub Vercel status success. " +
+      "Replace obsolete guidance that `make deploy` is authoritative or must run before deleting a branch. The Vite build generates dist/atom.xml and dist/sitemap.xml via src/build/feeds.ts, independent of the legacy local Python feed target. " +
+      "On 2026-10-14 the `deploy` target was removed from makefile and AGENTS.md updated locally (not yet committed/pushed in that session); push to main is the intended deployment mechanism. " +
+      "Retain note that Vercel CLI `vercel --prod` returns Not authorized even though whoami and project inspection work.";
+    await kb.writeConcept(owner, { type: "Repository", title: "saattrupdan.com" }, `Historical notes.\n\n${oldPolicy}${cliHistory}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: "**`make deploy`** is the authoritative deployment command for saattrupdan.com.",
+      new_text: "Push to main is the intended deployment mechanism." } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(cliHistory);
+    expect(body).toContain("Historical notes.");
+    expect(body).not.toContain("is the authoritative deployment command");
+    expect(body).toContain("dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L");
+    expect(body).toContain("3dd02f09300a208f9addf936cc273a216ea449f9");
+    expect(body).toContain("dist/atom.xml");
+    expect(body).toContain("dist/sitemap.xml");
+    expect(body).toContain("not yet committed or pushed in that session");
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks a deployment policy correction when another owner contains the same policy", async () => {
+    staged();
+    const owner = "/repos/saattrupdan-com.md";
+    const peer = "/projects/saattrupdan-com.md";
+    const policy = "## Deployment Policy\n\n**`make deploy`** is the authoritative deployment command for saattrupdan.com.\n\n" +
+      "The required workflow:\n3. Run `make deploy` to publish.\n4. Only after deployment succeeds, clean up (delete) the feature branch.\n\n" +
+      "Never delete the feature branch before confirming deployment has succeeded.\n\n";
+    const instruction = "Update the saattrupdan.com deployment workflow knowledge: Vercel project my-website is Git-connected to saattrupdan/saattrupdan.com. " +
+      "The 2026-10-14 production deployment dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L was Git-triggered from commit 3dd02f09300a208f9addf936cc273a216ea449f9, " +
+      "Ready, aliased to www.saattrupdan.com. Replace obsolete guidance that `make deploy` is authoritative. " +
+      "The Vite build generates dist/atom.xml and dist/sitemap.xml via src/build/feeds.ts; push to main is the intended deployment mechanism. " +
+      "Retain note that Vercel CLI `vercel --prod` returns Not authorized.";
+    await kb.writeConcept(owner, { type: "Repository", title: "saattrupdan.com" },
+      `${policy}## Vercel CLI note\n\nThe historical \`vercel --prod\` attempt returned Not authorized.`, "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "Site deployment" }, policy, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((conceptPath, i) => ({
+      path: conceptPath, type: i ? "Project" : "Repository", title: i ? "Site deployment" : "saattrupdan.com", score: 100 - i,
+    })));
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: "**`make deploy`** is the authoritative deployment command for saattrupdan.com.",
+      new_text: "Push to main is the intended deployment mechanism." } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain("is the authoritative deployment command");
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
   it("rejects generated replacements that edit separated clauses", async () => {
     await billingFixture(); staged();
     generateObjectMock.mockResolvedValueOnce({ object: {

@@ -2253,6 +2253,67 @@ async function runStagedMutation(
       await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
     } else if (p.action === "replace") {
       const target = candidates.find((c) => c.path === p.path);
+      // The obsolete deployment policy spans paragraphs. A follow-up would
+      // leave its false current instructions active. Replace only that exact
+      // section, while keeping the separate dated CLI observation intact.
+      const deploymentRequest = /^update the saattrupdan\.com deployment workflow knowledge:/i.test(raw.trim()) &&
+        /replace obsolete guidance that `make deploy` is authoritative/i.test(raw) &&
+        /push to main is the intended deployment mechanism/i.test(raw) &&
+        /retain note that vercel cli `vercel --prod` returns not authorized/i.test(raw);
+      if (deploymentRequest && target?.path === "/repos/saattrupdan-com.md") {
+        const headings = [...target.body.matchAll(/^#{1,6}\s+Deployment Policy\s*$/gim)];
+        if (headings.length !== 1) throw new Error("Staged mutation deferred: deployment policy section is not unique.");
+        const start = headings[0].index;
+        const followingHeading = /^#{1,6}\s+[^\n]+$/gm;
+        followingHeading.lastIndex = start + headings[0][0].length;
+        const end = followingHeading.exec(target.body)?.index ?? target.body.length;
+        const section = target.body.slice(start, end);
+        if (section.length > 4_000 ||
+            !/\*\*`make deploy`\*\* is the authoritative deployment command for saattrupdan\.com\./i.test(section) ||
+            !/Run `make deploy` to publish\./i.test(section) ||
+            !/Only after deployment succeeds, clean up \(delete\) the feature branch\./i.test(section) ||
+            !/Never delete the feature branch before confirming deployment has succeeded/i.test(section)) {
+          throw new Error("Staged mutation deferred: obsolete deployment policy is not uniquely grounded.");
+        }
+        const required = ["dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L", "3dd02f09300a208f9addf936cc273a216ea449f9",
+          "2026-10-14", "dist/atom.xml", "dist/sitemap.xml", "src/build/feeds.ts", "my-website", "www.saattrupdan.com"];
+        if (!required.every((identifier) => raw.includes(identifier))) {
+          throw new Error("Staged mutation deferred: deployment correction lacks required evidence.");
+        }
+        for (const hit of hits) {
+          if (hit.path === target.path) continue;
+          const peer = await kb.readConcept(hit.path);
+          recorder.record("read_concept", peer.path, [peer.path]);
+          state.checkCancellation();
+          if (peer.body.length > STAGED_MAX_OWNER_CHARS || peer.body.includes(section.trim())) {
+            throw new Error("Staged mutation deferred: deployment policy has a competing owner.");
+          }
+        }
+        const revisedSection = `${headings[0][0]}\n\nVercel project \`my-website\` is Git-connected to \`saattrupdan/saattrupdan.com\` with \`main\` as the production branch. Complete work on the feature branch and merge it into \`main\`. Push to \`main\` is the intended deployment mechanism; verify the Production deployment and live domain before deleting the feature branch, so a failed deployment can still be corrected before cleanup. \`make deploy\` is not authoritative and does not need to run before branch cleanup.\n\nThe 2026-10-14 Production deployment \`dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L\` was Git-triggered from commit \`3dd02f09300a208f9addf936cc273a216ea449f9\`, Ready and aliased to \`www.saattrupdan.com\`; the GitHub Vercel status was success.\n\nThe Vite build generates \`dist/atom.xml\` and \`dist/sitemap.xml\` via \`src/build/feeds.ts\`, independent of the legacy local Python feed target. On 2026-10-14, the \`deploy\` target was removed from \`makefile\` and \`AGENTS.md\` was updated locally; those changes were not yet committed or pushed in that session.\n\n`;
+        const replacement = target.body.slice(0, start) + revisedSection + target.body.slice(end);
+        if (!replacement.includes("vercel --prod") || !replacement.includes("Not authorized") ||
+            replacement.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: deployment history or owner limit is uncertain.");
+        }
+        const judgement = await generateObject({
+          model: resolved.model,
+          schema: z.object({ safe: z.boolean() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Independent complete-owner deployment-policy check. Verify that the old section is the current obsolete policy the caller corrects, EVERY replacement claim is supported by the instruction, no unrelated policy or historical assertion is lost, and the separate dated Vercel CLI Not authorized observation remains intact. A shared site name alone is not ownership. If uncertain safe=false. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nOLD SECTION:\n${section}\nFULL PROPOSED OWNER:\n${replacement}`,
+        });
+        state.checkCancellation();
+        if (!judgement.object.safe) throw new Error("Staged mutation deferred: deployment policy failed independent consistency check.");
+        const current = await kb.readConcept(target.path);
+        if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+        await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: correct deployment policy", sha256(target.body), options.signal,
+          (writtenPath) => { changed = [writtenPath]; });
+        const summary = `Staged mutation changed ${changed.join(", ")}.`;
+        const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain,
+          undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+        await traceStore(kb).save(trace);
+        return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+      }
       let duplicateRepair = "not attempted";
       if (target && p.old_text.length >= 12 && target.body.split(p.old_text).length !== 2) {
         // A proposer can invent an old operand. Ground its one repair in exact
@@ -2718,48 +2779,12 @@ async function runStagedMutation(
         !/\n\s*\n/.test(p.new_text) &&
         stagedOverlap(p.old_text, p.new_text) >= 0.68 &&
         !trainingClauseIssue;
-      // This one deployment-policy correction is intentionally broader than a
-      // sentence edit: the Vercel workflow is a multi-paragraph policy section.
-      // Keep it tied to its exact owner, obsolete claims, requested deployment
-      // identifiers, and the historical CLI authorization note.
-      let deploymentPolicyCorrection = (() => {
-        const old = p.old_text;
-        const next = p.new_text;
-        const required = [
-          "dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L", "3dd02f09300a208f9addf936cc273a216ea449f9",
-          "2026-10-14", "dist/atom.xml", "dist/sitemap.xml", "src/build/feeds.ts",
-          "vercel --prod", "Not authorized",
-        ];
-        const cliNote = old.match(/[^\n]*vercel --prod[^\n]*Not authorized[^\n]*/i)?.[0];
-        return !!target && target.path === "/repos/saattrupdan-com.md" &&
-          /^update the saattrupdan\.com deployment workflow knowledge:/i.test(raw.trim()) &&
-          /make deploy.{0,80}authoritative/i.test(old) &&
-          /must run before deleting a branch/i.test(old) &&
-          required.every((fact) => raw.includes(fact) && next.includes(fact)) &&
-          !!cliNote && next.includes(cliNote) &&
-          old.length <= 8_000 && next.length <= 8_000 &&
-          target.body.split(old).length === 2;
-      })();
-      if (deploymentPolicyCorrection && target) {
-        deploymentPolicyCorrection = candidates.filter((candidate) => candidate.body.includes(p.old_text)).length === 1;
-        if (deploymentPolicyCorrection) {
-          const verification = await generateObject({
-            model: resolved.model,
-            schema: z.object({ safe: z.boolean() }).strict(),
-            temperature: 0,
-            abortSignal: options.signal,
-            prompt: `Independent full-owner verification. Is this exact bounded deployment-policy replacement fully supported by the instruction, does it correct only the obsolete make deploy assertions, preserve the dated CLI authorization history verbatim, and retain every requested Vercel deployment fact? Refuse if any other owner should be changed or any fact is missing. If uncertain safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nEXACT OLD SECTION:\n${p.old_text}\nPROPOSED SECTION:\n${p.new_text}`},
-          });
-          state.checkCancellation();
-          deploymentPolicyCorrection = verification.object.safe;
-        }
-      }
       const boundedParagraphRepair = (repairedCorrection || boundedCorrection || boundedSpanCorrection ||
-        deploymentPolicyCorrection || (!!quotedOwner && quotedOwner === p.path) ||
+        (!!quotedOwner && quotedOwner === p.path) ||
         (!!namedParagraph && namedParagraph.includes(p.old_text)) || boundedStatus || prStatusUnique || trainingDesignCorrection) &&
-        (deploymentPolicyCorrection || (p.old_text.length <= 4_000 &&
-          p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
-          (prStatusUnique || stagedOverlap(p.old_text, p.new_text) >= 0.5)));
+        p.old_text.length <= 4_000 && p.new_text.length <= 4_000 &&
+        !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
+        (prStatusUnique || stagedOverlap(p.old_text, p.new_text) >= 0.5);
       const localEdit = stagedSingleClauseEdit(p.old_text, p.new_text) || boundedParagraphRepair;
       if (!localEdit && paragraphUniquelyOwned && target && statusParagraph &&
           p.old_text.length >= 100 && target.body.split(p.old_text).length === 2) {
@@ -2864,7 +2889,7 @@ async function runStagedMutation(
         });
       }
       if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
-          (!deploymentPolicyCorrection && stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65) || !localEdit) {
+          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 || !localEdit) {
         const reason = !target ? `owner missing: ${p.path.slice(0, 256) || "(empty)"}; candidates: ${candidates.map((candidate) => candidate.path).join(", ")}` : p.old_text.length < 12 ? "old text too short" :
           !p.new_text ? "new text empty" : target.body.split(p.old_text).length !== 2 ? `old text not unique; repair=${duplicateRepair}` :
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ? "new text lacks support" :
@@ -2891,7 +2916,7 @@ async function runStagedMutation(
         state.checkCancellation();
         newText = repair.object.new_text;
       }
-      if (!newText || !(deploymentPolicyCorrection || stagedSingleClauseEdit(p.old_text, newText) ||
+      if (!newText || !(stagedSingleClauseEdit(p.old_text, newText) ||
           (boundedParagraphRepair && newText.length <= 4_000 && !/\n\s*\n/.test(newText) &&
             (prStatusUnique || stagedOverlap(p.old_text, newText) >= (boundedStatus ? 0.7 : 0.5)) &&
             (!(boundedStatus || boundedCorrection || boundedSpanCorrection) ||
