@@ -1727,6 +1727,13 @@ async function runStagedMutation(
           const finding = adjudication.object;
           if (!finding.certain || finding.complete_duplicate || finding.contradiction ||
               finding.stronger_owner) {
+            // Keep the diagnostic to boolean verdicts: peer bodies and facts
+            // can contain private material and must not enter service logs.
+            console.warn("[understory] disputed project peer rejected", {
+              peer: peer.path,
+              target: target.path,
+              ...finding,
+            });
             throw new Error(`Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${peer.path}; target=${target.path}).`);
           }
         };
