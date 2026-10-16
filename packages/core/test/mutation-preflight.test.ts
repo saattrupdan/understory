@@ -1799,6 +1799,86 @@ describe("mutation owner preflight", () => {
     },
   );
 
+  it("corrects the uniquely owned Claes training limit without erasing dataset evidence", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const intro = "Claes training-design investigation (Oct 2026): current repo has only dataset generation and Jev answering, no student model/training/evaluation. In first 3,000 live rows read-only: 32 languages; 1,536 choice, 1,017 noul, 447 score; one choice selected ID not probability argmax. ";
+    const stale = "Existing public syvai/claes-preview HF checkpoint is a 322M-parameter mmBERT/Laya fine-tune, not under 1M. For strict <1M multilingual student recommend evaluating a shared byte-input CNN-downsample + small Transformer common-context encoder with reusable candidate text encoding and lightweight candidate-to-context scoring, rather than re-encoding state up to 250 times. ";
+    const retained = "Distil actual distributions with soft cross entropy/KL at T=1; confidence and fractional score require explicit handling, and held-out human labels are needed to assess truth/calibration vs Jev imitation. These were design recommendations, not an approved architecture decision.";
+    const corrected = "The user's actual model limit is <1B, not <1M; the earlier tiny byte/CNN/Transformer recommendation is superseded. Existing public syvai/claes-preview HF checkpoint is a 322M-parameter mmBERT/Laya fine-tune and fits under <1B; upstream convaiinnovations/laya-multilingual is also 322M and English ModernBERT-large Laya is 421M. Recommend fine-tuning/evaluating these with 1M Jev soft targets rather than building a tiny model from scratch. ";
+    const instruction = "Correct the Claes training-design note recorded Oct 2026: the user's actual model limit is <1 BILLION parameters, not <1 million. The earlier tiny byte/CNN/Transformer student recommendation was conditional on the mistaken limit and is superseded. Under <1B, the existing 322M syvai/claes-preview multilingual mmBERT/Laya checkpoint fits and preserves pretraining; upstream convaiinnovations/laya-multilingual is also 322M, and English ModernBERT-large Laya is 421M. Recommend fine-tuning/evaluating these with the 1M Jev soft targets, checking choice/noul/score support and multilingual regression, rather than building a tiny model from scratch. Retain the accurate dataset schema and sample stats.";
+    const oldParagraph = intro + stale + retained;
+    const newParagraph = intro + corrected + retained;
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" },
+      `${oldParagraph}\n\nIndependent survey history remains intact.`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", title: "Claes Jev Diagnostics", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: newParagraph } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain(`OWNER ${owner}`);
+        expect(prompt).toContain("1,536 choice, 1,017 noul, 447 score");
+        return { object: { safe: true, reason: "Unrelated evidence retained." } };
+      });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(newParagraph);
+    expect(body).not.toContain(stale);
+    expect(body).toContain("Independent survey history remains intact.");
+  });
+
+  it("rejects a Claes training correction when the stale paragraph has two owners", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const duplicate = "/projects/claes-jev-training-copy.md";
+    const oldParagraph = "Claes training-design investigation (Oct 2026): For strict <1M multilingual student recommend evaluating a shared byte-input CNN-downsample student. Existing public syvai/claes-preview HF checkpoint is 322M, not under 1M. The dataset has 3,000 sampled rows.";
+    const newParagraph = "Claes training-design investigation (Oct 2026): The actual limit is <1B rather than <1M; the tiny byte/CNN/Transformer student recommendation is superseded. Existing public syvai/claes-preview HF checkpoint is 322M and fits under <1B. The dataset has 3,000 sampled rows.";
+    const instruction = "Correct the Claes training-design note recorded Oct 2026: actual limit is <1 BILLION, not <1 million; the earlier tiny byte/CNN/Transformer student recommendation is superseded. The 322M checkpoint fits under <1B. Retain the sample stats.";
+    const competingClaim = "Claes training: for a <1M model, recommend byte-input CNN-downsample student for Jev distributions.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, oldParagraph, "seed");
+    await kb.writeConcept(duplicate, { type: "Project", title: "Claes Jev Training Copy" }, competingClaim, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, duplicate].map((path) =>
+      ({ path, type: "Project", title: "Claes Jev Diagnostics", score: 10 })));
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: newParagraph } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
+    expect((await kb.readConcept(duplicate)).body).toContain(competingClaim);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a Claes training correction that reverses a no-student claim", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const oldParagraph = "Claes training-design investigation (Oct 2026): current repo has no student model or training. For strict <1M multilingual student recommend evaluating a byte-input CNN-downsample student. Existing public syvai/claes-preview checkpoint is 322M, not under 1M. The sample stats are retained.";
+    const newParagraph = "Claes training-design investigation (Oct 2026): current repo has student model or training. The actual limit is <1B rather than <1M, and the earlier tiny byte/CNN/Transformer student recommendation is superseded. Existing public syvai/claes-preview checkpoint is 322M and fits under <1B. The sample stats are retained.";
+    const instruction = "Correct the Claes training-design note recorded Oct 2026: actual limit is <1 BILLION, not <1 million; the earlier tiny byte/CNN/Transformer student recommendation is superseded. The 322M checkpoint fits under <1B. Retain the sample stats.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, oldParagraph, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", title: "Claes Jev Diagnostics", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: newParagraph } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain("no student model or training");
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a Claes training correction that drops unrelated dataset history", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const oldParagraph = "Claes training-design investigation (Oct 2026): first 3,000 rows contain 1,536 choice and 447 score. Existing public syvai/claes-preview is 322M, not under 1M. For strict <1M multilingual student recommend evaluating a shared byte-input CNN-downsample student. Historical sample audit found one choice selected ID not probability argmax.";
+    const newParagraph = "Claes training-design investigation (Oct 2026): Existing public syvai/claes-preview is 322M and fits under 1B. Recommend fine-tuning it rather than a tiny student.";
+    const instruction = "Correct the Claes training-design note recorded Oct 2026: actual limit <1 BILLION, not <1 million; the 322M syvai/claes-preview fits <1B and tiny student is superseded. Retain the accurate sample stats.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, oldParagraph, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", title: "Claes Jev Diagnostics", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: newParagraph } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain("one choice selected ID not probability argmax");
+  });
+
   it("corrects multiple clauses only inside a uniquely named incident paragraph", async () => {
     staged();
     const owner = "/repos/pi-agent/memory-async.md";
