@@ -1315,15 +1315,15 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: too many named tool owners.");
       }
     }
-    // An explicitly labelled possessive preference is a personal fact, not
-    // project history. Search the named person separately and accept only a
-    // positively title/slug-matched Person concept; mentions of the name in
-    // arbitrary project facts are not enough to route it.
-    const personalPreferenceName = options.directAdd && options.preflightInput
-      ? raw.trim().match(/^([\p{L}][\p{L}'’.-]{1,80})['’]s\s+(?:personal\s+)?(?:[\p{L}-]+\s+){0,4}preference\s*:/iu)?.[1]
+    // An explicitly labelled possessive preference, policy, or boundary is a
+    // personal fact, not project history. Search the named person separately
+    // and accept only a positively title/slug-matched Person concept; mentions
+    // of the name in arbitrary project facts are not enough to route it.
+    const personalPolicyName = options.directAdd && options.preflightInput
+      ? raw.trim().match(/^([\p{L}][\p{L}'’.-]{1,80})['’]s\s+(?:personal\s+)?(?:[\p{L}-]+\s+){0,4}(?:preference|policy|boundary)\s*:/iu)?.[1]
       : undefined;
     const personalPreferenceHits: typeof hits = [];
-    if (personalPreferenceName) {
+    if (personalPolicyName) {
       // Do not search the broad text index for a common first name. Inventory
       // only the users concept directory, with a hard cap before reading any
       // metadata; ranked search hits remain untouched as competing evidence.
@@ -1332,7 +1332,7 @@ async function runStagedMutation(
       if (userPaths.length > 200) {
         throw new Error("Staged mutation deferred: user owner inventory exceeds limit.");
       }
-      const name = personalPreferenceName.toLowerCase().replace(/[’]/g, "'");
+      const name = personalPolicyName.toLowerCase().replace(/[’]/g, "'");
       const normalizedName = name.replace(/[-_]/g, " ");
       const firstName = normalizedName.split(/\s+/)[0];
       const candidates = userPaths.filter((candidate) => {
@@ -1354,7 +1354,7 @@ async function runStagedMutation(
         }
       }
       if (personalPreferenceHits.length !== 1) {
-        throw new Error("Staged mutation deferred: named personal preference has no unique positively matched Person owner.");
+        throw new Error("Staged mutation deferred: named personal policy has no unique positively matched Person owner.");
       }
       if (!hits.some((old) => old.path === personalPreferenceHits[0].path)) hits.push(personalPreferenceHits[0]);
       // Every competing search hit must be checked using its complete body,
