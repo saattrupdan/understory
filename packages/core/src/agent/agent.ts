@@ -2760,7 +2760,7 @@ async function runStagedMutation(
               });
               state.checkCancellation();
               if (!currentStatus.object.certain || currentStatus.object.currentStaleQuote) {
-                throw new Error(`Staged mutation deferred: competing throughput claim remains current or uncertain in ${competitor.path}.`);
+                throw new Error(`Staged mutation deferred: competing throughput claim remains current or uncertain in ${competitor.path} (certain=${currentStatus.object.certain}, quoted=${!!currentStatus.object.currentStaleQuote}, grounded=${!!currentStatus.object.currentStaleQuote && competitor.body.includes(currentStatus.object.currentStaleQuote)}).`);
               }
             }
           }
