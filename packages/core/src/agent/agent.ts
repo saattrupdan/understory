@@ -1659,9 +1659,15 @@ async function runStagedMutation(
             const peerArtifacts = new Set(artifactUris(peer.body));
             if (artifacts.some((artifact) => peerArtifacts.has(artifact))) matchingPeers.push(peer);
           }
-          if (matchingPeers.length === 1) {
-            const peer = matchingPeers[0];
-            target = { path: peer.path, frontmatter: peer.frontmatter, body: peer.body };
+          // A sibling may mention the same URI as a cross-reference. Prefer
+          // the sole continuation recording that artifact's history; the
+          // siblings still undergo the full competing-owner check below.
+          const continuations = matchingPeers.filter((peer) =>
+            /-continuation-[a-f0-9]{8,16}\.md$/.test(peer.path));
+          const artifactOwner = matchingPeers.length === 1 ? matchingPeers[0]
+            : continuations.length === 1 ? continuations[0] : undefined;
+          if (artifactOwner) {
+            target = { path: artifactOwner.path, frontmatter: artifactOwner.frontmatter, body: artifactOwner.body };
             artifactAnchoredPeer = true;
           }
         }

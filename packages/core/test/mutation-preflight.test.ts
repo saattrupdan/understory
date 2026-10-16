@@ -1027,7 +1027,7 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(continuation, { type: "Project Continuation", title: "FS Fotovalidering — Annotation UI" },
       `Earlier annotation behavior in ${artifact}: Up/Down navigates without marking a photo reviewed.`, "seed");
     await kb.writeConcept(unrelated, { type: "Note", title: "FS Fotovalidering — Auto Crop" },
-      `The YuNet auto-crop study uses separate images, including ${artifact}.bak.`, "seed");
+      `The YuNet auto-crop study only cross-references ${artifact}, plus a distinct ${artifact}.bak file.`, "seed");
     vi.spyOn(kb, "search").mockResolvedValue([{ path: continuation, type: "Project Continuation",
       title: "FS Fotovalidering — Annotation UI", score: 100, confidenceQualified: true }]);
     const fact = `FS Fotovalidering test-photo annotation HTML ${artifact}. Show the position progress bar independently of reviewed count, and manual heights for exactly 94 photos, never for the other 163.`;
