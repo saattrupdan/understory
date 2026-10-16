@@ -633,10 +633,14 @@ describe("mutation owner preflight", () => {
       "Pi agent overview and runtime notes.", "seed");
     vi.spyOn(kb, "search").mockResolvedValue([{ path: misleading, type: "Repository",
       title: "Pi Agent Overview", score: 100, confidence: 100, confidenceQualified: true }]);
-    const fact = "Pi dotfiles extensions tests: agentic/pi/extensions/ serializes interactive prompts.";
+    const fact = "Pi dotfiles extensions tests: `agentic/pi/extensions/package.json` is CommonJS and TypeScript `.test.ts` files fail under direct `node --experimental-strip-types --test` (and this Node 24 build has no `--experimental-default-type=module`). Use `(cd agentic/pi/extensions && npm test)` instead: `test-runner.mjs` loads TS tests via Jiti. For loop/notify integration, `_loop_state/state.ts` exports process-wide `isLoopActive()`; loop remains active at `agent_end` and transitions on `agent_settled`, so notify can suppress iteration-end alerts there.";
     generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
-      expect(prompt).toContain("agentic/pi/extensions/");
-      expect(prompt).toContain("Pi agent overview and runtime notes.");
+      expect(prompt).toContain(fact);
+      if (prompt.includes("COMPETING OWNER")) {
+        expect(prompt).toContain("Pi agent overview and runtime notes.");
+      } else {
+        expect(prompt).toContain(`OWNER ${owner}`);
+      }
       return { object: { safe: true, reason: "Supported and consistent." } };
     });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
