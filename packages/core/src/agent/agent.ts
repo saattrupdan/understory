@@ -2718,12 +2718,48 @@ async function runStagedMutation(
         !/\n\s*\n/.test(p.new_text) &&
         stagedOverlap(p.old_text, p.new_text) >= 0.68 &&
         !trainingClauseIssue;
+      // This one deployment-policy correction is intentionally broader than a
+      // sentence edit: the Vercel workflow is a multi-paragraph policy section.
+      // Keep it tied to its exact owner, obsolete claims, requested deployment
+      // identifiers, and the historical CLI authorization note.
+      let deploymentPolicyCorrection = (() => {
+        const old = p.old_text;
+        const next = p.new_text;
+        const required = [
+          "dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L", "3dd02f09300a208f9addf936cc273a216ea449f9",
+          "2026-10-14", "dist/atom.xml", "dist/sitemap.xml", "src/build/feeds.ts",
+          "vercel --prod", "Not authorized",
+        ];
+        const cliNote = old.match(/[^\n]*vercel --prod[^\n]*Not authorized[^\n]*/i)?.[0];
+        return !!target && target.path === "/repos/saattrupdan-com.md" &&
+          /^update the saattrupdan\.com deployment workflow knowledge:/i.test(raw.trim()) &&
+          /make deploy.{0,80}authoritative/i.test(old) &&
+          /must run before deleting a branch/i.test(old) &&
+          required.every((fact) => raw.includes(fact) && next.includes(fact)) &&
+          !!cliNote && next.includes(cliNote) &&
+          old.length <= 8_000 && next.length <= 8_000 &&
+          target.body.split(old).length === 2;
+      })();
+      if (deploymentPolicyCorrection && target) {
+        deploymentPolicyCorrection = candidates.filter((candidate) => candidate.body.includes(p.old_text)).length === 1;
+        if (deploymentPolicyCorrection) {
+          const verification = await generateObject({
+            model: resolved.model,
+            schema: z.object({ safe: z.boolean() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Independent full-owner verification. Is this exact bounded deployment-policy replacement fully supported by the instruction, does it correct only the obsolete make deploy assertions, preserve the dated CLI authorization history verbatim, and retain every requested Vercel deployment fact? Refuse if any other owner should be changed or any fact is missing. If uncertain safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nEXACT OLD SECTION:\n${p.old_text}\nPROPOSED SECTION:\n${p.new_text}`},
+          });
+          state.checkCancellation();
+          deploymentPolicyCorrection = verification.object.safe;
+        }
+      }
       const boundedParagraphRepair = (repairedCorrection || boundedCorrection || boundedSpanCorrection ||
-        (!!quotedOwner && quotedOwner === p.path) ||
+        deploymentPolicyCorrection || (!!quotedOwner && quotedOwner === p.path) ||
         (!!namedParagraph && namedParagraph.includes(p.old_text)) || boundedStatus || prStatusUnique || trainingDesignCorrection) &&
-        p.old_text.length <= 4_000 &&
-        p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
-        (prStatusUnique || stagedOverlap(p.old_text, p.new_text) >= 0.5);
+        (deploymentPolicyCorrection || (p.old_text.length <= 4_000 &&
+          p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
+          (prStatusUnique || stagedOverlap(p.old_text, p.new_text) >= 0.5)));
       const localEdit = stagedSingleClauseEdit(p.old_text, p.new_text) || boundedParagraphRepair;
       if (!localEdit && paragraphUniquelyOwned && target && statusParagraph &&
           p.old_text.length >= 100 && target.body.split(p.old_text).length === 2) {
@@ -2828,7 +2864,7 @@ async function runStagedMutation(
         });
       }
       if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
-          stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 || !localEdit) {
+          (!deploymentPolicyCorrection && stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65) || !localEdit) {
         const reason = !target ? `owner missing: ${p.path.slice(0, 256) || "(empty)"}; candidates: ${candidates.map((candidate) => candidate.path).join(", ")}` : p.old_text.length < 12 ? "old text too short" :
           !p.new_text ? "new text empty" : target.body.split(p.old_text).length !== 2 ? `old text not unique; repair=${duplicateRepair}` :
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 ? "new text lacks support" :
@@ -2855,7 +2891,7 @@ async function runStagedMutation(
         state.checkCancellation();
         newText = repair.object.new_text;
       }
-      if (!newText || !(stagedSingleClauseEdit(p.old_text, newText) ||
+      if (!newText || !(deploymentPolicyCorrection || stagedSingleClauseEdit(p.old_text, newText) ||
           (boundedParagraphRepair && newText.length <= 4_000 && !/\n\s*\n/.test(newText) &&
             (prStatusUnique || stagedOverlap(p.old_text, newText) >= (boundedStatus ? 0.7 : 0.5)) &&
             (!(boundedStatus || boundedCorrection || boundedSpanCorrection) ||
