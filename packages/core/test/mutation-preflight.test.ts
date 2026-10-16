@@ -2174,6 +2174,25 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
+  it("does not require a quoted continuation path's hash suffix in the corrected body", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering-continuation-4fcee3173b2bf469.md";
+    const oldText = "The current workbook C2 approval tick is x.";
+    const newText = "The current workbook C2 approval tick is blank.";
+    await kb.writeConcept(owner, { type: "Project Continuation", title: "FS Correction Ledger" },
+      `FS Fotovalidering: ${oldText}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project Continuation",
+      title: "FS Correction Ledger", score: 10, confidenceQualified: false }]);
+    const instruction = `Correct \`${owner}\`: the current workbook C2 approval tick is blank, not x.`;
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldText, new_text: newText } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Only the current tick changed." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(newText);
+    expect((await kb.readConcept(owner)).body).not.toContain(oldText);
+  });
+
   it.each([3, 4])("re-reads and accepts the selected metadata hit at rank %s", async (rank) => {
     staged();
     const paths = Array.from({ length: 5 }, (_, i) => `/projects/candidate-${i + 1}.md`);

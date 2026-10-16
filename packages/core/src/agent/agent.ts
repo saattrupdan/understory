@@ -852,7 +852,10 @@ function stagedRequiredCorrectionAnchors(input: string): string[] {
   // Distinctive advisory names, HTTP status codes, and commit IDs in a
   // multi-finding correction must survive in the resulting owner. A model's
   // broad "all corrections applied" verdict cannot replace this evidence.
-  return [...new Set((input.match(/\b(?:[a-f0-9]{7,40}|Accelerate|(?:HTTP\s*)?422)\b/gi) ?? [])
+  // A quoted concept path is a locator, not a requested factual identifier.
+  // Continuation filenames contain hash-shaped suffixes absent from the body.
+  const factualInput = input.replace(/\/[a-z0-9_/-]+\.md\b/gi, " ");
+  return [...new Set((factualInput.match(/\b(?:[a-f0-9]{7,40}|Accelerate|(?:HTTP\s*)?422)\b/gi) ?? [])
     .map((anchor) => anchor.toLowerCase().replace(/\s+/g, " ")))];
 }
 
