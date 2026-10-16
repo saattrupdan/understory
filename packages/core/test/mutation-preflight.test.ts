@@ -1811,9 +1811,10 @@ describe("mutation owner preflight", () => {
       score: 100, confidence: 100, confidenceQualified: true,
     }]);
     const fact = "FS Fotovalidering round-5 unknown labels retain row-level source provenance, including workbook sheet, original row number, and source image identifier; review labels are checked against held-out annotations rather than inferred from neighboring photos.";
-    generateObjectMock.mockResolvedValue({ object: { safe: true } });
+    generateObjectMock.mockResolvedValueOnce({ object: { path: continuation } })
+      .mockResolvedValue({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
-    expect(result).toMatchObject({ ok: true, result: { filesChanged: [continuation] } });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [continuation] } });
     expect((await kb.readConcept(continuation)).body).toContain(fact);
   });
 
@@ -1827,9 +1828,10 @@ describe("mutation owner preflight", () => {
       score: 100, confidence: 100, confidenceQualified: true,
     }]);
     const fact = "FS Fotovalidering round-5 unknown labels retain row-level source provenance, including workbook sheet, original row number, and source image identifier; review labels are checked against held-out annotations rather than inferred from neighboring photos.";
-    generateObjectMock.mockResolvedValue({ object: { safe: true } });
+    generateObjectMock.mockResolvedValueOnce({ object: { path: continuation } })
+      .mockResolvedValue({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
-    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("unhinted continuation") });
     expect((await kb.readConcept(continuation)).body).not.toContain(fact);
   });
 
