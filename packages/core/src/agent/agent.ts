@@ -1603,7 +1603,11 @@ async function runStagedMutation(
           }
           selectedPath = sectionOwners[0].path;
         } else if (!stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd)) {
-          throw new Error("Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor.");
+          const oldHash = stagedContrastedOldHash(raw);
+          const selectedOwner = evidenceCandidates.find((candidate) => candidate.path === selectedPath);
+          const peerCopies = oldHash ? evidenceCandidates.filter((candidate) =>
+            candidate.path !== selectedPath && candidate.body.includes(oldHash)).length : 0;
+          throw new Error(`Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor (selected=${selectedPath}, contrasted_hash=${!!oldHash}, selected_has_old=${!!oldHash && !!selectedOwner?.body.includes(oldHash)}, peer_copies=${peerCopies}).`);
         }
       }
       verifiedMetadataOwner = true;
