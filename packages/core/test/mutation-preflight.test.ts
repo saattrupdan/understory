@@ -3015,12 +3015,13 @@ describe("mutation owner preflight", () => {
     ]);
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
       old_text: oldParagraph, new_text: corrected } })
+      .mockResolvedValueOnce({ object: { new_text: corrected.replace(" Auth0 subjects remain isolated for account rate limits.", "") } })
       .mockResolvedValueOnce({ object: { new_text: corrected } })
       .mockResolvedValueOnce({ object: { safe: true, reason: "Corrections are grounded and later status retained." } });
     const result = await runMutation(kb, instruction, { preflightInput: instruction });
     expect(result, `${JSON.stringify(result)}; calls=${generateObjectMock.mock.calls.map(([request]) => request.prompt.slice(0, 75)).join(" | ")}`).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
     expect((await kb.readConcept(owner)).body).toBe(`${corrected}\n\n${later}\n`);
-    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
   });
 
   it("blocks an unscoped multi-clause correction when the paragraph has another owner", async () => {
@@ -3082,11 +3083,13 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
       old_text: oldParagraph, new_text: unsafe } })
       .mockResolvedValueOnce({ object: { new_text: unsafe } })
+      .mockResolvedValueOnce({ object: { new_text: unsafe } })
+      .mockResolvedValueOnce({ object: { supersededClauses: [], certain: false } })
       .mockResolvedValueOnce({ object: { safe: true, reason: "Should never approve lost staging assertion." } });
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
       .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
     expect((await kb.readConcept(owner)).body).toContain("staging authentication remains mandatory");
-    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
   it("refuses a job-bot paragraph repair that removes unrelated claims even if the verifier approves", async () => {
@@ -3099,12 +3102,13 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
       old_text: oldParagraph, new_text: "Job-bot security findings: Dan does not want a spending ceiling; only malformed cover-letter output was sent in HTTP 422." } })
       .mockResolvedValueOnce({ object: { new_text: "Job-bot security findings: Dan does not want a spending ceiling; only malformed cover-letter output was sent in HTTP 422." } })
+      .mockResolvedValueOnce({ object: { new_text: "Job-bot security findings: Dan does not want a spending ceiling; only malformed cover-letter output was sent in HTTP 422." } })
       .mockResolvedValueOnce({ object: { supersededClauses: ["Auth0 subjects remain isolated for account rate limits"], certain: true } })
       .mockResolvedValueOnce({ object: { safe: true, reason: "Not sufficient to remove Auth0." } });
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
       .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
     expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
-    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
   });
 
   it("refuses a correction append when independent replacement verification fails", async () => {

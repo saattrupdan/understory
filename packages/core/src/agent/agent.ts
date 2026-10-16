@@ -2225,18 +2225,40 @@ async function runStagedMutation(
             prompt: `Repair ONLY the EXACT OLD PARAGRAPH in the complete observed owner. Apply all applicable corrections in the instruction to this paragraph, preserve unrelated clauses and historical facts verbatim, and do not roll back later updates elsewhere in the owner. Keep the same heading. Return a single corrected paragraph; if the instruction requires changes outside it or cannot be fully satisfied safely, return empty new_text. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nEXACT OLD PARAGRAPH:\n${statusParagraph}\nREJECTED REWRITE:\n${p.new_text}`,
           });
           state.checkCancellation();
-          const corrected = repair.object.new_text;
+          let corrected = repair.object.new_text;
           // Every old content word removed from the paragraph must still be
           // grounded in the caller's instruction. This protects related but
           // unrequested qualifiers (for example, staging authentication in a
           // correction about production port exposure). Paraphrase can vary
           // morphology, but it cannot silently drop an unmentioned subject.
-          const supportedWords = stagedWords(`${raw} ${corrected}`);
-          const ungroundedOldWords = stagedStatusClauses(statusParagraph).flatMap((clause) =>
-            stagedWords(clause).filter((word) => !supportedWords.some((supported) =>
-              supported === word || (word.length >= 5 && supported.length >= 4 &&
-                word.slice(0, 4) === supported.slice(0, 4)))));
+          const ungroundedWords = (text: string): string[] => {
+            const supported = stagedWords(`${raw} ${text}`);
+            return stagedStatusClauses(statusParagraph).flatMap((clause) =>
+              stagedWords(clause).filter((word) => !supported.some((candidate) =>
+                candidate === word || (word.length >= 5 && candidate.length >= 4 &&
+                  word.slice(0, 4) === candidate.slice(0, 4)))));
+          };
+          let ungroundedOldWords = ungroundedWords(corrected);
           let clauseIssue = corrected && stagedStatusClauseIssue(statusParagraph, corrected, raw);
+          if (corrected && (ungroundedOldWords.length || clauseIssue)) {
+            // Give a near-complete paragraph repair one chance to restore
+            // unrelated observations in their original context. A model
+            // cannot approve its own repair: all bounds and the independent
+            // full-owner verification still run after this attempt.
+            const retention = await generateObject({
+              model: proposer.model,
+              schema: z.object({ new_text: z.string() }).strict(),
+              temperature: 0,
+              abortSignal: options.signal,
+              prompt: `Repair ONLY this proposed paragraph by restoring every OLD assertion that the caller did not explicitly supersede, retaining the ORIGINAL wording and position of unrelated clauses. Do not invent new facts, undo a later owner update, or preserve a stale assertion as current. These original content words are missing from both the instruction and the proposal: ${JSON.stringify(ungroundedOldWords)}. A clause-preservation check also found: ${clauseIssue ?? "none"}. Return one complete corrected paragraph; return empty new_text if impossible. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nEXACT OLD PARAGRAPH:\n${statusParagraph}\nPROPOSED PARAGRAPH:\n${corrected}`,
+            });
+            state.checkCancellation();
+            if (retention.object.new_text) {
+              corrected = retention.object.new_text;
+              ungroundedOldWords = ungroundedWords(corrected);
+              clauseIssue = stagedStatusClauseIssue(statusParagraph, corrected, raw);
+            }
+          }
           if (corrected && clauseIssue?.startsWith("old clause not requested")) {
             // A caller can retract a stale claim by meaning rather than quote
             // its former wording. Require an independent, exact-clause mapping;
