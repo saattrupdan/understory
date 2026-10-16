@@ -1706,6 +1706,30 @@ async function runStagedMutation(
         const batchLimit = STAGED_MAX_EVIDENCE_CHARS - fact.length - 3_000;
         if (batchLimit < 1_000) throw new Error("Staged mutation deferred: project fact exceeds peer-check budget.");
         let batch: Array<{ path: string; title?: string; body: string }> = [];
+        const checkDisputedPeer = async (peer: { path: string; title?: string; body: string }) => {
+          // A boolean refusal can conflate a shared project prefix with a
+          // complete duplicate. A distinct-topic finding must be explicit;
+          // uncertainty or any concrete conflict still blocks the append.
+          const adjudication = await generateObject({
+            model: resolved.model,
+            schema: z.object({
+              distinct_topic: z.boolean(),
+              complete_duplicate: z.boolean(),
+              contradiction: z.boolean(),
+              stronger_owner: z.boolean(),
+              certain: z.boolean(),
+            }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Independent structured review of a disputed project peer. Compare the EXACT FACT against the FULL PEER BODY claim by claim, not against its shared project name. Return distinct_topic=true only when the peer's own subject is positively different from the fact's specific observation, not merely when it lacks an exact quote. A complete paraphrase counts as complete_duplicate; conflicting assertions count as contradiction; an owner unambiguously covering this specific observation counts as stronger_owner. Return certain=false on any uncertainty. JSON only.\nFACT:\n${fact}\nPROPOSED OWNER: ${target.path}\nDISPUTED FULL PEER:\n${JSON.stringify(peer)}`,
+          });
+          state.checkCancellation();
+          const finding = adjudication.object;
+          if (!finding.certain || !finding.distinct_topic || finding.complete_duplicate ||
+              finding.contradiction || finding.stronger_owner) {
+            throw new Error(`Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${peer.path}; target=${target.path}).`);
+          }
+        };
         const checkBatch = async () => {
           if (!batch.length) return;
           const judgement = await generateObject({
@@ -1721,7 +1745,9 @@ async function runStagedMutation(
             // complete new observation. Recheck every FULL peer separately;
             // one actual conflict or uncertain peer still blocks the write.
             if (batch.length < 2) {
-              throw new Error(`Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${batch[0].path}; target=${target.path}).`);
+              await checkDisputedPeer(batch[0]);
+              batch = [];
+              return;
             }
             for (const peer of batch) {
               const individual = await generateObject({
@@ -1732,9 +1758,7 @@ async function runStagedMutation(
                 prompt: `Independent single competing-project check after an aggregate conflict. The proposed owner is ${target.path} (${target.frontmatter.title ?? "untitled"}). Does the FULL peer below neither already record the complete FACT (including paraphrases), nor contradict it, nor unambiguously own it instead of the proposed owner? A shared project, corpus, or partial observation is NOT the complete fact. If uncertain, safe=false. JSON only.\nFACT:\n${fact}\nCOMPETING PROJECT OWNER:\n${JSON.stringify(peer)}`,
               });
               state.checkCancellation();
-              if (!individual.object.safe) {
-                throw new Error(`Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${peer.path}; target=${target.path}).`);
-              }
+              if (!individual.object.safe) await checkDisputedPeer(peer);
             }
           }
           batch = [];

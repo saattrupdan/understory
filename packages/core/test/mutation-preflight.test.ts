@@ -1189,6 +1189,53 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(result.result!.filesChanged[0])).body).toContain(fact.trim());
   });
 
+  it("permits a distinct synthetic UI fact after independent full-peer adjudication", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const peer = "/projects/fs-fotovalidering-tono-onot.md";
+    const fact = "FS Fotovalidering synthetic review UI on port 8790 now persists annotation edits in IndexedDB and an authenticated SQLite autosave service.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "The project evaluates photo quality with a synthetic dataset.", "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "FS Fotovalidering — TONO+ONOT" },
+      "The TONO+ONOT experiment compares synthetic training sets and F1 scores.", "seed");
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("DISPUTED FULL PEER:")) {
+        expect(prompt).toContain("The TONO+ONOT experiment");
+        return { object: { distinct_topic: true, complete_duplicate: false,
+          contradiction: false, stronger_owner: false, certain: true } };
+      }
+      if (prompt.includes("COMPETING PROJECT OWNERS:")) return { object: { safe: false } };
+      expect(prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(peer)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    { finding: { distinct_topic: true, complete_duplicate: true, contradiction: false, stronger_owner: false, certain: true } },
+    { finding: { distinct_topic: false, complete_duplicate: false, contradiction: true, stronger_owner: false, certain: true } },
+    { finding: { distinct_topic: false, complete_duplicate: false, contradiction: false, stronger_owner: false, certain: false } },
+  ])("blocks a disputed peer on duplicate, contradiction, or uncertainty ($finding)", async ({ finding }) => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const peer = "/projects/fs-fotovalidering-tono-onot.md";
+    const fact = "FS Fotovalidering synthetic review UI on port 8790 persists annotations to SQLite.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "The project evaluates photos.", "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "FS Fotovalidering — TONO+ONOT" },
+      "Synthetic review data is tracked by the TONO+ONOT experiment.", "seed");
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) =>
+      prompt.includes("DISPUTED FULL PEER:") ? { object: finding } : { object: { safe: false } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
   it("rechecks every complete peer when aggregate overlap mistakes a shared corpus for the new observation", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering.md";
@@ -1252,7 +1299,7 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
       .toMatchObject({ ok: false, status: "failed" });
     expect((await kb.readConcept(owner)).body).not.toContain(fact);
-    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
   });
 
   it("rejects a named project's add when a competing project note already owns it", async () => {
@@ -1342,10 +1389,15 @@ describe("mutation owner preflight", () => {
       expect(request.prompt).toContain("The last owner's 94 measurements");
       expect(request.prompt).toContain("note-12.md");
       return { object: { safe: false } };
+    }).mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain("DISPUTED FULL PEER:");
+      expect(request.prompt).toContain("note-12.md");
+      return { object: { distinct_topic: false, complete_duplicate: true,
+        contradiction: false, stronger_owner: true, certain: true } };
     });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
       .toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
     expect((await kb.readConcept(owner)).body).not.toContain(fact);
   });
 
