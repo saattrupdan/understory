@@ -1,4 +1,6 @@
 Locate a new failed request in the memory queue. Diagnose the error in the codebase that
 caused this error, fix it (just work on main and push to main), redeploy the container,
 and try again. Keep trying until that request succeeds. If you deem it impossible to fix
-that request then drop it from the queue, but only if it's actually impossible.
+that request then drop it from the queue, but only if it's actually impossible. If you
+fix it, then locate all the failed memory requests that failed similarly and retry
+those - don't wait for them to fail/succeed again, just initiate the retry and stop.
