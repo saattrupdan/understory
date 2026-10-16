@@ -1657,6 +1657,7 @@ describe("mutation owner preflight", () => {
     vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", title: "Prezzi", score: 10 }]);
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
       old_text: oldStatus, new_text: newStatus } })
+      .mockResolvedValueOnce({ object: { safe: true } })
       .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
         expect(prompt).toContain(`OWNER ${owner}`);
         expect(prompt).toContain(unchanged);
@@ -1685,6 +1686,7 @@ describe("mutation owner preflight", () => {
     vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", title: "Syv-ai Agentbase", score: 10 }]);
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
       old_text: `${history}${oldReview}`, new_text: newReview } })
+      .mockResolvedValueOnce({ object: { safe: true } })
       .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
         expect(prompt).toContain(`OLD TEXT:\n${oldReview}`);
         expect(prompt).toContain(history);
@@ -1699,7 +1701,7 @@ describe("mutation owner preflight", () => {
     expect(body).toContain("Unrelated repository history remains.");
   });
 
-  it.each(["wrong PR", "mixed PR", "mixed claim", "wrong owner", "competing owner", "verifier refusal"])(
+  it.each(["wrong PR", "mixed PR", "mixed claim", "wrong owner", "competing owner", "scope refusal", "verifier refusal"])(
     "does not relax a superseded PR review when there is a %s", async (caseName) => {
       staged();
       const owner = caseName === "wrong owner" ? "/repos/other.md" : "/repos/prezzi.md";
@@ -1718,8 +1720,12 @@ describe("mutation owner preflight", () => {
         .map((conceptPath) => ({ path: conceptPath, type: "Repository", title: "Prezzi", score: 10 })));
       generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
         old_text: oldStatus, new_text: newStatus } });
-      if (caseName === "verifier refusal") {
-        generateObjectMock.mockResolvedValueOnce({ object: { safe: false, reason: "Uncertain." } });
+      if (caseName === "scope refusal") {
+        generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+      } else if (caseName === "verifier refusal") {
+        generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => ({ object: {
+          safe: !prompt.includes("Independent safety check."), reason: "Uncertain.",
+        } }));
       }
       expect(await runMutation(kb, instruction, { preflightInput: instruction }))
         .toMatchObject({ ok: false, status: "failed" });

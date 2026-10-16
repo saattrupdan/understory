@@ -1939,12 +1939,14 @@ async function runStagedMutation(
       // Only the review assertion itself may be replaced. In particular, a
       // conjunction about a different build or PR cannot be lost along with
       // this status. The surrounding paragraph must identify exactly this PR.
-      const reviewOnly = /^(?:The |A )?(?:prior|previous|earlier|existing) CHANGES_REQUESTED (?:GitHub )?review (?:remains|is still active)(?: unless (?:he|Dan) explicitly asks to update it)?[.!?]?$/i.test(p.old_text.trim());
+      const reviewOnly = /\bCHANGES_REQUESTED\b/i.test(p.old_text) &&
+        /\breview\b/i.test(p.old_text) && /\b(?:remains?|still|pending|active|unchanged|not)\b/i.test(p.old_text) &&
+        stagedStatusClauses(p.old_text).length === 1 &&
+        !/\b(?:and|but|while|also|whereas|with)\b|[,;\n]/i.test(p.old_text);
       let prStatusUnique = !!target && !!prStatus && !!repoSlug && !!statusParagraph &&
         statusParagraph.toLowerCase().includes(prStatus[1].toLowerCase()) &&
         prIdentities.length > 0 && prIdentities.every((id) => id === prStatus[2]) &&
-        reviewOnly && !/\b(?:and|but|while|also|whereas)\b|[,;\n]/i.test(p.old_text) &&
-        /\bCHANGES_REQUESTED\b/.test(raw) && /\bAPPROVED\b/.test(raw) &&
+        reviewOnly && /\bCHANGES_REQUESTED\b/.test(raw) && /\bAPPROVED\b/.test(raw) &&
         /\bAPPROVED\b/.test(p.new_text) &&
         p.old_text.length <= 200 && p.new_text.length <= 4_000 &&
         !/\n\s*\n/.test(p.new_text) &&
@@ -1960,6 +1962,17 @@ async function runStagedMutation(
           }
           if (competitor.body.includes(p.old_text)) prStatusUnique = false;
         }
+      }
+      if (prStatusUnique) {
+        const scope = await generateObject({
+          model: resolved.model,
+          schema: z.object({ safe: z.boolean() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Independent PR-review scope check. Does the EXACT OLD TEXT assert ONLY the still-active CHANGES_REQUESTED review for the PR identified in this complete paragraph, with NO unrelated facts or historical review of another PR? Do not approve merely because the paragraph mentions this PR. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target!.path}\nPARAGRAPH:\n${statusParagraph}\nOLD TEXT:\n${p.old_text}`,
+        });
+        state.checkCancellation();
+        if (!scope.object.safe) prStatusUnique = false;
       }
       const boundedParagraphRepair = (repairedCorrection || (!!quotedOwner && quotedOwner === p.path) ||
         (!!namedParagraph && namedParagraph.includes(p.old_text)) || boundedStatus || prStatusUnique) &&
