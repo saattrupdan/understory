@@ -671,6 +671,124 @@ describe("mutation owner preflight", () => {
     expect(await kb.bundle.exists("/repos/rate.md")).toBe(false);
   });
 
+  it("routes an explicitly named project add to its canonical owner despite a narrower search hit", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const narrower = "/projects/fs-fotovalidering/auto-crop-investigation.md";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering tracks the 257-image Excel-first baseline and YuNet factor gate.", "seed");
+    await kb.writeConcept(narrower, { type: "Note", title: "FS Fotovalidering — Automatic Passport-Crop Investigation" },
+      "YuNet crop experiments use earlier test photos and owner framing reviews.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: narrower, type: "Note",
+      title: "FS Fotovalidering — Automatic Passport-Crop Investigation", score: 100,
+      confidence: 100, confidenceQualified: true }]);
+    const fact = "FS Fotovalidering 15 Oct 2026 owner-completed YuNet factor gate: 94 owner choices and Excel-first label update; factor 1.15 remains calibration-only.";
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`COMPETING OWNER ${narrower}`);
+      expect(request.prompt).toContain("YuNet crop experiments");
+      return { object: { safe: true } };
+    }).mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`OWNER ${owner}`);
+      expect(request.prompt).toContain("FS Fotovalidering tracks the 257-image Excel-first baseline");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(narrower)).body).not.toContain(fact);
+  });
+
+  it("continues a near-full explicitly named project only after complete owner checks", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const narrower = "/projects/fs-fotovalidering/auto-crop-investigation.md";
+    const body = `FS Fotovalidering tracks the YuNet factor gate.\n${"x".repeat(63_000)}`;
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" }, body, "seed");
+    await kb.writeConcept(narrower, { type: "Note", title: "FS Fotovalidering — Automatic Passport-Crop Investigation" },
+      "YuNet crop experiments from an earlier checkpoint.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: narrower, type: "Note",
+      title: "FS Fotovalidering — Automatic Passport-Crop Investigation", score: 100,
+      confidence: 100, confidenceQualified: true }]);
+    const fact = `FS Fotovalidering 15 Oct 2026 owner-completed YuNet factor gate: ${"94 verified owner choices. ".repeat(52)}`;
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`COMPETING OWNER ${narrower}`);
+      return { object: { safe: true } };
+    }).mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`OWNER ${owner}`);
+      expect(request.prompt).toContain("x".repeat(63_000));
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [expect.stringMatching(
+      /^\/projects\/fs-fotovalidering-continuation-[a-f0-9]{16}\.md$/,
+    )] } });
+    expect((await kb.readConcept(owner)).body).toBe(`${body}\n`);
+    expect((await kb.readConcept(result.result!.filesChanged[0])).body).toContain(fact.trim());
+  });
+
+  it("rejects a named project's add when a competing project note already owns it", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const narrower = "/projects/fs-fotovalidering/auto-crop-investigation.md";
+    const fact = "FS Fotovalidering 15 Oct 2026 owner-completed YuNet factor gate: 94 owner choices and factor 1.15 calibration-only.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering tracks the 257-image Excel-first baseline.", "seed");
+    await kb.writeConcept(narrower, { type: "Note", title: "FS Fotovalidering — Automatic Passport-Crop Investigation" },
+      "Owner's 94 measured photos already favor factor 1.15 for YuNet gating; keep the production factor.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: narrower, type: "Note",
+      title: "FS Fotovalidering — Automatic Passport-Crop Investigation", score: 100,
+      confidence: 100, confidenceQualified: true }]);
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`COMPETING OWNER ${narrower}`);
+      return { object: { safe: false } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+  });
+
+  it("checks an omitted sibling project note for a paraphrased duplicate", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const searchHit = "/projects/unrelated-project.md";
+    const competing = "/projects/fs-fotovalidering/owner-framing-review.md";
+    const fact = "FS Fotovalidering 15 Oct 2026: YuNet factor 1.15 is best for 94 owner-labelled photos; keep the production setting.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering tracks an Excel-first baseline.", "seed");
+    await kb.writeConcept(searchHit, { type: "Project", title: "Unrelated Project" },
+      "Old YuNet experiments.", "seed");
+    await kb.writeConcept(competing, { type: "Note", title: "Owner Framing Review" },
+      "For the 94 manually scored images, gate scaling of 1.15 had the best agreement; do not change the live factor.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: searchHit, type: "Project",
+      title: "Unrelated Project", score: 100, confidence: 100, confidenceQualified: true }]);
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`COMPETING OWNER ${competing}`);
+      expect(request.prompt).toContain("gate scaling of 1.15");
+      return { object: { safe: false } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+  });
+
+  it("rejects a named project add duplicated in an omitted project continuation", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const competing = "/projects/fs-fotovalidering-continuation-12345678abcdef90.md";
+    const fact = "FS Fotovalidering 15 Oct 2026: YuNet factor 1.15 is best for 94 owner-labelled photos.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering tracks an Excel-first baseline.", "seed");
+    await kb.writeConcept(competing, { type: "Project Continuation", title: "FS Fotovalidering — Continuation" },
+      fact, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project",
+      title: "FS Fotovalidering — Phase 1 PoC", score: 100, confidence: 100,
+      confidenceQualified: true }]);
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+  });
+
   it("creates a named Pi CLI gotcha instead of writing to an unrelated project continuation", async () => {
     staged();
     const unrelated = "/projects/fs-fotovalidering-continuation-abcdef1234567890.md";

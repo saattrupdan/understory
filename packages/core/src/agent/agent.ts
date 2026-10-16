@@ -1146,6 +1146,27 @@ async function runStagedMutation(
     // that a hyphenated word is an application (e.g. "Rate-limit policy").
     // Classification locates a candidate; the full independent owner check
     // below still controls any creation or write.
+    // An explicitly leading project name can locate its existing canonical
+    // owner even when a narrower but differently named note ranks first.
+    // This is a locator only; the complete owner and other search hits still
+    // go through the independent consistency and CAS checks below.
+    const projectSubject = !options.ownerHint && options.directAdd && options.preflightInput
+      ? raw.trim().match(/^([A-Z]{2,})\s+([A-Z][a-z]{3,})\b/) : null;
+    const leadingProjectPath = projectSubject
+      ? `/projects/${projectSubject[1].toLowerCase()}-${projectSubject[2].toLowerCase()}.md` : undefined;
+    const leadingProject = leadingProjectPath && await kb.bundle.exists(leadingProjectPath)
+      ? await kb.readConcept(leadingProjectPath) : undefined;
+    if (leadingProject) {
+      recorder.record("read_concept", leadingProject.path, [leadingProject.path]);
+      state.checkCancellation();
+      if (leadingProject.frontmatter.type !== "Project" ||
+          !leadingProject.frontmatter.title?.toLowerCase().startsWith(`${projectSubject![1]} ${projectSubject![2]}`.toLowerCase())) {
+        throw new Error("Staged mutation deferred: leading project name does not match its owner.");
+      }
+      if (leadingProject.body.length > STAGED_MAX_OWNER_CHARS) {
+        throw new Error("Staged mutation deferred: leading project owner exceeds evidence limit.");
+      }
+    }
     const leadingTool = !options.ownerHint && options.directAdd && options.preflightInput &&
       raw.trim().match(/^Pi\s+([a-z][a-z0-9-]{2,})\s+(?:skill|CLI)\s+gotcha\b/i)?.[1].toLowerCase();
     const leadingPullRequest = !options.ownerHint && options.directAdd && options.preflightInput &&
@@ -1222,7 +1243,32 @@ async function runStagedMutation(
       : leadingTool ? `/tools/${leadingTool}.md` : undefined;
     const existingNamedPath = canonicalPath && await kb.bundle.exists(canonicalPath)
       ? canonicalPath : namedOwnerHits.length === 1 ? namedOwnerHits[0].path : undefined;
-    const requestedPath = options.ownerHint ?? existingNamedPath ?? canonicalPath;
+    const requestedPath = options.ownerHint ?? existingNamedPath ?? leadingProject?.path ?? canonicalPath;
+    if (leadingProject) {
+      // Search ranking can omit an earlier fact in a sibling note or deterministic
+      // continuation. Enumerate every same-project path, including notes outside
+      // the first five hits; the direct-add loop reads each full competing body.
+      const projectRoot = leadingProject.path.replace(/\.md$/, "");
+      const projectPeers = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
+        candidate !== leadingProject.path &&
+        (candidate.startsWith(`${projectRoot}/`) || candidate.startsWith(`${projectRoot}-`)));
+      state.checkCancellation();
+      if (projectPeers.length > 12) {
+        throw new Error("Staged mutation deferred: too many same-project owners to check completely.");
+      }
+      for (const peerPath of projectPeers) {
+        if (namedOwnerHits.some((hit) => hit.path === peerPath)) continue;
+        const peer = await kb.readConcept(peerPath);
+        recorder.record("read_concept", peer.path, [peer.path]);
+        state.checkCancellation();
+        if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: competing project owner exceeds evidence limit.");
+        }
+        namedOwnerHits.push({ path: peer.path, type: peer.frontmatter.type,
+          title: peer.frontmatter.title, description: peer.frontmatter.description,
+          score: 0, confidenceQualified: false });
+      }
+    }
     const missingDirectPath = !!(options.directAdd && options.preflightInput && requestedPath &&
       !(await kb.bundle.exists(requestedPath)));
     if (missingDirectPath && namedOwnerHits.length) {
