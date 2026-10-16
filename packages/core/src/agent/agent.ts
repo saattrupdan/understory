@@ -1172,12 +1172,17 @@ async function runStagedMutation(
     // exact old-state marker and require the same named PR in ONE full-body
     // paragraph; this is candidate selection, never write authorization.
     let prReviewOwnerPath: string | undefined;
-    const requestedReview = !options.directAdd && options.preflightInput && !options.ownerHint &&
+    const finalPrStatus = !options.directAdd && options.preflightInput && !options.ownerHint &&
+      /\bapproved\b/i.test(raw) && /\bsquash-merged\b/i.test(raw) &&
+      /\breplace any prior status\b/i.test(raw)
+      ? raw.trim().match(/^([\p{L}\p{N}./_-]+)\s+PR\s*#(\d+)\s+final\s+status\s*:/iu) : null;
+    const requestedReview = finalPrStatus ?? (!options.directAdd && options.preflightInput && !options.ownerHint &&
       /\bCHANGES_REQUESTED\b/.test(raw) && /\bAPPROVED\b/.test(raw)
-      ? raw.trim().match(/^update\s+(?:the\s+)?([\p{L}\p{N}./_-]+)\s+PR\s*#(\d+)\s+status\s*:/iu) : null;
+      ? raw.trim().match(/^update\s+(?:the\s+)?([\p{L}\p{N}./_-]+)\s+PR\s*#(\d+)\s+status\s*:/iu) : null);
     if (requestedReview) {
-      const reviewHits = await kb.search("CHANGES_REQUESTED", { limit: 200 });
-      recorder.record("search_knowledge", "CHANGES_REQUESTED", reviewHits.map((hit) => hit.path));
+      const reviewQuery = finalPrStatus ? `PR #${requestedReview[2]}` : "CHANGES_REQUESTED";
+      const reviewHits = await kb.search(reviewQuery, { limit: 200 });
+      recorder.record("search_knowledge", reviewQuery, reviewHits.map((hit) => hit.path));
       state.checkCancellation();
       if (reviewHits.length >= 200) throw new Error("Staged mutation deferred: PR review owner search exceeds limit.");
       const owners: string[] = [];
@@ -1193,11 +1198,18 @@ async function runStagedMutation(
           paragraph.toLowerCase().includes(requestedReview[1].toLowerCase()) &&
           prNumber.test(paragraph) &&
           paragraph.split(/(?<=[.!?])\s+/).some((sentence) =>
-            /\bCHANGES_REQUESTED\b/.test(sentence) && /\breview\b/i.test(sentence) &&
-            /\b(?:remains?|still|pending|active|not)\b/i.test(sentence) &&
-            !/\b(?:superseded|already approved)\b/i.test(sentence)))) owners.push(hit.path);
+            (finalPrStatus
+              ? /\b(?:CHANGES_REQUESTED|changes requested|open)\b/i.test(sentence) &&
+                /\b(?:review|PR|pull request)\b/i.test(sentence) &&
+                /\b(?:remains?|still|pending|active|open)\b/i.test(sentence)
+              : /\bCHANGES_REQUESTED\b/.test(sentence) && /\breview\b/i.test(sentence) &&
+                /\b(?:remains?|still|pending|active|not)\b/i.test(sentence)) &&
+            !/\b(?:superseded|already approved|squash-merged)\b/i.test(sentence)))) owners.push(hit.path);
       }
       if (owners.length > 1) throw new Error(`Staged mutation deferred: PR review status has multiple active owners (${owners.join(", ")}).`);
+      if (finalPrStatus && owners.length === 0) {
+        throw new Error("Staged mutation deferred: final PR status has no observed active review owner.");
+      }
       prReviewOwnerPath = owners[0];
       if (prReviewOwnerPath && !hits.some((hit) => hit.path === prReviewOwnerPath)) {
         const owner = await kb.readConcept(prReviewOwnerPath);
