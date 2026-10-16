@@ -3970,8 +3970,14 @@ describe("mutation owner preflight", () => {
       "Replace obsolete guidance that `make deploy` is authoritative or must run before deleting a branch. The Vite build generates dist/atom.xml and dist/sitemap.xml via src/build/feeds.ts, independent of the legacy local Python feed target. " +
       "On 2026-10-14 the `deploy` target was removed from makefile and AGENTS.md updated locally (not yet committed/pushed in that session); push to main is the intended deployment mechanism. " +
       "Retain note that Vercel CLI `vercel --prod` returns Not authorized even though whoami and project inspection work.";
+    const related = "/projects/saattrupdan-com.md";
     await kb.writeConcept(owner, { type: "Repository", title: "saattrupdan.com" }, `Historical notes.\n\n${oldPolicy}${cliHistory}`, "seed");
-    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+    await kb.writeConcept(related, { type: "Project", title: "saattrupdan.com deployment" },
+      "The project records a Git-connected Vercel deployment.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([related, owner].map((conceptPath, i) => ({
+      path: conceptPath, type: i ? "Repository" : "Project", title: i ? "saattrupdan.com" : "saattrupdan.com deployment", score: 100 - i,
+    })));
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: related,
       old_text: "**`make deploy`** is the authoritative deployment command for saattrupdan.com.",
       new_text: "Push to main is the intended deployment mechanism." } })
       .mockResolvedValueOnce({ object: { safe: true } });
@@ -3986,6 +3992,7 @@ describe("mutation owner preflight", () => {
     expect(body).toContain("dist/atom.xml");
     expect(body).toContain("dist/sitemap.xml");
     expect(body).toContain("not yet committed or pushed in that session");
+    expect((await kb.readConcept(related)).body).toContain("Git-connected Vercel deployment");
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 

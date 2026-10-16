@@ -2252,7 +2252,7 @@ async function runStagedMutation(
       state.checkCancellation();
       await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
     } else if (p.action === "replace") {
-      const target = candidates.find((c) => c.path === p.path);
+      let target = candidates.find((c) => c.path === p.path);
       // The obsolete deployment policy spans paragraphs. A follow-up would
       // leave its false current instructions active. Replace only that exact
       // section, while keeping the separate dated CLI observation intact.
@@ -2260,13 +2260,18 @@ async function runStagedMutation(
         /replace obsolete guidance that `make deploy` is authoritative/i.test(raw) &&
         /push to main is the intended deployment mechanism/i.test(raw) &&
         /retain note that vercel cli `vercel --prod` returns not authorized/i.test(raw);
-      if (/^update the saattrupdan\.com deployment workflow knowledge:/i.test(raw.trim())) {
-        console.warn("[understory] deployment correction route", {
-          deploymentRequest, selectedOwner: target?.path ?? "none",
-          policyHeadings: target?.body.match(/^#{1,6}\s+Deployment Policy\s*$/gim)?.length ?? 0,
-          deploymentHeadings: target?.body.match(/^#{1,6}[^\n]*deploy[^\n]*$/gim)?.map((heading) => heading.slice(0, 100)) ?? [],
-          obsoletePolicy: !!target?.body.includes("is the authoritative deployment command"),
-        });
+      // The proposer can choose a related project note instead of the repo
+      // containing the policy. The repo must be a search hit and its exact old
+      // policy must independently pass the ownership checks below.
+      if (deploymentRequest && target?.path !== "/repos/saattrupdan-com.md" &&
+          hits.some((hit) => hit.path === "/repos/saattrupdan-com.md")) {
+        const repo = await kb.readConcept("/repos/saattrupdan-com.md");
+        recorder.record("read_concept", repo.path, [repo.path]);
+        state.checkCancellation();
+        if (repo.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: deployment policy owner exceeds evidence limit.");
+        }
+        target = { path: repo.path, frontmatter: repo.frontmatter, body: repo.body };
       }
       if (deploymentRequest && target?.path === "/repos/saattrupdan-com.md") {
         const headings = [...target.body.matchAll(/^#{1,6}\s+Deployment Policy\s*$/gim)];
