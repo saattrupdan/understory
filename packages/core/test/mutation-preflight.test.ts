@@ -2153,6 +2153,27 @@ describe("mutation owner preflight", () => {
       expect((await kb.readConcept(owner)).body).toBe(`${ownerBody}\n`);
     });
 
+  it("does not accept a hash-only replacement for a requested current-cell clearing", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const oldHash = "e27ae2eaab586175e6952d2411a39904a24817dd57f509cb36925dc43e57c7b3";
+    const newHash = "c18af64b9a88cd7ce06f5679d0d3709c6d1fa8b099cd1fb9159349ce70077421";
+    const oldSentence = `Workbook SHA old f253 → new ${oldHash}.`;
+    const body = `FS Fotovalidering godkendt_id2: original \`Godkendt!C2=x\` remains. ${oldSentence}`;
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering" }, body, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: owner, type: "Project", title: "FS Fotovalidering", score: 10, confidenceQualified: false,
+    }]);
+    const instruction = `Correct FS Fotovalidering: final SHA is ${newHash}, not ${oldHash}. In the current workbook, \`Godkendt!C2\` approval tick was cleared to blank; the backup retains C2=x.`;
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldSentence, new_text: oldSentence.replace(oldHash, newHash) } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction })).toMatchObject({
+      ok: false, status: "failed", error: "Staged mutation deferred: replacement omits requested current-cell clearing.",
+    });
+    expect((await kb.readConcept(owner)).body).toContain(body);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
   it.each([3, 4])("re-reads and accepts the selected metadata hit at rank %s", async (rank) => {
     staged();
     const paths = Array.from({ length: 5 }, (_, i) => `/projects/candidate-${i + 1}.md`);

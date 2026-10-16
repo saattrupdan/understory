@@ -2754,6 +2754,19 @@ async function runStagedMutation(
         throw new Error("Staged mutation rejected: an added negation was not requested.");
       }
       const replacement = target.body.replace(p.old_text, newText);
+      // An old workbook tick may still be mentioned as historical provenance.
+      // A hash-only edit must not count as completing an explicit request to
+      // clear that tick in the current workbook.
+      const clearedCells = !options.directAdd && correction
+        ? [...raw.matchAll(/`([^`\n]{2,80}![A-Z]{1,3}\d+)`[^.!?;\n]{0,120}\b(?:was|is)\s+cleared\s+to\s+blank/gi)]
+          .map((match) => match[1]) : [];
+      if (clearedCells.some((cell) => {
+        const escaped = cell.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return !new RegExp(`\\bcurrent\\b[^.!?;]{0,160}${escaped}[^.!?;]{0,120}\\bcleared\\s+to\\s+blank\\b`, "i")
+          .test(newText);
+      })) {
+        throw new Error("Staged mutation deferred: replacement omits requested current-cell clearing.");
+      }
       if (!options.directAdd && correction && stagedRequiredCorrectionAnchors(raw).some((anchor) =>
         !replacement.toLowerCase().replace(/\s+/g, " ").includes(anchor))) {
         throw new Error("Staged mutation deferred: replacement omits requested correction identifiers.");
