@@ -2570,17 +2570,19 @@ async function runStagedMutation(
           /docker-compose-local\.yaml[^.!?]{0,100}(?:maps?\b|0\.0\.0\.0)/i.test(addition);
         const staleTikaDeadline = /asyncio\.wait[\s\S]{0,300}\b30s deadline/i.test(target.body) &&
           /(?:Tika|CV pars(?:er|ing))[^.!?]{0,180}\b(?:still has no|has no|without a?) (?:true )?hard timeout/i.test(addition);
+        const copiedInstructionCommands = /(?:^|[.!?]\s+)(?:Update|Correct|Preserve|Do not|Record|Remove)\b/i.test(addition.trim());
         console.warn("[understory] correction follow-up proposal verdict", {
           owner: target.path, qualifiable, certain, additionLength: addition.length,
           copiedInstruction: !!addition && raw.includes(addition.trim()),
+          copiedInstructionCommands,
           missingAnchors: missingAnchors(addition).length,
           missingDecision: missingDecision(addition),
           staleLocalPort, staleTikaDeadline,
           lexicalSupport: addition ? stagedOverlap(addition, `${raw} ${target.body}`) : 0,
         });
         if (qualifiable && certain && !missingAnchors(addition).length && !missingDecision(addition) &&
-            !staleLocalPort && !staleTikaDeadline &&
-            !raw.includes(addition.trim()) && addition.length >= 30 && addition.length <= 2_000 &&
+            !staleLocalPort && !staleTikaDeadline && !copiedInstructionCommands &&
+            addition.length >= 30 && addition.length <= 2_000 &&
             !/\n\s*\n/.test(addition) && !target.body.includes(addition.trim()) &&
             stagedOverlap(addition, `${raw} ${target.body}`) >= 0.8) {
           const judgement = await generateObject({

@@ -3062,12 +3062,13 @@ describe("mutation owner preflight", () => {
       "Successful cover letters were not fully logged: only malformed output in HTTP 422 was sanitised. " +
       "The later Tika 30s deadline and production Selenium port 4444 host-mapping fix close those older findings.";
     await kb.writeConcept(owner, { type: "Application", title: "Job-bot" }, `${oldParagraph}\n\n${later}`, "seed");
+    const instructionWithFacts = `${instruction} Verified current summary: ${addition}`;
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
       old_text: oldParagraph, new_text: "Job-bot security findings are closed." } })
       .mockResolvedValueOnce({ object: { new_text: oldParagraph } })
       .mockResolvedValueOnce({ object: { qualifiable: true, certain: true, addition } })
       .mockResolvedValueOnce({ object: { safe: true, reason: "Old audit remains historical; later fixes remain current." } });
-    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    const result = await runMutation(kb, instructionWithFacts, { preflightInput: instructionWithFacts });
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
     expect((await kb.readConcept(owner)).body).toBe(`${oldParagraph}\n\n${later}\n\n${addition}\n`);
     expect(generateObjectMock).toHaveBeenCalledTimes(4);
