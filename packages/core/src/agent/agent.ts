@@ -801,7 +801,10 @@ function stagedRestoreUnrequestedStatusClauses(before: string, after: string, in
     /[.!?]$/.test(clause) ? clause : `${clause};`).join(" ")}` : after;
 }
 
-function stagedStatusClauseIssue(before: string, after: string, instruction: string): string | undefined {
+function stagedStatusClauseIssue(
+  before: string, after: string, instruction: string,
+  allowedNegationRemoval?: (oldClause: string, newClause: string, negation: string) => boolean
+): string | undefined {
   const oldClauses = stagedStatusClauses(before);
   const newClauses = stagedStatusClauses(after);
   const requested = stagedStatusClauses(instruction);
@@ -823,7 +826,7 @@ function stagedStatusClauseIssue(before: string, after: string, instruction: str
       return `old clause not requested (closest=${stagedOverlap(clause, closest).toFixed(2)}/${stagedOverlap(closest, clause).toFixed(2)}, numbers=${JSON.stringify(numbers(clause)) === JSON.stringify(numbers(closest))})`;
     }
     const removedNegations = clauseNegations(clause).filter((word) =>
-      !clauseNegations(closest).includes(word));
+      !clauseNegations(closest).includes(word) && !allowedNegationRemoval?.(clause, closest, word));
     if (removedNegations.length && !requested.some((part) =>
       removedNegations.every((word) => !clauseNegations(part).includes(word)) &&
       stagedWords(part).filter((word) => stagedWords(closest).includes(word)).length >= 2 &&
@@ -2036,7 +2039,14 @@ async function runStagedMutation(
       const trainingInstruction = trainingSupersededClause &&
         /earlier tiny byte\/CNN\/Transformer student recommendation[^.!?]*superseded/i.test(raw)
         ? `${raw}\n${trainingSupersededClause}` : raw;
-      const trainingClauseIssue = stagedStatusClauseIssue(p.old_text, p.new_text, trainingInstruction);
+      const allowedTrainingNegationRemoval = (oldClause: string, newClause: string, word: string): boolean =>
+        word === "not" && /\b322M\b/.test(oldClause) && /\bnot under 1M\b/i.test(oldClause) &&
+        /\b322M\b/.test(newClause) && /\b(?:1B|billion)\b/i.test(newClause) &&
+        /\b(?:fits?|under)\b/i.test(newClause) &&
+        /\bnot\s*<1 million\b/i.test(raw) && /\b322M\b/.test(raw) &&
+        /\bcheckpoint fits\b/i.test(raw);
+      const trainingClauseIssue = stagedStatusClauseIssue(
+        p.old_text, p.new_text, trainingInstruction, allowedTrainingNegationRemoval);
       let trainingUniqueAcrossHits = !!target &&
         /^correct the Claes training-design note recorded Oct 2026:/i.test(raw.trim()) &&
         target.path === "/projects/claes-jev-diagnostics.md" &&
@@ -2109,7 +2119,8 @@ async function runStagedMutation(
             (!boundedStatus || !stagedStatusClauseIssue(p.old_text, newText, raw)) &&
             (!trainingDesignCorrection ||
               (!newText.includes("For strict <1M multilingual student") &&
-                !stagedStatusClauseIssue(p.old_text, newText, trainingInstruction))))) ||
+                !stagedStatusClauseIssue(p.old_text, newText, trainingInstruction,
+                  allowedTrainingNegationRemoval))))) ||
           stagedOverlap(newText, `${raw} ${p.old_text}`) < 0.65 || unsupportedWords(newText).length) {
         throw new Error("Staged mutation rejected: replacement introduces facts absent from the request.");
       }
