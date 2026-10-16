@@ -623,6 +623,66 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(misleading)).body).not.toContain(fact);
   });
 
+  it("routes the exact Pi dotfiles extensions heading to its positively anchored repository", async () => {
+    staged();
+    const owner = "/repos/dotfiles.md";
+    const misleading = "/repos/pi-agent/overview.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "Dotfiles Repository" },
+      "The repository owns agentic/pi/extensions/ and their tests.", "seed");
+    await kb.writeConcept(misleading, { type: "Repository", title: "Pi Agent Overview" },
+      "Pi agent overview and runtime notes.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: misleading, type: "Repository",
+      title: "Pi Agent Overview", score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "Pi dotfiles extensions tests: agentic/pi/extensions/ serializes interactive prompts.";
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("agentic/pi/extensions/");
+      expect(prompt).toContain("Pi agent overview and runtime notes.");
+      return { object: { safe: true, reason: "Supported and consistent." } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(misleading)).body).not.toContain(fact);
+  });
+
+  it.each([
+    { type: "Repository", title: "Dotfiles Archive", body: "The repository owns agentic/pi/extensions/." },
+    { type: "Project", title: "Dotfiles Repository", body: "The repository owns agentic/pi/extensions/." },
+    { type: "Repository", title: "Dotfiles Repository", body: "The repository owns agentic/pi/themes/." },
+  ])("does not locate dotfiles from noncanonical metadata or source path ($type, $title)", async ({ type, title, body }) => {
+    staged();
+    const owner = "/repos/dotfiles.md";
+    await kb.writeConcept(owner, { type, title }, body, "seed");
+    const fact = "Pi dotfiles extensions tests: agentic/pi/extensions/ serializes interactive prompts.";
+    vi.spyOn(kb, "search").mockResolvedValue([]);
+    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: false } })
+      .mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+  });
+
+  it("blocks the canonical dotfiles append when a ranked specialized owner conflicts", async () => {
+    staged();
+    const owner = "/repos/dotfiles.md";
+    const competitor = "/extensions/pi-interactive-queue.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "Dotfiles Repository" },
+      "The repository owns agentic/pi/extensions/ and their tests.", "seed");
+    await kb.writeConcept(competitor, { type: "Extension", title: "Pi Interactive Queue" },
+      "The Pi dotfiles extensions tests claim conflicts: prompts are not serialized.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: competitor, type: "Extension",
+      title: "Pi Interactive Queue", score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "Pi dotfiles extensions tests: agentic/pi/extensions/ serializes interactive prompts.";
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("COMPETING OWNER");
+      expect(prompt).toContain("prompts are not serialized");
+      return { object: { safe: false, reason: "The specialized owner conflicts." } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+  });
+
   it("blocks a canonical repository append when a ranked owner conflicts", async () => {
     staged();
     const owner = "/repos/job-bot.md";

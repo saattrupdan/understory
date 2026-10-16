@@ -1227,8 +1227,10 @@ async function runStagedMutation(
     // matching Repository title; a hyphenated feature/policy label alone is
     // never enough to route a fact.
     let namedApplication: string | undefined;
+    const dotfilesExtensionsTests = !options.ownerHint && options.directAdd && options.preflightInput &&
+      /^Pi dotfiles extensions tests:/i.test(raw.trim()) && /(?:^|\s|`)agentic\/pi\/extensions\//i.test(raw);
     const leadingRepoName = !options.ownerHint && options.directAdd && options.preflightInput
-      ? raw.trim().match(/^([A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)\b/)?.[1]
+      ? (dotfilesExtensionsTests ? "dotfiles" : raw.trim().match(/^([A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)\b/)?.[1])
       : undefined;
     const canonicalRepoPath = leadingRepoName
       ? `/repos/${leadingRepoName.toLowerCase()}.md`
@@ -1243,8 +1245,11 @@ async function runStagedMutation(
       const normalizeIdentity = (value: string) => value.toLowerCase().replace(/[-_\s]+/g, " ").trim();
       const normalizedRepoName = normalizeIdentity(leadingRepoName!);
       const normalizedRepoTitle = normalizeIdentity(canonicalRepo.frontmatter.title ?? "");
+      const ownsDotfilesExtensions = !dotfilesExtensionsTests ||
+        /(?:^|[\s`])agentic\/pi\/extensions\/(?:[\s`.,;:]|$)/m.test(canonicalRepo.body);
       if (canonicalRepo.frontmatter.type === "Repository" &&
-          (normalizedRepoTitle === normalizedRepoName || normalizedRepoTitle === `${normalizedRepoName} repository`)) {
+          (normalizedRepoTitle === normalizedRepoName || normalizedRepoTitle === `${normalizedRepoName} repository`) &&
+          ownsDotfilesExtensions) {
         if (canonicalRepo.body.length > STAGED_MAX_OWNER_CHARS) {
           throw new Error("Staged mutation deferred: named repository owner exceeds evidence limit.");
         }
