@@ -2273,10 +2273,10 @@ describe("mutation owner preflight", () => {
     const stale = "The cover letter uses the legacy JSON schema.";
     const paragraph = `${stale} The applicant's research experience remains relevant.`;
     const retained = "The resume uses the legacy JSON schema.";
-    const instruction = `Correct the cover letter schema in \`${owner}\`: replace the legacy JSON schema with the current YAML schema. Preserve the research experience.`;
+    const instruction = `Correct the cover letter schema in \`${owner}\`: replace the legacy JSON schema with the current YAML schema. Preserve the research experience and the resume's legacy JSON schema.`;
     await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, `${paragraph}\n\n${retained}`, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: {
-      action: "replace", path: owner, old_text: stale,
+      action: "replace", path: owner, old_text: "legacy JSON schema",
       new_text: "The cover letter uses the current YAML schema.",
     } }).mockResolvedValueOnce({ object: {
       old_text: paragraph,
@@ -2300,7 +2300,7 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, body, "seed");
     const patchSpy = vi.spyOn(kb, "patchConcept");
     generateObjectMock.mockResolvedValueOnce({ object: {
-      action: "replace", path: owner, old_text: stale,
+      action: "replace", path: owner, old_text: "legacy JSON schema",
       new_text: "The cover letter uses the current YAML schema.",
     } }).mockResolvedValueOnce({ object: { old_text: "", new_text: "" } });
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
@@ -2315,10 +2315,10 @@ describe("mutation owner preflight", () => {
     const owner = "/projects/cover-letter.md";
     const stale = "The cover letter uses the legacy JSON schema.";
     const paragraph = `${stale} The applicant's research experience remains relevant.`;
-    const instruction = `Correct the cover letter schema in \`${owner}\`: replace the legacy JSON schema with the current YAML schema.`;
-    await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, `${paragraph}\n\nUnrelated note.`, "seed");
+    const instruction = `Correct the cover letter schema in \`${owner}\`: replace the legacy JSON schema with the current YAML schema. Preserve the resume's legacy JSON schema.`;
+    await kb.writeConcept(owner, { type: "Project", title: "Cover Letter" }, `${paragraph}\n\nThe resume uses the legacy JSON schema. Unrelated note.`, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: {
-      action: "replace", path: owner, old_text: stale,
+      action: "replace", path: owner, old_text: "legacy JSON schema",
       new_text: "The cover letter uses the current YAML schema.",
     } }).mockResolvedValueOnce({ object: {
       old_text: paragraph,
