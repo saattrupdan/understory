@@ -21,6 +21,7 @@ vi.mock("../src/providers/index.js", async () => ({
 }));
 
 import { runMutation } from "../src/agent/agent.js";
+import { createModel } from "../src/providers/index.js";
 import { KnowledgeBase } from "../src/okf/index.js";
 
 let root: string;
@@ -77,6 +78,23 @@ describe("mutation owner preflight", () => {
     path: "/apis/billing-api.md", old_text: "", new_text: "", body: "",
     frontmatter: { type: "", title: "", description: "" }, claim: "", reason: "",
   };
+
+  it("disables reasoning for independent staged checks even when deep mutations enable it", async () => {
+    staged();
+    vi.stubEnv("MUTATION_ENABLE_THINKING", "true");
+    vi.mocked(createModel).mockClear();
+    const owner = "/projects/owner.md";
+    const paragraph = "This complete owner paragraph has a distinctive beginning and a distinctive ending.";
+    await kb.writeConcept(owner, { type: "Project", title: "Owner" }, `Before.\n\n${paragraph}\n\nAfter.`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    const result = await runMutation(kb,
+      `In \`${owner}\`, remove ONLY the exact paragraph beginning \`This complete owner paragraph\` and ending \`a distinctive ending.\`.`);
+    expect(result.ok).toBe(true);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+    expect(vi.mocked(createModel).mock.calls[0]?.[0].extraBody).toMatchObject({
+      chat_template_kwargs: { enable_thinking: false },
+    });
+  });
 
   it("retracts only one exact, complete paragraph from the explicitly named owner", async () => {
     staged();

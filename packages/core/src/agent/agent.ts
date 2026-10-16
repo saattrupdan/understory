@@ -976,6 +976,10 @@ async function runStagedMutation(
 ): Promise<MutationOutcome> {
   const started = Date.now();
   const providerCalls: NonNullable<TraceTiming["providerCalls"]> = [];
+  // Bounded staged JSON checks do not need open-ended reasoning.
+  // Keep the safety checks as independent calls, but prevent a thinking model
+  // from spending minutes before sending response headers.
+  const stagedEnv = { ...process.env, MUTATION_ENABLE_THINKING: "false" };
   let modelChain: string[] = [];
   let changed: string[] = [];
   try {
@@ -1011,7 +1015,7 @@ async function runStagedMutation(
           !target.body.replaceAll("`", "").includes(anchored.beginning) && !target.body.includes(anchored.ending)) {
         // A later exact retraction may already have removed a historical
         // request. Markdown code ticks must not conceal a still-present start.
-        const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+        const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
         modelChain = resolved.modelChain;
         const judgement = await generateObject({
           model: resolved.model,
@@ -1035,7 +1039,7 @@ async function runStagedMutation(
       if (anchored) {
         // The caller supplied only endpoints: check the actual intervening
         // content before deleting it. Exact full-paragraph retractions need no model.
-        const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+        const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
         modelChain = resolved.modelChain;
         const judgement = await generateObject({
           model: resolved.model,
@@ -1262,7 +1266,7 @@ async function runStagedMutation(
       }
     }
     if (!namedApplication && possibleRepository && (leadingPullRequest || /\bon main at [0-9a-f]{7,40}\b/i.test(raw.slice(0, 250)))) {
-      const classifier = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+      const classifier = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = classifier.modelChain;
       const judgement = await generateObject({
         model: classifier.model,
@@ -1425,7 +1429,7 @@ async function runStagedMutation(
       // each one separately rather than omitting competitors or truncating a body.
       const batches = evidenceText.length + raw.length <= STAGED_MAX_EVIDENCE_CHARS
         ? [evidence] : evidence.map((candidate) => [candidate]);
-      const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+      const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
       for (const batch of batches) {
         const fullEvidence = JSON.stringify(batch);
@@ -1506,7 +1510,7 @@ async function runStagedMutation(
       throw new Error("Staged mutation deferred: candidate body exceeds evidence limit.");
     }
     state.checkCancellation();
-    const resolved = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
+    const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
     modelChain = resolved.modelChain;
     if (evidence.length + raw.length > selectionBudget) {
       if (raw.length > 8_000) throw new Error("Staged mutation deferred: instruction exceeds selector budget.");
