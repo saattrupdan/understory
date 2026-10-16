@@ -2260,6 +2260,14 @@ async function runStagedMutation(
         /replace obsolete guidance that `make deploy` is authoritative/i.test(raw) &&
         /push to main is the intended deployment mechanism/i.test(raw) &&
         /retain note that vercel cli `vercel --prod` returns not authorized/i.test(raw);
+      if (/^update the saattrupdan\.com deployment workflow knowledge:/i.test(raw.trim())) {
+        console.warn("[understory] deployment correction route", {
+          deploymentRequest, selectedOwner: target?.path ?? "none",
+          policyHeadings: target?.body.match(/^#{1,6}\s+Deployment Policy\s*$/gim)?.length ?? 0,
+          deploymentHeadings: target?.body.match(/^#{1,6}[^\n]*deploy[^\n]*$/gim)?.map((heading) => heading.slice(0, 100)) ?? [],
+          obsoletePolicy: !!target?.body.includes("is the authoritative deployment command"),
+        });
+      }
       if (deploymentRequest && target?.path === "/repos/saattrupdan-com.md") {
         const headings = [...target.body.matchAll(/^#{1,6}\s+Deployment Policy\s*$/gim)];
         if (headings.length !== 1) throw new Error("Staged mutation deferred: deployment policy section is not unique.");
