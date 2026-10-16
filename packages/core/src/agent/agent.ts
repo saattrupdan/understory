@@ -2615,9 +2615,16 @@ async function runStagedMutation(
           boundedSpanCorrection = true;
         }
       }
+      const namedThroughputStatus = !options.directAdd &&
+        /^correct\s+(?:the\s+)?[A-Z][\p{L}\p{N}\s-]+?\s+throughput\s+status\s*:/iu.test(raw.trim());
       let statusUniqueAcrossHits = false;
       if (statusWords.length >= 2 && statusParagraph && p.old_text.length >= 200) {
-        statusUniqueAcrossHits = true;
+        const ownerIdentity = stagedWords(`${target?.frontmatter.title ?? ""} ${target?.path ?? ""}`);
+        // The first named project must identify the owner; the second subject
+        // must occur in its old claim. "Throughput" and a shared host alone
+        // cannot make a Qwen roadmap the owner of Claes Laya's run.
+        statusUniqueAcrossHits = !namedThroughputStatus ||
+          (!!target && ownerIdentity.includes(statusWords[0]) && oldStatusWords.has(statusWords[1]));
         for (const hit of hits) {
           if (hit.path === target?.path) continue;
           const competitor = await kb.readConcept(hit.path);
@@ -2627,6 +2634,17 @@ async function runStagedMutation(
             throw new Error("Staged mutation deferred: competing status owner exceeds evidence limit.");
           }
           if (competitor.body.includes(p.old_text)) statusUniqueAcrossHits = false;
+          else if (statusUniqueAcrossHits && namedThroughputStatus) {
+            const ownership = await generateObject({
+              model: resolved.model,
+              schema: z.object({ sameClaimOwner: z.boolean(), certain: z.boolean() }).strict(),
+              temperature: 0,
+              abortSignal: options.signal,
+              prompt: `Independent competing-owner check for a named throughput status correction. Does this COMPLETE competing concept assert the SAME CURRENT stale throughput/run-status claim as the proposed owner, including paraphrases? Shared host or project mentions alone do not establish ownership. If uncertain, certain=false. JSON only.\nINSTRUCTION:\n${raw}\nPROPOSED OWNER ${target?.path}, OLD STATUS:\n${p.old_text}\nCOMPETING OWNER ${competitor.path}:\n${competitor.body}`,
+            });
+            state.checkCancellation();
+            if (!ownership.object.certain || ownership.object.sameClaimOwner) statusUniqueAcrossHits = false;
+          }
         }
       }
       // A named run status can require several coordinated metric changes in

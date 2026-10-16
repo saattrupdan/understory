@@ -2323,6 +2323,129 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(competitor)).body).toContain("not a verified accuracy result");
   });
 
+  it("corrects a Claes Laya throughput status without changing Sparkie Qwen history", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const unrelated = "/notes/sparkie-qwen38-throughput-roadmap.md";
+    const history = "The Jev-only taxonomy sampler decision remains part of the project history.";
+    const old = "Claes Laya throughput status: High-concurrency live sweep WAS NOT run: the user deferred it until Sparkie's jobbot became idle. The 2–3 day million-sample estimate is unvalidated. " +
+      "The task-first benchmark uses a 1,000-name pool with about 38 decisions per assignment and routes to vllm-jev on port 31000. " + history;
+    const newStatus = old
+      .replace("High-concurrency live sweep WAS NOT run: the user deferred it until Sparkie's jobbot became idle.",
+        "High-concurrency live sweep was run once Sparkie's competing jobbot became idle on 13 Oct 2026.")
+      .replace("The 2–3 day million-sample estimate is unvalidated.",
+        "5.223/s projects to 2.22 days for 1M taxonomy assignments, excluding Luna question generation and Jev answering.") +
+      " 100 assignments per worker level at 1/2/4/8/16/32/64 yielded 0.529/1.374/2.478/3.426/4.459/5.029/5.069 assignments/s. " +
+      "A second sustained 300-assignment-per-level sweep at 32/48/64/96/128 workers measured 5.223/5.163/5.083/5.112/5.095 assignments/s. " +
+      "Throughput plateaus at ~32 workers; recommend --workers 32 on an idle Sparkie. " +
+      "All 2,200 benchmark assignments completed; router, Laya and jobbot health endpoints all returned HTTP 200 after the run. " +
+      "Reports: /tmp/claes-laya-sweep-20261013/throughput-5ce5dd84cd9d1cf50823d5762168e8ef7f12ed1cee3058a753810fd78760d15c-seed20261013-n100.json and /tmp/claes-laya-sustain-20261013/throughput-5ce5dd84cd9d1cf50823d5762168e8ef7f12ed1cee3058a753810fd78760d15c-seed20261014-n300.json. " +
+      "Existing docs/generation.md records results and recommended flag. No million-sample production run was started.";
+    const instruction = "Correct Claes Laya throughput status: the high-concurrency live sweep was run once Sparkie's competing jobbot became idle on 13 Oct 2026. Router port 31000, convaiinnovations/laya-multilingual vllm-jev, 1,000-name task pool, task-first 38-ish decisions/assignment, 100 assignments per worker level at 1/2/4/8/16/32/64 yielded 0.529/1.374/2.478/3.426/4.459/5.029/5.069 assignments/s. A second sustained 300-assignment-per-level sweep at 32/48/64/96/128 workers measured 5.223/5.163/5.083/5.112/5.095 assignments/s. Throughput plateaus at ~32 workers; recommend --workers 32 on an idle Sparkie. 5.223/s projects to 2.22 days for 1M taxonomy assignments, excluding Luna question generation and Jev answering. All 2,200 benchmark assignments completed; router, Laya and jobbot health endpoints all returned HTTP 200 after the run. Reports: /tmp/claes-laya-sweep-20261013/throughput-5ce5dd84cd9d1cf50823d5762168e8ef7f12ed1cee3058a753810fd78760d15c-seed20261013-n100.json and /tmp/claes-laya-sustain-20261013/throughput-5ce5dd84cd9d1cf50823d5762168e8ef7f12ed1cee3058a753810fd78760d15c-seed20261014-n300.json. Existing docs/generation.md records results and recommended flag. No million-sample production run was started.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" },
+      `Prior Claes history.\n\n${old}\n\nUnrelated experiments stay intact.`, "seed");
+    await kb.writeConcept(unrelated, { type: "Note", title: "Sparkie Qwen3.8 Throughput Roadmap" },
+      "Qwen3.8 throughput and PLE mmap synchronization on Sparkie remain a separate topic.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, unrelated].map((path, i) => ({
+      path, type: i ? "Note" : "Project", title: i ? "Sparkie Qwen3.8 Throughput Roadmap" : "Claes Jev Diagnostics",
+      score: 10 - i, confidenceQualified: false,
+    })));
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
+        ...baseProposal, action: "replace", path: owner, old_text: old, new_text: newStatus,
+      } };
+      if (prompt.includes("Independent competing-owner check for a named throughput status")) {
+        expect(prompt).toContain(`COMPETING OWNER ${unrelated}`);
+        expect(prompt).toContain("Qwen3.8 throughput");
+        return { object: { certain: true, sameClaimOwner: false } };
+      }
+      return { object: { safe: true, reason: "Full owner and competing topic checked." } };
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(newStatus);
+    expect(body).toContain(history);
+    expect(body).toContain("Prior Claes history.");
+    expect(body).toContain("Unrelated experiments stay intact.");
+    expect((await kb.readConcept(unrelated)).body).not.toContain("5.223/s");
+  });
+
+  it("does not replace a Claes throughput status duplicated in another owner", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const peer = "/projects/claes-laya-benchmark.md";
+    const old = "Claes Laya throughput status: High-concurrency live sweep WAS NOT run. " +
+      "The previous 2–3 day million-sample estimate has not been measured. " +
+      "The benchmark uses a 1,000-name task pool and the vllm-jev router. " +
+      "The pilot ran only serial assignments; later high-concurrency decisions remain untested.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, old, "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "Claes Laya Benchmark" }, old, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((path, i) => ({
+      path, type: "Project", title: i ? "Claes Laya Benchmark" : "Claes Jev Diagnostics", score: 10 - i,
+    })));
+    const instruction = "Correct Claes Laya throughput status: high-concurrency sweep was run on 13 Oct 2026; 32 workers measured 5.223 assignments/s.";
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: old, new_text: old.replace("WAS NOT run", "was run on 13 Oct 2026") +
+        " 32 workers measured 5.223 assignments/s." } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain("WAS NOT run");
+    expect((await kb.readConcept(peer)).body).toContain("WAS NOT run");
+  });
+
+  it("blocks a named throughput status when a peer paraphrases the same stale claim", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const peer = "/projects/claes-laya-benchmark.md";
+    const old = "Claes Laya throughput status: High-concurrency live sweep WAS NOT run. " +
+      "The planned benchmark uses a 1,000-name pool and vllm-jev on the idle Sparkie router. " +
+      "The earlier million-assignment duration was unvalidated, because concurrent levels had not been measured. " +
+      "The unrelated taxonomy schema is retained for the next experiment.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, old, "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "Claes Laya Benchmark" },
+      "The Laya concurrent worker run remains pending; throughput measurements at high concurrency are unavailable.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((path, i) => ({
+      path, type: "Project", title: i ? "Claes Laya Benchmark" : "Claes Jev Diagnostics", score: 10 - i,
+    })));
+    const instruction = "Correct Claes Laya throughput status: high-concurrency live sweep was run on 13 Oct 2026; 32 workers measured 5.223 assignments/s.";
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
+        ...baseProposal, action: "replace", path: owner, old_text: old,
+        new_text: old.replace("WAS NOT run", "was run on 13 Oct 2026") + " 32 workers measured 5.223 assignments/s.",
+      } };
+      if (prompt.includes("Independent competing-owner check for a named throughput status")) {
+        expect(prompt).toContain(`COMPETING OWNER ${peer}`);
+        return { object: { certain: true, sameClaimOwner: true } };
+      }
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain("WAS NOT run");
+    expect((await kb.readConcept(peer)).body).toContain("remains pending");
+  });
+
+  it("does not let a shared throughput word make Sparkie Qwen the Claes owner", async () => {
+    staged();
+    const wrong = "/notes/sparkie-qwen38-throughput-roadmap.md";
+    const old = "Claes Laya throughput status is mentioned as background. " +
+      "Sparkie Qwen3.8 single-stream throughput remains a separate roadmap. " +
+      "PLE mmap synchronisation and Qwen optimization are this note's own subject. " +
+      "The host also runs vllm-jev for an independent Laya experiment.";
+    await kb.writeConcept(wrong, { type: "Note", title: "Sparkie Qwen3.8 Throughput Roadmap" }, old, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: wrong, type: "Note",
+      title: "Sparkie Qwen3.8 Throughput Roadmap", score: 100 }]);
+    const instruction = "Correct Claes Laya throughput status: the live sweep was run on 13 Oct 2026 with 32 workers at 5.223 assignments/s.";
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: wrong,
+      old_text: old, new_text: old.replace("independent Laya experiment", "completed Laya experiment") +
+        " The live sweep was run on 13 Oct 2026 with 32 workers at 5.223 assignments/s." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(wrong)).body).toContain("separate roadmap");
+    expect((await kb.readConcept(wrong)).body).not.toContain("5.223");
+  });
+
   it("repairs a named run-status rewrite that drops unrelated history", async () => {
     staged();
     const owner = "/projects/claes-jev-diagnostics.md";
