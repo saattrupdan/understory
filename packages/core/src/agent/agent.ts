@@ -1026,6 +1026,67 @@ async function runStagedMutation(
         !/^\/[a-z0-9_/-]+\.md$/.test(options.ownerHint) || options.ownerHint.split("/").includes(".."))) {
       throw new Error("Staged mutation deferred: owner hint is not a bounded concept path.");
     }
+    // Correct a single current stale status sentence at an explicitly named
+    // existing owner. A host note can repeat a project's obsolete status;
+    // repairing that local assertion first avoids either erasing unrelated
+    // host history or bypassing the project's competing-owner check.
+    const namedLocalStatus = !options.directAdd && options.preflightInput
+      ? raw.match(/^In `(?<path>\/[a-z0-9_/-]+\.md)`, correct ONLY the obsolete current claim that the (?<subject>[\p{L}\p{N}\s-]{5,100}?) (?:is still deferred\/not run|is still deferred|was not run):/iu)
+      : null;
+    if (namedLocalStatus?.groups) {
+      const ownerPath = namedLocalStatus.groups.path;
+      if (options.ownerHint && options.ownerHint !== ownerPath) {
+        throw new Error("Staged mutation deferred: local status owner conflicts with hint.");
+      }
+      if (!(await kb.bundle.exists(ownerPath))) throw new Error("Staged mutation deferred: local status owner is missing.");
+      const target = await kb.readConcept(ownerPath);
+      recorder.record("read_concept", target.path, [target.path]);
+      state.checkCancellation();
+      if (target.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: local status owner exceeds evidence limit.");
+      const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
+      modelChain = resolved.modelChain;
+      const proposal = await generateObject({
+        model: resolved.model,
+        schema: z.object({ old_text: z.string(), new_text: z.string() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Select ONE complete, actively stale sentence in the named owner asserting the subject's current deferred/not-run status. Return its exact verbatim old_text and a corrected new_text of ONE sentence grounded only in the caller's update. Preserve any unrelated host, GPU or historical detail in the old sentence; if that cannot be done, return empty strings. A dated historical deferral is not a current status. Do not change any other owner or sentence. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}`,
+      });
+      state.checkCancellation();
+      const { old_text: oldText, new_text: newText } = proposal.object;
+      const subjectWords = stagedWords(namedLocalStatus.groups.subject);
+      const matches = target.body.split(/(?<=[.!?])\s+/).filter((sentence) => sentence === oldText);
+      const oldWords = new Set(stagedWords(oldText));
+      const requestedWords = new Set(stagedWords(raw));
+      if (oldText.length < 30 || oldText.length > 700 || newText.length < 30 || newText.length > 1000 ||
+          /\n\s*\n/.test(newText) || target.body.split(oldText).length !== 2 || matches.length !== 1 ||
+          subjectWords.length < 2 || subjectWords.slice(0, 2).some((word) => !oldWords.has(word)) ||
+          !/\b(?:deferred|not run|pending)\b/i.test(oldText) ||
+          !/\b(?:completed|ran|run)\b/i.test(newText) || !newText.includes("13 Oct 2026") ||
+          stagedOverlap(newText, `${raw} ${oldText}`) < 0.65 ||
+          stagedWords(newText).some((word) => !oldWords.has(word) && !requestedWords.has(word))) {
+        throw new Error("Staged mutation deferred: local status sentence is not uniquely supported.");
+      }
+      const judgement = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent full-owner local-status check. Is the exact OLD SENTENCE a CURRENT claim that the named subject's sweep has not run, rather than a historical planning step? Does NEW SENTENCE faithfully state the caller's completed run, preserve unrelated observations and historical dates, introduce no unsupported claims, and leave every other sentence unchanged? Reject if any part is uncertain. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nOLD SENTENCE:\n${oldText}\nNEW SENTENCE:\n${newText}`,
+      });
+      state.checkCancellation();
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: local status failed independent check.");
+      const current = await kb.readConcept(target.path);
+      if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+      await kb.patchConcept(target.path, { replaceBody: target.body.replace(oldText, newText) },
+        "Staged mutation: correct current local status", sha256(target.body), options.signal,
+        (writtenPath) => { changed = [writtenPath]; });
+      const summary = `Staged mutation changed ${changed.join(", ")}.`;
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain,
+        undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+    }
     if (raw.startsWith("Retract exact paragraph from ") || /^In `\/[a-z0-9_/-]+\.md`, remove ONLY the exact paragraph beginning /i.test(raw)) {
       const exact = parseExactParagraphRetraction(raw);
       const anchored = parseAnchoredParagraphRetraction(raw);

@@ -96,6 +96,39 @@ describe("mutation owner preflight", () => {
     });
   });
 
+  it("repairs only a current local sweep status in an explicitly named server", async () => {
+    staged();
+    const owner = "/servers/sparkie.md";
+    const stale = "Claes Laya high-concurrency throughput sweep is still deferred; Sparkie's competing jobbot previously used the GPU.";
+    const updated = "Claes Laya high-concurrency throughput sweep completed on 13 Oct 2026 after Sparkie's competing jobbot became idle; Sparkie's competing jobbot previously used the GPU.";
+    const instruction = `In \`${owner}\`, correct ONLY the obsolete current claim that the Claes Laya high-concurrency throughput sweep is still deferred/not run: the live sweep was completed on 13 Oct 2026 after Sparkie's competing jobbot became idle. Preserve the earlier deferral as dated historical planning if it appears, and preserve every unrelated Sparkie/Qwen/GPU/server assertion verbatim. Do not touch any other concept; if the server concept contains no such current claim, make no write.`;
+    await kb.writeConcept(owner, { type: "Server", title: "Sparkie" },
+      `Qwen3.8 mmap performance remains independent.\n\n${stale}\n\nThe earlier scheduling plan from 2 Oct is historical.`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { old_text: stale, new_text: updated } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(updated);
+    expect(body).not.toContain(stale);
+    expect(body).toContain("Qwen3.8 mmap performance remains independent.");
+    expect(body).toContain("The earlier scheduling plan from 2 Oct is historical.");
+  });
+
+  it("refuses to rewrite a historical local sweep plan as a current status", async () => {
+    staged();
+    const owner = "/servers/sparkie.md";
+    const historical = "Claes Laya high-concurrency throughput sweep was deferred on 2 Oct 2026 before the router became idle.";
+    const instruction = `In \`${owner}\`, correct ONLY the obsolete current claim that the Claes Laya high-concurrency throughput sweep is still deferred/not run: the live sweep was completed on 13 Oct 2026. Preserve historical planning.`;
+    await kb.writeConcept(owner, { type: "Server", title: "Sparkie" }, historical, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { old_text: historical,
+      new_text: "Claes Laya high-concurrency throughput sweep completed on 13 Oct 2026." } })
+      .mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain(historical);
+  });
+
   it("retracts only one exact, complete paragraph from the explicitly named owner", async () => {
     staged();
     const paragraph = "Claes Jev paragraph states one sentence. It contains a second exact sentence.";
