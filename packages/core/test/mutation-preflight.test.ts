@@ -2452,7 +2452,7 @@ describe("mutation owner preflight", () => {
       ? [{ path: owner, type: "Repository", title: "EuroEval review history", score: 9 }]
       : [{ path: person, type: "Person", title: "Dan Smart", score: 10 }]);
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
-      expect(prompt).toContain(`OLD SENTENCE:\n${oldReview}`);
+      expect(prompt).toContain(`OLD STATUS SPAN:\n${oldReview}`);
       expect(prompt).toContain(`NEW TEXT:\n${finalStatus}`);
       return { object: { safe: true } };
     });
@@ -2473,11 +2473,40 @@ describe("mutation owner preflight", () => {
       `EuroEval PR #2234: ${oldText}`, "seed");
     vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", score: 10 }]);
     const instruction = "EuroEval PR #2234 final status: Dan approved and squash-merged it as commit ac33731f88806b1a45593c83dbfd473f1cc877fa. Replace any prior status saying PR is open.";
-    expect(await runMutation(kb, instruction, { preflightInput: instruction })).toMatchObject({
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("MIXED SENTENCE:");
+      return { object: { old_text: oldText } };
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result, JSON.stringify(result)).toMatchObject({
       ok: false, status: "failed", error: expect.stringContaining("no unique review-only sentence"),
     });
     expect((await kb.readConcept(owner)).body).toContain(oldText);
-    expect(generateObjectMock).not.toHaveBeenCalled();
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("replaces only the isolated stale PR span inside a mixed sentence", async () => {
+    staged();
+    const owner = "/users/dan-smart.md";
+    const stale = "EuroEval PR #2234 remains open with changes requested";
+    const otherClaim = "but all six review threads have been resolved.";
+    await kb.writeConcept(owner, { type: "Person", title: "Dan Smart" },
+      `EuroEval PR #2234: ${stale}, ${otherClaim}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Person", score: 10 }]);
+    const status = "Dan approved it with a review thanking Eirik, then squash-merged it on 15 Oct 2026 as commit ac33731f88806b1a45593c83dbfd473f1cc877fa. Remote feature branch feat/invalid-model-dataset-1453 was deleted; no local branch of that name existed. Local main was fast-forwarded to ac33731f and is clean/up-to-date.";
+    const instruction = `EuroEval PR #2234 final status: ${status} Replace any prior status saying PR is open/changes requested.`;
+    generateObjectMock.mockResolvedValueOnce({ object: { old_text: stale } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain(`OLD STATUS SPAN:\n${stale}`);
+        expect(prompt).toContain(otherClaim);
+        return { object: { safe: true } };
+      });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(status);
+    expect(body).toContain(otherClaim);
+    expect(body).not.toContain(stale);
   });
 
   it("does not edit a person's note when a final PR status has no observed owner", async () => {

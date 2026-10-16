@@ -1651,17 +1651,41 @@ async function runStagedMutation(
         /\b(?:review|PR|pull request)\b/i.test(sentence) &&
         /\b(?:remains?|still|pending|active|open)\b/i.test(sentence) &&
         !/\b(?:superseded|already approved|squash-merged)\b/i.test(sentence)));
-      const oldText = stale[0];
+      let oldText = stale[0] ?? "";
       const newText = raw.trim().match(/^.+?\s+PR\s*#\d+\s+final\s+status\s*:\s*([\s\S]+?)\s+Replace any prior status saying\b[\s\S]*$/iu)?.[1]?.trim();
-      const statusClause = oldText?.replace(/\bopen (?:and|with) changes requested\b/ig, "open") ?? "";
+      const statusClause = oldText.replace(/\bopen (?:and|with) changes requested\b/ig, "open");
       const statusOnly = !!oldText && !/[,;\n]|\b(?:but|while|also|whereas|with|and)\b/i.test(statusClause);
-      if (!target || paragraphs.length !== 1 || stale.length !== 1 || !statusOnly ||
-          !newText || newText.length > 2_000 || target.body.split(oldText).length !== 2 ||
+      if (target && paragraphs.length === 1 && stale.length === 1 && !statusOnly) {
+        const selector = await resolveAgentModel(options, "mutate", { ...process.env, MUTATION_ENABLE_THINKING: "false" },
+          (call) => providerCalls.push(call));
+        const scope = await generateObject({
+          model: selector.model,
+          schema: z.object({ old_text: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Select ONLY the smallest contiguous verbatim span of this sentence asserting that the named PR is CURRENTLY open or changes requested. Include ALL currently stale status claims in the sentence, but none of its unrelated facts, history, or other PR statuses. Return an empty old_text if they cannot be isolated in one span. Do not rewrite anything. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}, PARAGRAPH:\n${paragraphs[0]}\nMIXED SENTENCE:\n${oldText}`,
+        });
+        state.checkCancellation();
+        const selected = scope.object.old_text;
+        const markers = ["CHANGES_REQUESTED", "changes requested", "open"].filter((marker) =>
+          oldText.toLowerCase().includes(marker.toLowerCase()));
+        const selectedPrIds = [...selected.matchAll(/\bPR\s*#(\d+)\b/gi)].map((match) => match[1]);
+        if (selected.length >= 12 && selected.length < oldText.length && oldText.split(selected).length === 2 &&
+            target.body.split(selected).length === 2 &&
+            !/\b(?:but|while|also|whereas)\b/i.test(selected) &&
+            selectedPrIds.every((id) => id === finalPrStatus[2]) &&
+            markers.every((marker) => selected.toLowerCase().includes(marker.toLowerCase()))) {
+          oldText = selected;
+        }
+      }
+      if (!target || paragraphs.length !== 1 || stale.length !== 1 ||
+          (!statusOnly && oldText === stale[0]) || !newText || newText.length > 2_000 ||
+          target.body.split(oldText).length !== 2 ||
           !/\bapproved\b/i.test(newText) || !/\bsquash-merged\b/i.test(newText)) {
         console.warn("[understory] final PR status scope declined", {
           owner: target?.path, paragraphs: paragraphs.length, stale: stale.length,
-          statusOnly, oldLength: oldText?.length ?? 0, newLength: newText?.length ?? 0,
-          uniqueOld: !!target && !!oldText && target.body.split(oldText).length === 2,
+          statusOnly, scoped: oldText !== stale[0], oldLength: oldText.length, newLength: newText?.length ?? 0,
+          uniqueOld: !!target && target.body.split(oldText).length === 2,
           oldHasComma: /[,;]/.test(statusClause), oldHasConjunction: /\b(?:but|while|also|whereas|with|and)\b/i.test(statusClause),
         });
         throw new Error("Staged mutation deferred: final PR status has no unique review-only sentence.");
@@ -1671,7 +1695,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent final PR status check. Does the EXACT OLD SENTENCE assert only the still-active, now superseded review/open status of the PR identified in the complete owner paragraph? Does the caller's exact NEW TEXT faithfully replace that status with ALL supplied final facts, preserve all other history outside the sentence, and avoid contradictions with later owner updates? An unrelated or historically qualified review is unsafe. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nOLD SENTENCE:\n${oldText}\nNEW TEXT:\n${newText}`,
+        prompt: `Independent final PR status check. Does the EXACT OLD SENTENCE assert only the still-active, now superseded review/open status of the PR identified in the complete owner paragraph? Does the caller's exact NEW TEXT faithfully replace that status with ALL supplied final facts, preserve all other history outside the sentence, and avoid contradictions with later owner updates? An unrelated or historically qualified review is unsafe. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nOLD STATUS SPAN:\n${oldText}\nNEW TEXT:\n${newText}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: final PR status failed independent check.");
