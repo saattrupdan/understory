@@ -1056,11 +1056,13 @@ async function runStagedMutation(
       let { old_text: oldText, new_text: newText } = proposal.object;
       const subjectWords = stagedWords(namedLocalStatus.groups.subject);
       const paragraph = target.body.split(/\n\s*\n/).find((part) => part.includes(oldText) && oldText.length >= 30);
-      if (paragraph && oldText.length > 700 && paragraph.length <= 4_000) {
+      const selectionScope = paragraph ?? (oldText.length > 700 && oldText.length <= 4_000 &&
+        target.body.includes(oldText) ? oldText : undefined);
+      if (selectionScope && oldText.length > 700 && selectionScope.length <= 4_000) {
         // A model can quote the entire server paragraph despite an explicit
         // sentence-only request. Offer its exact sentence boundaries once;
         // the model chooses an index, never invents the old operand.
-        const sentences = paragraph.split(/(?<=[.!?])\s+/);
+        const sentences = selectionScope.split(/(?<=[.!?;])\s+|\n+/).filter(Boolean);
         if (sentences.length > 1 && sentences.length <= 30) {
           const narrowed = await generateObject({
             model: resolved.model,
@@ -1076,9 +1078,9 @@ async function runStagedMutation(
           }
         }
       }
-      const matches = target.body.split(/(?<=[.!?])\s+/).filter((sentence) => sentence === oldText);
+      const matches = target.body.split(/(?<=[.!?;])\s+|\n+/).filter((sentence) => sentence === oldText);
       const oldWords = new Set(stagedWords(oldText));
-      const paragraphWords = new Set(stagedWords(paragraph ?? ""));
+      const paragraphWords = new Set(stagedWords(paragraph ?? selectionScope ?? ""));
       const requestedWords = new Set(stagedWords(raw));
       const unsupported = stagedWords(newText).filter((word) => !oldWords.has(word) && !requestedWords.has(word));
       const oldOccurrences = oldText ? target.body.split(oldText).length - 1 : 0;
@@ -1087,10 +1089,10 @@ async function runStagedMutation(
       if (oldText.length < 30 || oldText.length > 700 || newText.length < 30 || newText.length > 1000 ||
           /\n\s*\n/.test(newText) || oldOccurrences !== 1 || matches.length !== 1 ||
           subjectWords.length < 2 || missingSubject.length > 0 ||
-          !/\b(?:deferred|not run|pending)\b/i.test(oldText) ||
+          !/\b(?:deferred|not run|pending|not yet|awaiting|postponed|scheduled|planned|has not|hasn't|wasn't)\b/i.test(oldText) ||
           !/\b(?:completed|ran|run)\b/i.test(newText) || !newText.includes("13 Oct 2026") ||
           overlap < 0.65 || unsupported.length > 0) {
-        throw new Error(`Staged mutation deferred: local status sentence is not uniquely supported (old=${oldText.length}, new=${newText.length}, occurrences=${oldOccurrences}, whole_sentence=${matches.length}, subject=${subjectWords.length}/${missingSubject.length}, stale=${/\b(?:deferred|not run|pending)\b/i.test(oldText)}, completed=${/\b(?:completed|ran|run)\b/i.test(newText)}, date=${newText.includes("13 Oct 2026")}, overlap=${overlap.toFixed(2)}, unsupported=${unsupported.length}).`);
+        throw new Error(`Staged mutation deferred: local status sentence is not uniquely supported (old=${oldText.length}, new=${newText.length}, occurrences=${oldOccurrences}, whole_sentence=${matches.length}, scope=${selectionScope?.length ?? 0}, clauses=${selectionScope?.split(/(?<=[.!?;])\s+|\n+/).length ?? 0}, subject=${subjectWords.length}/${missingSubject.length}, stale=${/\b(?:deferred|not run|pending|not yet|awaiting|postponed|scheduled|planned|has not|hasn't|wasn't)\b/i.test(oldText)}, completed=${/\b(?:completed|ran|run)\b/i.test(newText)}, date=${newText.includes("13 Oct 2026")}, overlap=${overlap.toFixed(2)}, unsupported=${unsupported.length}).`);
       }
       const judgement = await generateObject({
         model: resolved.model,

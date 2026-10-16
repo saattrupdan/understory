@@ -99,11 +99,12 @@ describe("mutation owner preflight", () => {
   it("repairs only a current local sweep status in an explicitly named server", async () => {
     staged();
     const owner = "/servers/sparkie.md";
-    const stale = "Claes Laya high-concurrency throughput sweep is still deferred; Sparkie's competing jobbot previously used the GPU.";
-    const updated = "Claes Laya high-concurrency throughput sweep completed on 13 Oct 2026 after Sparkie's competing jobbot became idle; Sparkie's competing jobbot previously used the GPU.";
+    const stale = "Claes Laya high-concurrency throughput sweep is still deferred.";
+    const updated = "Claes Laya high-concurrency throughput sweep completed on 13 Oct 2026 after Sparkie's competing jobbot became idle.";
+    const hostDetails = "Sparkie's competing jobbot previously used the GPU.";
     const instruction = `In \`${owner}\`, correct ONLY the obsolete current claim that the Claes Laya high-concurrency throughput sweep is still deferred/not run: the live sweep was completed on 13 Oct 2026 after Sparkie's competing jobbot became idle. Preserve the earlier deferral as dated historical planning if it appears, and preserve every unrelated Sparkie/Qwen/GPU/server assertion verbatim. Do not touch any other concept; if the server concept contains no such current claim, make no write.`;
     await kb.writeConcept(owner, { type: "Server", title: "Sparkie" },
-      `Qwen3.8 mmap performance remains independent.\n\n${stale}\n\nThe earlier scheduling plan from 2 Oct is historical.`, "seed");
+      `Qwen3.8 mmap performance remains independent.\n\n${stale} ${hostDetails}\n\nThe earlier scheduling plan from 2 Oct is historical.`, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { old_text: stale, new_text: updated } })
       .mockResolvedValueOnce({ object: { safe: true } });
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
@@ -111,6 +112,7 @@ describe("mutation owner preflight", () => {
     const body = (await kb.readConcept(owner)).body;
     expect(body).toContain(updated);
     expect(body).not.toContain(stale);
+    expect(body).toContain(hostDetails);
     expect(body).toContain("Qwen3.8 mmap performance remains independent.");
     expect(body).toContain("The earlier scheduling plan from 2 Oct is historical.");
   });
@@ -135,6 +137,25 @@ describe("mutation owner preflight", () => {
     const body = (await kb.readConcept(owner)).body;
     expect(body).toContain(`${history}${corrected}`);
     expect(body).toContain("The Sparkie router remains on port 31000.");
+  });
+
+  it("narrows a whole-server proposal across paragraphs", async () => {
+    staged();
+    const owner = "/servers/sparkie.md";
+    const intro = "Sparkie hosts Qwen3.8 mmap and an unrelated GPU service. ".repeat(12).trim();
+    const oldClaim = "The Claes Laya high-concurrency throughput sweep is still pending until the competing jobbot becomes idle.";
+    const updated = "The Claes Laya high-concurrency throughput sweep completed on 13 Oct 2026 after the competing jobbot became idle.";
+    const body = `${intro}\n\n${oldClaim} Other Sparkie routing remains on port 31000.`;
+    const instruction = `In \`${owner}\`, correct ONLY the obsolete current claim that the Claes Laya high-concurrency throughput sweep is still deferred/not run: the live sweep was completed on 13 Oct 2026 after Sparkie's competing jobbot became idle. Preserve unrelated routing facts.`;
+    await kb.writeConcept(owner, { type: "Server", title: "Sparkie" }, body, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { old_text: body, new_text: updated } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain(oldClaim);
+        return { object: { index: 12, new_text: updated } };
+      }).mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(`${intro}\n\n${updated} Other Sparkie routing`);
   });
 
   it("refuses to rewrite a historical local sweep plan as a current status", async () => {
