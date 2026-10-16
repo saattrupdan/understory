@@ -158,6 +158,20 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body).toContain(`${intro}\n\n${updated} Other Sparkie routing`);
   });
 
+  it("rejects a local server clause with no named throughput topic", async () => {
+    staged();
+    const owner = "/servers/sparkie.md";
+    const unrelated = "Sparkie Qwen GPU performance remains unchanged since the last checkpoint.";
+    const instruction = `In \`${owner}\`, correct ONLY the obsolete current claim that the Claes Laya high-concurrency throughput sweep is still deferred/not run: the live sweep was completed on 13 Oct 2026. Preserve unrelated server facts.`;
+    await kb.writeConcept(owner, { type: "Server", title: "Sparkie" },
+      `Claes Laya throughput runs on the same host. ${unrelated}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { old_text: unrelated,
+      new_text: "Sparkie Qwen GPU performance completed on 13 Oct 2026." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain(unrelated);
+  });
+
   it("refuses to rewrite a historical local sweep plan as a current status", async () => {
     staged();
     const owner = "/servers/sparkie.md";

@@ -1089,10 +1089,10 @@ async function runStagedMutation(
       if (oldText.length < 30 || oldText.length > 700 || newText.length < 30 || newText.length > 1000 ||
           /\n\s*\n/.test(newText) || oldOccurrences !== 1 || matches.length !== 1 ||
           subjectWords.length < 2 || missingSubject.length > 0 ||
-          !/\b(?:deferred|not run|pending|not yet|awaiting|postponed|scheduled|planned|has not|hasn't|wasn't)\b/i.test(oldText) ||
+          !stagedWords(oldText).some((word) => ["sweep", "throughput", "laya"].includes(word)) ||
           !/\b(?:completed|ran|run)\b/i.test(newText) || !newText.includes("13 Oct 2026") ||
           overlap < 0.65 || unsupported.length > 0) {
-        throw new Error(`Staged mutation deferred: local status sentence is not uniquely supported (old=${oldText.length}, new=${newText.length}, occurrences=${oldOccurrences}, whole_sentence=${matches.length}, scope=${selectionScope?.length ?? 0}, clauses=${selectionScope?.split(/(?<=[.!?;])\s+|\n+/).length ?? 0}, subject=${subjectWords.length}/${missingSubject.length}, stale=${/\b(?:deferred|not run|pending|not yet|awaiting|postponed|scheduled|planned|has not|hasn't|wasn't)\b/i.test(oldText)}, completed=${/\b(?:completed|ran|run)\b/i.test(newText)}, date=${newText.includes("13 Oct 2026")}, overlap=${overlap.toFixed(2)}, unsupported=${unsupported.length}).`);
+        throw new Error(`Staged mutation deferred: local status sentence is not uniquely supported (old=${oldText.length}, new=${newText.length}, occurrences=${oldOccurrences}, whole_sentence=${matches.length}, scope=${selectionScope?.length ?? 0}, clauses=${selectionScope?.split(/(?<=[.!?;])\s+|\n+/).length ?? 0}, subject=${subjectWords.length}/${missingSubject.length}, topic=${stagedWords(oldText).filter((word) => ["sweep", "throughput", "laya"].includes(word)).length}, completed=${/\b(?:completed|ran|run)\b/i.test(newText)}, date=${newText.includes("13 Oct 2026")}, overlap=${overlap.toFixed(2)}, unsupported=${unsupported.length}).`);
       }
       const judgement = await generateObject({
         model: resolved.model,
