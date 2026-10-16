@@ -962,9 +962,19 @@ function stagedDiscriminativeOwnerAnchor(
     input.match(/\breplace\s+(?:the\s+)?(?:exact\s+)?(?:phrase|text|claim)?\s*`([^`]{12,2000})`\s+with\b/i)?.[1],
     input.match(/\breplace\s+([\p{L}\p{N}][\p{L}\p{N}_-]*\d[\p{L}\p{N}_-]*)\s+with\b/iu)?.[1],
     input.match(/\bnot\s+(?:the\s+)?(?:intermediate|previous|old)\s+`([^`]{12,2000})`/i)?.[1],
+    // Workbook/content hashes are common correction operands but are not
+    // identifier-shaped like domain IDs (e.g. godkendt_id2).
+    input.match(/\breplace\s+(?:the\s+)?(?:old\s+)?(?:workbook\s+)?(?:hash\s+)?([a-f0-9]{8,64})\s+with\b/i)?.[1],
   ].filter((claim): claim is string => !!claim);
-  const positivelyPresent = (claim: string): boolean => selectedBody.includes(claim) &&
-    !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term)));
+  const positivelyPresent = (claim: string): boolean => {
+    const occurrences = (body: string): number => body.split(claim).length - 1;
+    // An operand is an owner anchor only when it identifies one existing claim:
+    // duplicates within this owner or copies in another retained owner are ambiguous.
+    return occurrences(selectedBody) === 1 &&
+      candidates.filter((candidate) => candidate.path !== selectedPath)
+        .every((candidate) => !candidate.body?.includes(claim)) &&
+      !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term)));
+  };
   if (directAdd) {
     // An item ID already in one complete owner body can locate an exact fact
     // about that item. Generic dates, hashes and ungrounded IDs cannot.
