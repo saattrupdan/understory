@@ -1222,8 +1222,38 @@ async function runStagedMutation(
     const softwarePullRequest = !!leadingPullRequest &&
       /(?:\b(?:src|packages|presentations|node_modules)\/[\w@<./-]+|[\w-]+\.(?:ts|tsx|vue|py)\b)/i.test(raw) &&
       /\b(?:Slidev|Vite|Vue|pnpm|npm|Docker|dev server)\b/i.test(raw);
-    let namedApplication: string | undefined;
-    if (possibleRepository && (leadingPullRequest || /\bon main at [0-9a-f]{7,40}\b/i.test(raw.slice(0, 250)))) {
+    // A leading repository name can also identify an existing canonical repo
+    // owner without PR/deployment wording. Require both the canonical path and
+    // matching Repository title; a hyphenated feature/policy label alone is
+    // never enough to route a fact.
+    const leadingRepoName = !options.ownerHint && options.directAdd && options.preflightInput
+      ? raw.trim().match(/^([A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)\b/)?.[1]
+      : undefined;
+    const canonicalRepoPath = leadingRepoName
+      ? `/repos/${leadingRepoName.toLowerCase()}.md`
+      : undefined;
+    const canonicalRepo = canonicalRepoPath && await kb.bundle.exists(canonicalRepoPath)
+      ? await kb.readConcept(canonicalRepoPath)
+      : undefined;
+    let positivelyMatchedCanonicalRepo = false;
+    if (canonicalRepo) {
+      recorder.record("read_concept", canonicalRepo.path, [canonicalRepo.path]);
+      state.checkCancellation();
+      const normalizeIdentity = (value: string) => value.toLowerCase().replace(/[-_\s]+/g, " ").trim();
+      if (canonicalRepo.frontmatter.type === "Repository" &&
+          normalizeIdentity(canonicalRepo.frontmatter.title ?? "") === normalizeIdentity(leadingRepoName!)) {
+        if (canonicalRepo.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: named repository owner exceeds evidence limit.");
+        }
+        namedApplication = leadingRepoName;
+        positivelyMatchedCanonicalRepo = true;
+        const canonicalHit = { path: canonicalRepo.path, type: canonicalRepo.frontmatter.type,
+          title: canonicalRepo.frontmatter.title, description: canonicalRepo.frontmatter.description,
+          score: 0, confidenceQualified: false };
+        if (!hits.some((hit) => hit.path === canonicalHit.path)) hits.push(canonicalHit);
+      }
+    }
+    if (!namedApplication && possibleRepository && (leadingPullRequest || /\bon main at [0-9a-f]{7,40}\b/i.test(raw.slice(0, 250)))) {
       const classifier = await resolveAgentModel(options, "mutate", process.env, (call) => providerCalls.push(call));
       modelChain = classifier.modelChain;
       const judgement = await generateObject({
@@ -1241,8 +1271,10 @@ async function runStagedMutation(
     // A broad fact query can miss the repository entirely. Search the
     // independently classified subject before considering a new owner, so an
     // existing owner at another path cannot be silently duplicated.
-    const namedOwnerHits: typeof hits = [];
-    if (namedApplication) {
+    const namedOwnerHits: typeof hits = positivelyMatchedCanonicalRepo && canonicalRepo
+      ? hits.filter((hit) => hit.path === canonicalRepo.path)
+      : [];
+    if (namedApplication && !positivelyMatchedCanonicalRepo) {
       const subjectHits = await kb.search(namedApplication, { limit: 200 });
       recorder.record("search_knowledge", namedApplication, subjectHits.map((hit) => hit.path));
       state.checkCancellation();
