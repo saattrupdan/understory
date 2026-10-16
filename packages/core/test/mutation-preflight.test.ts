@@ -447,7 +447,7 @@ describe("mutation owner preflight", () => {
     vi.spyOn(kb, "search").mockResolvedValue([
       { path: project, type: "Project", title: "EuroEval", score: 100, confidence: 100, confidenceQualified: true },
     ]);
-    const fact = "Dan's GitHub PR review boundary: Do not request changes without identifying a concrete blocker. EuroEval PR #2196 was reviewed accordingly.";
+    const fact = "Dan's GitHub PR review boundary (feedback on EuroEval PR #2237, 16 Oct 2026): While a PR review is in progress, a follow-up such as 'MKQA_NO_CONFIG needs to also have Nynorsk, unless explicitly excluded; check that' is a request to investigate and add a line-level review comment, NOT permission to edit/commit/push to the contributor's branch. Even if the agent has checked out that branch for a separate publishing/testing task, keep code changes read-only until Dan explicitly asks to implement the fix. The agent erroneously pushed 690fc448 and Dan corrected this; do not revert it now. Recorded the boundary in dotfiles/agentic/skills/github/SKILL.md commit a1f7cea.";
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain("COMPETING OWNER /projects/euroeval.md");
       expect(prompt).toContain("Dan reviewed several EuroEval pull requests.");

@@ -1320,7 +1320,7 @@ async function runStagedMutation(
     // and accept only a positively title/slug-matched Person concept; mentions
     // of the name in arbitrary project facts are not enough to route it.
     const personalPolicyName = options.directAdd && options.preflightInput
-      ? raw.trim().match(/^([\p{L}][\p{L}'’.-]{1,80})['’]s\s+(?:personal\s+)?(?:[\p{L}-]+\s+){0,4}(?:preference|policy|boundary)\s*:/iu)?.[1]
+      ? raw.trim().match(/^([\p{L}][\p{L}'’.-]{1,80})['’]s\s+(?:personal\s+)?(?:[\p{L}-]+\s+){0,4}(?:preference|policy|boundary)(?:\s*\([^()\n]{1,120}\))?\s*:/iu)?.[1]
       : undefined;
     const personalPreferenceHits: typeof hits = [];
     if (personalPolicyName) {
