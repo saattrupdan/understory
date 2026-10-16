@@ -2001,6 +2001,17 @@ async function runStagedMutation(
           if (competitor.body.includes(p.old_text)) prStatusUnique = false;
         }
       }
+      if (prStatusUnique && stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65) {
+        // A paraphrased proposal can introduce unsupported wording. The
+        // caller's bounded status sentence is stronger evidence than another
+        // model rewrite; it still passes all ordinary lexical, independent
+        // full-owner and CAS checks below.
+        const exactStatus = raw.trim().match(/^update\s+(?:the\s+)?[\p{L}\p{N}./_-]+\s+PR\s*#\d+\s+status\s*:\s*([\s\S]+?)\s+Correct any older note saying\b/iu)?.[1];
+        if (exactStatus && exactStatus.length >= 30 && exactStatus.length <= 4_000 &&
+            /\bAPPROVED\b/.test(exactStatus) && !/\n\s*\n/.test(exactStatus)) {
+          p.new_text = exactStatus;
+        }
+      }
       if (prStatusUnique) {
         const scope = await generateObject({
           model: resolved.model,

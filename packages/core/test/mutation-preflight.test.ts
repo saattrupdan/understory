@@ -1705,6 +1705,29 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(topic)).body).toContain("82/83 tests passed");
   });
 
+  it("uses exact caller status when a PR-review proposal paraphrases unsupported facts", async () => {
+    staged();
+    const owner = "/repos/syv-ai-agentbase.md";
+    const oldReview = "The prior CHANGES_REQUESTED GitHub review remains unless he explicitly asks to update it.";
+    const status = "Dan explicitly approved the remaining nav behavior, and Pi stopped the /tmp demo server on localhost:3031 and submitted a new APPROVED review on PR head c6ee887. GitHub reviewDecision is now APPROVED (the earlier CHANGES_REQUESTED review has been superseded).";
+    const instruction = `Update the Syv-ai/prezzi PR #21 status: ${status} Correct any older note saying the review still remains changes requested.`;
+    await kb.writeConcept(owner, { type: "Repository", title: "Syv-ai Agentbase" },
+      `Syv-ai/prezzi PR #21: Earlier tests remain documented. ${oldReview}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", title: "Syv-ai Agentbase", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldReview, new_text: "The review was APPROVED and all customer data was exported to an external party." } })
+      .mockResolvedValueOnce({ object: { safe: true } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain(`NEW TEXT:\n${status}`);
+        expect(prompt).not.toContain("all customer data was exported");
+        return { object: { safe: true, reason: "Exact requested status only." } };
+      });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(status);
+    expect((await kb.readConcept(owner)).body).toContain("Earlier tests remain documented.");
+  });
+
   it("rejects ambiguous exact PR review owners before proposing a replacement", async () => {
     staged();
     const instruction = "Update the Syv-ai/prezzi PR #21 status: APPROVED replaces the prior CHANGES_REQUESTED review.";
