@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { discoverLlamaCppModel, resolveFallbackConfig, resolveModelConfig } from "../src/providers/index.js";
+import { createModel, discoverLlamaCppModel, resolveFallbackConfig, resolveModelConfig } from "../src/providers/index.js";
 import { isRetryableError, withFallback } from "../src/providers/fallback.js";
 
 function jsonResponse(body: unknown) {
@@ -218,6 +218,40 @@ describe("generic provider config", () => {
     expect(() =>
       resolveModelConfig(env({ ANTHROPIC_API_KEY: "a", OPENROUTER_API_KEY: "o" }))
     ).toThrow(/Ambiguous legacy LLM configuration/);
+  });
+});
+
+describe("local inference headers deadline", () => {
+  it("uses a longer dispatcher for local OpenAI requests only", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      id: "test", model: "test", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    }), { headers: { "content-type": "application/json" } }));
+    const local = await createModel({ baseURL: "http://host.docker.internal:8080/v1", apiKey: "test", format: "openai", model: "test" });
+    await local.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }] } as never);
+    const dispatcher = (spy.mock.calls[0]?.[1] as RequestInit & { dispatcher?: unknown }).dispatcher;
+    expect(dispatcher).toBeDefined();
+    expect(dispatcher).toHaveProperty("dispatch");
+
+    spy.mockClear();
+    const remote = await createModel({ baseURL: "https://example.com/v1", apiKey: "test", format: "openai", model: "test" });
+    await remote.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }] } as never);
+    expect((spy.mock.calls[0]?.[1] as RequestInit & { dispatcher?: unknown }).dispatcher).toBeUndefined();
+  });
+
+  it("preserves caller cancellation on local requests", async () => {
+    const controller = new AbortController();
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      if (init?.signal?.aborted) reject(init.signal.reason);
+      else init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    }));
+    const local = await createModel({ baseURL: "http://localhost:8080/v1", apiKey: "test", format: "openai", model: "test" });
+    const pending = local.doGenerate({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      abortSignal: controller.signal,
+    } as never);
+    controller.abort();
+    await expect(pending).rejects.toBeDefined();
   });
 });
 

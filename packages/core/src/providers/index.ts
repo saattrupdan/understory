@@ -1,6 +1,7 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
+import { Agent } from "undici";
 import { positiveIntegerEnv } from "../util/env.js";
 import { isAbortError, throwIfAborted } from "../util/abort.js";
 
@@ -188,6 +189,22 @@ export function resolveFallbackConfig(env: NodeJS.ProcessEnv = process.env): Mod
 // loaded (a process-lifetime cache would never see that again).
 const DISCOVERY_TTL_MS = 60_000;
 
+// Local inference can spend more than Node's default 300 seconds generating
+// before sending response headers. Keep this below the MCP client's 10-minute
+// request deadline and scope it to local providers, not hosted APIs.
+const LOCAL_HEADERS_TIMEOUT_MS = 8 * 60_000;
+const localDispatcher = new Agent({ headersTimeout: LOCAL_HEADERS_TIMEOUT_MS });
+
+function localModelEndpoint(baseURL: string): boolean {
+  const hostname = new URL(baseURL).hostname;
+  return hostname === "localhost" || hostname === "127.0.0.1" ||
+    hostname === "::1" || hostname === "host.docker.internal";
+}
+
+function localModelFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return fetch(input, { ...init, dispatcher: localDispatcher } as RequestInit);
+}
+
 type DiscoveryEntry = {
   promise: Promise<string>;
   expiresAt: number;
@@ -343,6 +360,7 @@ export async function createModel(
         // This only affects callers requesting structured output; ordinary
         // chat/tool calls continue using their existing request bodies.
         supportsStructuredOutputs: true,
+        ...(localModelEndpoint(cfg.baseURL) ? { fetch: localModelFetch } : {}),
         ...(cfg.extraBody && Object.keys(cfg.extraBody).length
           ? {
               transformRequestBody: (args: Record<string, unknown>) => ({
