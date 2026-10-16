@@ -2291,6 +2291,48 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
+  it("grounds an invented correction operand in one exact identifier-matched paragraph", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const old = "The cover_letters table has an account email FK ON DELETE CASCADE. Keep historic migration notes.";
+    const other = "The cover_letter_owners table has a separate account link.";
+    const instruction = `Correct Job-bot cover_letters: it no longer cascade-deletes with accounts; cover_letter_owners owns the deletable account link. Preserve historic migration notes.`;
+    await kb.writeConcept(owner, { type: "Repository", title: "Job Bot" }, `${old}\n\n${other}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      action: "replace", path: owner, old_text: "cover_letters rows cascade-delete with accounts",
+      new_text: "The cover_letters table no longer cascade-deletes with accounts.",
+    } }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`\"text\":\"${old}\"`);
+      expect(prompt).toContain(`\"text\":\"${other}`);
+      return { object: { index: 0,
+        new_text: "The cover_letters table no longer cascade-deletes with accounts; cover_letter_owners owns the deletable account link. Keep historic migration notes." } };
+    }).mockResolvedValueOnce({ object: { safe: true, reason: "Supported correction and unrelated history retained." } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain("no longer cascade-deletes");
+    expect(body).toContain("Keep historic migration notes.");
+    expect(body).toContain(other);
+    expect(body).not.toContain("account email FK ON DELETE CASCADE");
+  });
+
+  it("refuses an invented correction operand without grounded matching identifiers", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const body = "This unrelated account migration has no table-specific schema claims.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Job Bot" }, body, "seed");
+    const patchSpy = vi.spyOn(kb, "patchConcept");
+    generateObjectMock.mockResolvedValueOnce({ object: {
+      action: "replace", path: owner, old_text: "cover_letters cascade-delete with accounts",
+      new_text: "cover_letters do not cascade-delete with accounts",
+    } });
+    expect(await runMutation(kb, "Correct Job-bot cover_letters: do not cascade-delete with accounts."))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(patchSpy).not.toHaveBeenCalled();
+    expect((await kb.readConcept(owner)).body.trim()).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
   it("defers when duplicate old operands have ambiguous active claims", async () => {
     staged();
     const owner = "/projects/cover-letter.md";

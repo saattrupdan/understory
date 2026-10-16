@@ -1755,22 +1755,30 @@ async function runStagedMutation(
       const target = candidates.find((c) => c.path === p.path);
       let duplicateRepair = "not attempted";
       if (target && p.old_text.length >= 12 && target.body.split(p.old_text).length !== 2) {
-        // Select from exact, bounded owner paragraphs rather than asking the
-        // model to reproduce whitespace-sensitive text. Selection alone never
-        // authorizes a replacement: the full-owner verifier and CAS still apply.
-        const paragraphs = target.body.split(/\n\s*\n/).filter((part) =>
-          part.includes(p.old_text) && part.length <= 4_000 && target.body.split(part).length === 2);
+        // A proposer can invent an old operand. Ground its one repair in exact
+        // existing paragraphs matching identifiers from the caller, never in
+        // invented text or an unbounded search through unrelated body sections.
+        // Selection alone never authorizes a replacement: the full-owner
+        // verifier and CAS still apply.
+        const occurrences = target.body.split(p.old_text).length - 1;
+        const identifiers = [...new Set((raw.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/gi) ?? [])
+          .map((identifier) => identifier.toLowerCase()))];
         const containing = target.body.split(/\n\s*\n/).filter((part) => part.includes(p.old_text));
+        const paragraphs = target.body.split(/\n\s*\n/).filter((part) =>
+          part.length >= 12 && part.length <= 4_000 && target.body.split(part).length === 2 &&
+          (occurrences > 0 ? part.includes(p.old_text) :
+            identifiers.some((identifier) => part.toLowerCase().includes(identifier))));
         duplicateRepair = paragraphs.length === 0
-          ? `no unique bounded paragraph (occurrences=${target.body.split(p.old_text).length - 1}, paragraphs=${containing.length}, largest=${Math.max(0, ...containing.map((part) => part.length))})`
+          ? `no unique bounded paragraph (occurrences=${occurrences}, paragraphs=${containing.length}, largest=${Math.max(0, ...containing.map((part) => part.length))}, identifiers=${identifiers.length})`
           : paragraphs.length > 12 ? "too many candidate paragraphs" : "model declined indexed repair";
-        if (paragraphs.length > 0 && paragraphs.length <= 12) {
+        if (paragraphs.length > 0 && paragraphs.length <= 12 &&
+            JSON.stringify(paragraphs).length + raw.length <= STAGED_MAX_EVIDENCE_CHARS) {
           const repair = await generateObject({
             model: proposer.model,
             schema: z.object({ index: z.number().int(), new_text: z.string() }).strict(),
             temperature: 0,
             abortSignal: options.signal,
-            prompt: `Repair ONLY one actively stale claim in this owner. Select its index from the exact paragraphs below, and supply a local corrected new_text preserving every unrelated clause and statement verbatim. If more than one paragraph asserts the old claim, none is clearly active, or the instruction cannot be fully satisfied by one local replacement, return index=-1 and new_text="". Do not select a historical or negated mention. The original old operand is not unique; its presence is not evidence of an active stale claim. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}\nNON-UNIQUE OLD OPERAND:\n${p.old_text}\nPROPOSED CORRECTION:\n${p.new_text}\nEXACT CANDIDATE PARAGRAPHS:\n${JSON.stringify(paragraphs.map((text, index) => ({ index, text })))}`,
+            prompt: `Repair ONLY one actively stale claim in this owner. Select its index from the exact paragraphs below, and supply a local corrected new_text preserving every unrelated clause and statement verbatim. If more than one paragraph asserts the old claim, none is clearly active, or the instruction cannot be fully satisfied by one local replacement, return index=-1 and new_text="". Do not select a historical or negated mention. The original old operand may be ABSENT or repeated; it is not evidence of an active stale claim. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}\nUNTRUSTED OLD OPERAND:\n${p.old_text}\nPROPOSED CORRECTION:\n${p.new_text}\nEXACT CANDIDATE PARAGRAPHS:\n${JSON.stringify(paragraphs.map((text, index) => ({ index, text })))}`,
           });
           state.checkCancellation();
           const repairedOld = paragraphs[repair.object.index];
