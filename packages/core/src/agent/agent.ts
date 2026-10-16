@@ -1226,6 +1226,7 @@ async function runStagedMutation(
     // owner without PR/deployment wording. Require both the canonical path and
     // matching Repository title; a hyphenated feature/policy label alone is
     // never enough to route a fact.
+    let namedApplication: string | undefined;
     const leadingRepoName = !options.ownerHint && options.directAdd && options.preflightInput
       ? raw.trim().match(/^([A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)\b/)?.[1]
       : undefined;
@@ -1271,9 +1272,9 @@ async function runStagedMutation(
     // A broad fact query can miss the repository entirely. Search the
     // independently classified subject before considering a new owner, so an
     // existing owner at another path cannot be silently duplicated.
-    const namedOwnerHits: typeof hits = positivelyMatchedCanonicalRepo && canonicalRepo
-      ? hits.filter((hit) => hit.path === canonicalRepo.path)
-      : [];
+    // A canonical locator must not hide other ranked owners. Inspect every
+    // retained competing body before appending to the named repository.
+    const namedOwnerHits: typeof hits = positivelyMatchedCanonicalRepo ? [...hits] : [];
     if (namedApplication && !positivelyMatchedCanonicalRepo) {
       const subjectHits = await kb.search(namedApplication, { limit: 200 });
       recorder.record("search_knowledge", namedApplication, subjectHits.map((hit) => hit.path));

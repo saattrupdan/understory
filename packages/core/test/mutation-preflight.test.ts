@@ -562,16 +562,41 @@ describe("mutation owner preflight", () => {
       confidence: 100, confidenceQualified: true,
     }]);
     generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
-      expect(prompt).toContain("Pi retries provider HTTP 429 responses.");
-      expect(prompt).toContain(`OWNER ${owner}`);
-      return prompt.includes("Choose ONE positively relevant") ? { object: { path: owner } }
-        : { object: { safe: true, reason: "Supported by the explicit repository identity." } };
+      if (prompt.includes("COMPETING OWNER")) {
+        expect(prompt).toContain("Pi retries provider HTTP 429 responses.");
+        expect(prompt).toContain(owner);
+      } else {
+        expect(prompt).toContain(`OWNER ${owner}`);
+        expect(prompt).toContain(fact);
+      }
+      return { object: { safe: true, reason: "Supported by the explicit repository identity." } };
     });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
-    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
     expect(search.mock.calls.some(([query]) => query.toLowerCase() === "job-bot")).toBe(false);
     expect((await kb.readConcept(owner)).body).toContain(fact);
     expect((await kb.readConcept(misleading)).body).not.toContain(fact);
+  });
+
+  it("blocks a canonical repository append when a ranked owner conflicts", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const competitor = "/decisions/job-bot-login.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "Job-bot" },
+      "Job-bot maintains login flows.", "seed");
+    await kb.writeConcept(competitor, { type: "Decision", title: "Login Recovery" },
+      "The previous Job-bot login recovery decision conflicts with this proposed UI behavior.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: competitor, type: "Decision",
+      title: "Login Recovery", score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "Job-bot verification recovery UI decision: Initially show only Send verification link; after success show sign-out.";
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("COMPETING OWNER");
+      expect(prompt).toContain("conflicts with this proposed UI behavior");
+      return { object: { safe: false } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
   });
 
   it("does not infer a repository from a hyphenated policy belonging to another application", async () => {
@@ -622,10 +647,13 @@ describe("mutation owner preflight", () => {
       score: 100, confidence: 100, confidenceQualified: true,
     }]);
     const fact = "Job-bot account rate limits deployed on main at bf272c6: PostgreSQL reservations enforce per-account quotas.";
-    generateObjectMock.mockResolvedValueOnce({ object: { repositorySubject: true } })
-      .mockResolvedValueOnce({ object: { safe: true } });
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("COMPETING OWNER")) expect(prompt).toContain("Pi retries provider HTTP 429 responses.");
+      else expect(prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
-    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
     expect((await kb.readConcept(owner)).body).toContain(fact);
   });
 
