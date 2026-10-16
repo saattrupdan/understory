@@ -1805,12 +1805,12 @@ describe("mutation owner preflight", () => {
     staged();
     const continuation = "/projects/fs-fotovalidering-continuation-873508413abcdef0.md";
     await kb.writeConcept(continuation, { type: "Project Continuation", title: "FS Fotovalidering — Label Audit" },
-      "FS Fotovalidering validation labels are checked against the source annotation. Train labels retain their original provenance, while validation labels are verified separately.", "seed");
+      "Unknown labels in FS Fotovalidering round-5 are retained with row-level provenance, including workbook sheet, original row number, and source image identifier. Review labels are checked against held-out annotations rather than inferred from neighboring photos.", "seed");
     vi.spyOn(kb, "search").mockResolvedValue([{
       path: continuation, type: "Project Continuation", title: "FS Fotovalidering — Label Audit",
       score: 100, confidence: 100, confidenceQualified: true,
     }]);
-    const fact = "FS Fotovalidering train labels retain source-row provenance; validation labels are checked against held-out annotations.";
+    const fact = "FS Fotovalidering round-5 unknown labels retain row-level source provenance, including workbook sheet, original row number, and source image identifier; review labels are checked against held-out annotations rather than inferred from neighboring photos.";
     generateObjectMock.mockResolvedValue({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
     expect(result).toMatchObject({ ok: true, result: { filesChanged: [continuation] } });
@@ -1826,7 +1826,7 @@ describe("mutation owner preflight", () => {
       path: continuation, type: "Project Continuation", title: "FS Fotovalidering — Label Audit",
       score: 100, confidence: 100, confidenceQualified: true,
     }]);
-    const fact = "FS Fotovalidering train labels retain source-row provenance; validation labels are checked against held-out annotations.";
+    const fact = "FS Fotovalidering round-5 unknown labels retain row-level source provenance, including workbook sheet, original row number, and source image identifier; review labels are checked against held-out annotations rather than inferred from neighboring photos.";
     generateObjectMock.mockResolvedValue({ object: { safe: true } });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
     expect(result).toMatchObject({ ok: false, status: "failed" });
