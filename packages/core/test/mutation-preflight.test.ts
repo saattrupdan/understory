@@ -3520,6 +3520,40 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(wrongOwner)).body).not.toContain(fact);
   });
 
+  it.each([false, true])("locates a unique FS keyboard note beyond ranked page hits (duplicate=%s)", async (duplicate) => {
+    staged();
+    const ordering = "/projects/fs-fotovalidering-continuation-e0d0ea92dc7fde84.md";
+    const keyboard = "/projects/fs-fotovalidering-continuation-8559c6035bedff77.md";
+    const hiddenPeer = "/projects/fs-fotovalidering-continuation-hidden.md";
+    const oldOrdering = "FS Fotovalidering 25-class annotation buttons are sorted by config/categories.yaml priority. " +
+      "The running /tmp/fs-photo-candidates-25.html page on port 8772 keeps the same localStorage key.";
+    const controls = "FS Fotovalidering 25-class annotation UI preference: keyboard-first controls with keys 1–9 mapped in rank order. " +
+      "Enter saves and advances. The /tmp/fs-photo-candidates-25.html page runs on port 8772; localStorage is preserved.";
+    const instruction = "Correct the FS Fotovalidering 25-class annotation UI knowledge: controls are binary selected/unselected. " +
+      "Number keys 1–9 select categories. The running /tmp/fs-photo-candidates-25.html page on port 8772 " +
+      "was updated in place; localStorage key unchanged.";
+    await kb.writeConcept(ordering, { type: "Project Continuation", title: "FS Fotovalidering — Phase 1 PoC — Continuation e0d0ea92" },
+      `${oldOrdering} ${"Documented ordering history. ".repeat(1_200)}`, "seed");
+    await kb.writeConcept(keyboard, { type: "Project Continuation", title: "FS Fotovalidering — Keyboard Notes" },
+      controls, "seed");
+    await kb.writeConcept(hiddenPeer, { type: "Project Continuation", title: "FS Fotovalidering — Later Review" },
+      duplicate ? controls : "Reviewed unknown labels without keyboard controls.", "seed");
+    // The top hit is the page-ordering note; the matching keyboard note is
+    // absent from ranked search, and a duplicate can also be absent from it.
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: ordering, type: "Project Continuation",
+      title: "FS Fotovalidering — Phase 1 PoC — Continuation e0d0ea92", score: 10, confidenceQualified: false }]);
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(controls);
+      expect(prompt).not.toContain(oldOrdering);
+      return { object: { ...baseProposal, action: "defer", reason: "keyboard owner found" } };
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining(duplicate
+      ? "keyboard-controls owner is missing or duplicated" : "keyboard owner found") });
+    expect(generateObjectMock).toHaveBeenCalledTimes(duplicate ? 0 : 1);
+    expect((await kb.readConcept(ordering)).body).toContain(oldOrdering);
+  });
+
   it("does not use description-only incidental mentions as metadata owner anchors", async () => {
     staged();
     const first = "/projects/project-alpha.md";

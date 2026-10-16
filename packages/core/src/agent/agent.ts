@@ -1615,12 +1615,44 @@ async function runStagedMutation(
     const dominant = !focused.length && first && first.confidenceQualified === true && (!second ||
       (first.confidence ?? 0) >= (second.confidence ?? 0) + 20 &&
       (first.confidence ?? 0) >= (second.confidence ?? 0) * 1.5);
+    // A correction to the 25-class human controls belongs to the note that
+    // already documents those controls, not another note sharing the same
+    // running page. Search every sibling continuation: ranked hits can omit
+    // the keyboard note. A duplicate control note is ambiguous, not a tie to
+    // resolve by search order. This is owner location, not write permission.
+    let uiKeyboardOwnerPath: string | undefined;
+    if (!options.directAdd && options.preflightInput &&
+        /\bFS Fotovalidering 25-class annotation UI\b/i.test(raw) &&
+        /\bnumber keys 1[–-]9\b/i.test(raw) &&
+        raw.includes("/tmp/fs-photo-candidates-25.html") &&
+        /\bport\s*8772\b/i.test(raw)) {
+      const siblings = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
+        /^\/projects\/fs-fotovalidering(?:-|\.md$)/.test(candidate));
+      if (siblings.length > 200) throw new Error("Staged mutation deferred: annotation UI owner inventory exceeds limit.");
+      const matchingOwners: string[] = [];
+      for (const sibling of siblings) {
+        const concept = await kb.readConcept(sibling);
+        recorder.record("read_concept", concept.path, [concept.path]);
+        state.checkCancellation();
+        if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: annotation UI peer exceeds evidence limit.");
+        }
+        if (concept.body.includes("/tmp/fs-photo-candidates-25.html") &&
+            /\b25-class annotation UI\b/i.test(concept.body) &&
+            /\bkeys 1[–-]9\b/i.test(concept.body) &&
+            /\bport[-\s]*8772\b/i.test(concept.body)) matchingOwners.push(concept.path);
+      }
+      if (matchingOwners.length !== 1) {
+        throw new Error("Staged mutation deferred: 25-class keyboard-controls owner is missing or duplicated.");
+      }
+      uiKeyboardOwnerPath = matchingOwners[0];
+    }
     const candidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> = [];
-    if (hintedPath && sectionOwnerPath && hintedPath !== sectionOwnerPath) {
+    if (hintedPath && (sectionOwnerPath || uiKeyboardOwnerPath) && hintedPath !== (sectionOwnerPath ?? uiKeyboardOwnerPath)) {
       throw new Error("Staged mutation deferred: suggested owner conflicts with named section.");
     }
-    if (hintedPath || sectionOwnerPath || explicitOwner || dominant) {
-      const concept = await kb.readConcept(hintedPath ?? sectionOwnerPath ?? (explicitOwner ?? first).path);
+    if (hintedPath || sectionOwnerPath || uiKeyboardOwnerPath || explicitOwner || dominant) {
+      const concept = await kb.readConcept(hintedPath ?? sectionOwnerPath ?? uiKeyboardOwnerPath ?? (explicitOwner ?? first).path);
       recorder.record("read_concept", concept.path, [concept.path]);
       if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
