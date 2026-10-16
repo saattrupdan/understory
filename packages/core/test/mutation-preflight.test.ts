@@ -444,11 +444,10 @@ describe("mutation owner preflight", () => {
     const project = "/projects/euroeval.md";
     await kb.writeConcept(person, { type: "Person", title: "Dan Smart" }, "Dan works on evaluation tooling.", "seed");
     await kb.writeConcept(project, { type: "Project", title: "EuroEval" }, "Dan reviewed several EuroEval pull requests.", "seed");
-    vi.spyOn(kb, "search").mockImplementation(async (query) => query.toLowerCase() === "dan"
-      ? [
-          { path: project, type: "Project", title: "EuroEval", score: 100, confidence: 100, confidenceQualified: true },
-          { path: person, type: "Person", title: "Dan Smart", score: 1, confidence: 1, confidenceQualified: false },
-        ]
+    const search = vi.spyOn(kb, "search").mockImplementation(async (query) => query.toLowerCase() === "dan"
+      ? Array.from({ length: 200 }, (_, index) => ({ path: `/projects/incidental-${index}.md`,
+          type: "Project", title: `Dan incidental project ${index}`, score: 100 - index,
+          confidence: 100, confidenceQualified: true }))
       : [{ path: project, type: "Project", title: "EuroEval", score: 100, confidence: 100, confidenceQualified: true }]);
     const fact = "Dan's GitHub review preference: Always thank the contributor for their contribution in the review text, including when requesting changes. EuroEval PR #2234 review 5518245608 was updated to open with 'Thanks for contributing this, Eirik.' while retaining CHANGES_REQUESTED.";
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
@@ -462,6 +461,7 @@ describe("mutation owner preflight", () => {
     });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
     expect(result).toMatchObject({ ok: true, result: { filesChanged: [person] } });
+    expect(search.mock.calls.some(([query]) => query.toLowerCase() === "dan")).toBe(false);
     expect((await kb.readConcept(person)).body).toContain(fact);
     expect((await kb.readConcept(project)).body).not.toContain(fact);
   });

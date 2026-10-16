@@ -1291,26 +1291,39 @@ async function runStagedMutation(
       : undefined;
     const personalPreferenceHits: typeof hits = [];
     if (personalPreferenceName) {
-      const personHits = await kb.search(personalPreferenceName, { limit: 200 });
-      recorder.record("search_knowledge", personalPreferenceName, personHits.map((hit) => hit.path));
+      // Do not search the broad text index for a common first name. Inventory
+      // only the users concept directory, with a hard cap before reading any
+      // metadata; ranked search hits remain untouched as competing evidence.
+      const userPaths = await kb.bundle.listConceptPaths("/users");
       state.checkCancellation();
-      if (personHits.length >= 200) {
-        throw new Error("Staged mutation deferred: named person search exceeds evidence limit.");
+      if (userPaths.length > 200) {
+        throw new Error("Staged mutation deferred: user owner inventory exceeds limit.");
       }
       const name = personalPreferenceName.toLowerCase().replace(/[’]/g, "'");
-      for (const hit of personHits) {
-        const title = (hit.title ?? "").toLowerCase().replace(/[’]/g, "'");
-        const slug = path.posix.basename(hit.path, ".md").replace(/[-_]/g, " ").toLowerCase();
-        const titleName = title === name || title.startsWith(`${name} `);
-        const slugName = slug === name || slug.startsWith(`${name} `) || slug.startsWith(`${name.replace(/\s+/g, "-")}-`);
-        if (/^Person$/i.test(hit.type) && (titleName || slugName)) {
-          personalPreferenceHits.push(hit);
-          if (!hits.some((old) => old.path === hit.path)) hits.push(hit);
+      const normalizedName = name.replace(/[-_]/g, " ");
+      const firstName = normalizedName.split(/\s+/)[0];
+      const candidates = userPaths.filter((candidate) => {
+        const slug = path.posix.basename(candidate, ".md").replace(/[-_]/g, " ").toLowerCase();
+        return slug === firstName || slug.startsWith(`${firstName} `);
+      });
+      for (const candidate of candidates) {
+        state.checkCancellation();
+        const person = await kb.readConcept(candidate);
+        recorder.record("read_concept", person.path, [person.path]);
+        const title = (person.frontmatter.title ?? "").toLowerCase().replace(/[’]/g, "'").replace(/[-_]/g, " ");
+        const slug = path.posix.basename(person.path, ".md").replace(/[-_]/g, " ").toLowerCase();
+        const titleName = title === normalizedName || title.startsWith(`${normalizedName} `);
+        const slugName = slug === normalizedName || slug.startsWith(`${normalizedName} `);
+        if (/^Person$/i.test(person.frontmatter.type) && (titleName || slugName)) {
+          personalPreferenceHits.push({ path: person.path, type: person.frontmatter.type,
+            title: person.frontmatter.title, description: person.frontmatter.description,
+            score: 0, confidenceQualified: false });
         }
       }
       if (personalPreferenceHits.length !== 1) {
         throw new Error("Staged mutation deferred: named personal preference has no unique positively matched Person owner.");
       }
+      if (!hits.some((old) => old.path === personalPreferenceHits[0].path)) hits.push(personalPreferenceHits[0]);
       // Every competing search hit must be checked using its complete body,
       // not just its title, before the Person owner can receive the fact.
       for (const hit of hits) {
