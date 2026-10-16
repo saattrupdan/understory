@@ -2484,6 +2484,25 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(peer)).body).toContain("WAS NOT run");
   });
 
+  it("does not remove a second unrelated negation with the sweep-status inversion", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const old = "Claes Laya throughput status: High-concurrency live sweep WAS NOT run. " +
+      "The unrelated archived Qwen report was NOT compiled during the earlier run. " +
+      "Task-first benchmark uses the Sparkie router and a 1,000-name pool. " +
+      "Jev validation records remain in their earlier state.";
+    const newText = old.replace("WAS NOT run", "was run once on 13 Oct 2026")
+      .replace("was NOT compiled", "was compiled") + " 32 workers measured 5.223 assignments/s.";
+    const instruction = "Correct Claes Laya throughput status: the high-concurrency live sweep was run once on 13 Oct 2026; 32 workers measured 5.223 assignments/s.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, old, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", title: "Claes Jev Diagnostics", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: old, new_text: newText } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toContain("was NOT compiled");
+  });
+
   it("blocks a named throughput status when a peer paraphrases the same stale claim", async () => {
     staged();
     const owner = "/projects/claes-jev-diagnostics.md";

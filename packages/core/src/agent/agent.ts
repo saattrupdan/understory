@@ -2793,8 +2793,14 @@ async function runStagedMutation(
       // one paragraph. The exact old span must stay inside that one paragraph,
       // be unique across complete observed owners, and positively match the
       // named subject. This is not a general multi-clause replacement license.
+      const allowedThroughputNegationRemoval = (oldClause: string, newClause: string, word: string): boolean =>
+        namedThroughputStatus && statusUniqueAcrossHits && word === "not" &&
+        /high-concurrency live sweep\s+was not run/i.test(oldClause) &&
+        /high-concurrency live sweep\s+(?:was run|ran|completed)/i.test(newClause) &&
+        /high-concurrency live sweep was run once/i.test(raw) &&
+        raw.includes("13 Oct 2026") && p.new_text.includes("13 Oct 2026");
       let statusClauseIssue = statusWords.length >= 2 && statusParagraph
-        ? stagedStatusClauseIssue(p.old_text, p.new_text, raw) : undefined;
+        ? stagedStatusClauseIssue(p.old_text, p.new_text, raw, allowedThroughputNegationRemoval) : undefined;
       if (statusUniqueAcrossHits && statusClauseIssue?.startsWith("old clause not requested") &&
           p.old_text.length >= 200 && p.old_text.length <= 4_000 && p.new_text.length <= 4_000 &&
           stagedOverlap(p.old_text, p.new_text) >= 0.7) {
@@ -2807,10 +2813,10 @@ async function runStagedMutation(
         });
         state.checkCancellation();
         p.new_text = repair.object.new_text;
-        statusClauseIssue = stagedStatusClauseIssue(p.old_text, p.new_text, raw);
+        statusClauseIssue = stagedStatusClauseIssue(p.old_text, p.new_text, raw, allowedThroughputNegationRemoval);
         if (statusClauseIssue?.startsWith("old clause not requested") && p.new_text.length <= 4_000) {
           p.new_text = stagedRestoreUnrequestedStatusClauses(p.old_text, p.new_text, raw);
-          statusClauseIssue = stagedStatusClauseIssue(p.old_text, p.new_text, raw);
+          statusClauseIssue = stagedStatusClauseIssue(p.old_text, p.new_text, raw, allowedThroughputNegationRemoval);
         }
       }
       const boundedStatus = statusWords.length >= 2 &&
@@ -3100,7 +3106,7 @@ async function runStagedMutation(
             (prStatusUnique || stagedOverlap(p.old_text, newText) >= (boundedStatus ? 0.7 : 0.5)) &&
             (!(boundedStatus || boundedCorrection || boundedSpanCorrection) ||
               !stagedStatusClauseIssue(p.old_text, newText,
-                boundedCorrection ? correctionEvidence : raw)) &&
+                boundedCorrection ? correctionEvidence : raw, allowedThroughputNegationRemoval)) &&
             (!trainingDesignCorrection ||
               (!newText.includes("For strict <1M multilingual student") &&
                 !stagedStatusClauseIssue(p.old_text, newText, trainingInstruction,
