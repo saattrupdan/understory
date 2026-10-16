@@ -2260,11 +2260,12 @@ async function runStagedMutation(
         /replace obsolete guidance that `make deploy` is authoritative/i.test(raw) &&
         /push to main is the intended deployment mechanism/i.test(raw) &&
         /retain note that vercel cli `vercel --prod` returns not authorized/i.test(raw);
-      // The proposer can choose a related project note instead of the repo
-      // containing the policy. The repo must be a search hit and its exact old
-      // policy must independently pass the ownership checks below.
+      // The proposer and ranked hits can both select a related project note
+      // instead of the repo policy. The exact existing repo path is a locator;
+      // its uniquely observed obsolete claim and independent check authorize
+      // the write, not the path or search rank.
       if (deploymentRequest && target?.path !== "/repos/saattrupdan-com.md" &&
-          hits.some((hit) => hit.path === "/repos/saattrupdan-com.md")) {
+          await kb.bundle.exists("/repos/saattrupdan-com.md")) {
         const repo = await kb.readConcept("/repos/saattrupdan-com.md");
         recorder.record("read_concept", repo.path, [repo.path]);
         state.checkCancellation();

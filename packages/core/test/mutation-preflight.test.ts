@@ -3974,9 +3974,9 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(owner, { type: "Repository", title: "saattrupdan.com" }, `Historical notes.\n\n${oldPolicy}${cliHistory}`, "seed");
     await kb.writeConcept(related, { type: "Project", title: "saattrupdan.com deployment" },
       "The project records a Git-connected Vercel deployment.", "seed");
-    vi.spyOn(kb, "search").mockResolvedValue([related, owner].map((conceptPath, i) => ({
-      path: conceptPath, type: i ? "Repository" : "Project", title: i ? "saattrupdan.com" : "saattrupdan.com deployment", score: 100 - i,
-    })));
+    vi.spyOn(kb, "search").mockResolvedValue([
+      { path: related, type: "Project", title: "saattrupdan.com deployment", score: 100 },
+    ]);
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: related,
       old_text: "**`make deploy`** is the authoritative deployment command for saattrupdan.com.",
       new_text: "Push to main is the intended deployment mechanism." } })
