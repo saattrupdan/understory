@@ -1068,7 +1068,7 @@ describe("mutation owner preflight", () => {
     });
     const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
     expect(result).toMatchObject({ ok: false, status: "failed",
-      error: "Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim." });
+      error: `Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${competitor}; target=${continuation}).` });
     expect(generateObjectMock.mock.calls.some(([request]) =>
       request.prompt.includes("COMPETING PROJECT OWNER:") && request.prompt.includes(`"path":"${competitor}"`))).toBe(true);
     expect((await kb.readConcept(continuation)).body).not.toContain(fact);

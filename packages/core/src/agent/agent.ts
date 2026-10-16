@@ -1685,7 +1685,7 @@ async function runStagedMutation(
             // complete new observation. Recheck every FULL peer separately;
             // one actual conflict or uncertain peer still blocks the write.
             if (batch.length < 2) {
-              throw new Error("Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim.");
+              throw new Error(`Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${batch[0].path}; target=${target.path}).`);
             }
             for (const peer of batch) {
               const individual = await generateObject({
@@ -1697,7 +1697,7 @@ async function runStagedMutation(
               });
               state.checkCancellation();
               if (!individual.object.safe) {
-                throw new Error("Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim.");
+                throw new Error(`Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${peer.path}; target=${target.path}).`);
               }
             }
           }
