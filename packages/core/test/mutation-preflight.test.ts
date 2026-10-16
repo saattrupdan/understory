@@ -115,6 +115,28 @@ describe("mutation owner preflight", () => {
     expect(body).toContain("The earlier scheduling plan from 2 Oct is historical.");
   });
 
+  it("narrows a broad local status proposal to one exact sentence", async () => {
+    staged();
+    const owner = "/servers/sparkie.md";
+    const stale = "The Claes Laya high-concurrency throughput sweep is still deferred until the competing jobbot becomes idle.";
+    const corrected = "The Claes Laya high-concurrency throughput sweep completed on 13 Oct 2026 after the competing jobbot became idle.";
+    const history = "The Qwen3.8 GPU host uses its own independent mmap roadmap. ".repeat(12);
+    const paragraph = `${history}${stale} The Sparkie router remains on port 31000.`;
+    const instruction = `In \`${owner}\`, correct ONLY the obsolete current claim that the Claes Laya high-concurrency throughput sweep is still deferred/not run: the live sweep was completed on 13 Oct 2026 after Sparkie's competing jobbot became idle. Preserve unrelated server observations.`;
+    await kb.writeConcept(owner, { type: "Server", title: "Sparkie" }, paragraph, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { old_text: paragraph, new_text: corrected } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain("Select the index of exactly ONE CURRENT stale status sentence");
+        expect(prompt).toContain(stale);
+        return { object: { index: 12, new_text: corrected } };
+      }).mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(`${history}${corrected}`);
+    expect(body).toContain("The Sparkie router remains on port 31000.");
+  });
+
   it("refuses to rewrite a historical local sweep plan as a current status", async () => {
     staged();
     const owner = "/servers/sparkie.md";

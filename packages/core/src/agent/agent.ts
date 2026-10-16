@@ -1053,14 +1053,36 @@ async function runStagedMutation(
         prompt: `Select ONE complete, actively stale sentence in the named owner asserting the subject's current deferred/not-run status. Return its exact verbatim old_text and a corrected new_text of ONE sentence grounded only in the caller's update. Preserve any unrelated host, GPU or historical detail in the old sentence; if that cannot be done, return empty strings. A dated historical deferral is not a current status. Do not change any other owner or sentence. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}`,
       });
       state.checkCancellation();
-      const { old_text: oldText, new_text: newText } = proposal.object;
+      let { old_text: oldText, new_text: newText } = proposal.object;
       const subjectWords = stagedWords(namedLocalStatus.groups.subject);
+      const paragraph = target.body.split(/\n\s*\n/).find((part) => part.includes(oldText) && oldText.length >= 30);
+      if (paragraph && oldText.length > 700 && paragraph.length <= 4_000) {
+        // A model can quote the entire server paragraph despite an explicit
+        // sentence-only request. Offer its exact sentence boundaries once;
+        // the model chooses an index, never invents the old operand.
+        const sentences = paragraph.split(/(?<=[.!?])\s+/);
+        if (sentences.length > 1 && sentences.length <= 30) {
+          const narrowed = await generateObject({
+            model: resolved.model,
+            schema: z.object({ index: z.number().int(), new_text: z.string() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Select the index of exactly ONE CURRENT stale status sentence about the named subject from these exact sentences. A dated planning step is historical, not current. Write ONLY a corrected replacement for that single sentence, preserving all unrelated facts inside it. Return index=-1 and empty new_text if no single sentence can be safely corrected. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}, SENTENCES:\n${JSON.stringify(sentences.map((text, index) => ({ index, text })))}`,
+          });
+          state.checkCancellation();
+          if (narrowed.object.index >= 0 && narrowed.object.index < sentences.length) {
+            oldText = sentences[narrowed.object.index];
+            newText = narrowed.object.new_text;
+          }
+        }
+      }
       const matches = target.body.split(/(?<=[.!?])\s+/).filter((sentence) => sentence === oldText);
       const oldWords = new Set(stagedWords(oldText));
+      const paragraphWords = new Set(stagedWords(paragraph ?? ""));
       const requestedWords = new Set(stagedWords(raw));
       const unsupported = stagedWords(newText).filter((word) => !oldWords.has(word) && !requestedWords.has(word));
       const oldOccurrences = oldText ? target.body.split(oldText).length - 1 : 0;
-      const missingSubject = subjectWords.slice(0, 2).filter((word) => !oldWords.has(word));
+      const missingSubject = subjectWords.slice(0, 2).filter((word) => !oldWords.has(word) && !paragraphWords.has(word));
       const overlap = stagedOverlap(newText, `${raw} ${oldText}`);
       if (oldText.length < 30 || oldText.length > 700 || newText.length < 30 || newText.length > 1000 ||
           /\n\s*\n/.test(newText) || oldOccurrences !== 1 || matches.length !== 1 ||
