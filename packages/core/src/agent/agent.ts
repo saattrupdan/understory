@@ -2178,7 +2178,9 @@ async function runStagedMutation(
         // An unscoped correction can address several findings in one paragraph.
         // Never treat a generic shared sentence as uniquely owned: read all
         // search-hit bodies before asking for a paragraph-level repair.
-        const candidateOwners = candidates.filter((candidate) => candidate.body.includes(statusParagraph)).map((candidate) => candidate.path);
+        const candidateOwners = candidates.filter((candidate) =>
+          !(target.frontmatter.type === "Repository" && candidate.frontmatter.type === "Person") &&
+          candidate.body.includes(statusParagraph)).map((candidate) => candidate.path);
         let uniquelyOwned = candidateOwners.length === 1;
         if (!uniquelyOwned) console.warn("[understory] bounded correction candidate owners", candidateOwners);
         for (const hit of hits) {
@@ -2186,6 +2188,9 @@ async function runStagedMutation(
           const competitor = await kb.readConcept(hit.path);
           recorder.record("read_concept", competitor.path, [competitor.path]);
           state.checkCancellation();
+          // A person's preference can inform a repository decision without
+          // owning that repository's security-audit paragraph.
+          if (target.frontmatter.type === "Repository" && competitor.frontmatter.type === "Person") continue;
           if (competitor.body.length > STAGED_MAX_OWNER_CHARS) {
             throw new Error("Staged mutation deferred: competing correction owner exceeds evidence limit.");
           }

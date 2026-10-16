@@ -3007,6 +3007,12 @@ describe("mutation owner preflight", () => {
       "Selenium port 4444 was not exposed in production. Preserve later Tika hardening.";
     await kb.writeConcept(owner, { type: "Repository", title: "Job-bot" },
       `${oldParagraph}\n\n${later}`, "seed");
+    await kb.writeConcept("/users/dan-smart.md", { type: "Person", title: "Dan Smart" },
+      "Dan does not want a site-wide provider spending ceiling for job-bot.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([
+      { path: owner, type: "Repository", title: "Job-bot", score: 100 },
+      { path: "/users/dan-smart.md", type: "Person", title: "Dan Smart", score: 90 },
+    ]);
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
       old_text: oldParagraph, new_text: corrected } })
       .mockResolvedValueOnce({ object: { new_text: corrected } })
