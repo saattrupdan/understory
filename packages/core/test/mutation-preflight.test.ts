@@ -1016,6 +1016,28 @@ describe("mutation owner preflight", () => {
     expect(await kb.bundle.exists("/repos/rate.md")).toBe(false);
   });
 
+  it("routes a canonical Job Bot knowledge owner despite unrelated ranked hits", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const unrelated = "/repos/other-tool.md";
+    const fact = "Job Bot retries failed webhook deliveries with exponential backoff.";
+    await kb.writeConcept(owner, { type: "Knowledge", title: "Job Bot" },
+      "Job Bot handles scheduled automation tasks.", "seed");
+    await kb.writeConcept(unrelated, { type: "Repository", title: "Other Tool" },
+      "Other Tool stores unrelated deployment notes.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: unrelated, type: "Repository", title: "Other Tool",
+      score: 100, confidence: 100, confidenceQualified: true }]);
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
+
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
+  });
+
   it("routes a project add to the unique continuation owning its exact artifact, while checking parent and peers", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering.md";
