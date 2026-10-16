@@ -2455,8 +2455,13 @@ async function runStagedMutation(
       if (!localEdit && correction && statusParagraph && !statusSubject) {
         console.warn("[understory] multi-clause correction scope declined", {
           owner: target?.path, boundedCorrection, repairedCorrection,
+          correction, directAdd: !!options.directAdd,
+          singleClause: stagedSingleClauseEdit(p.old_text, p.new_text),
           oldLength: p.old_text.length, paragraphLength: statusParagraph.length,
+          oldOccurrences: target ? target.body.split(p.old_text).length - 1 : 0,
+          paragraphOccurrences: target ? target.body.split(statusParagraph).length - 1 : 0,
           namedParagraph: !!namedParagraph,
+          excludedTraining: /^correct the Claes training-design note recorded Oct 2026:/i.test(raw.trim()),
           ownerAnchored: !!target && (stagedTitleMention(raw, target.frontmatter.title ?? "") ||
             stagedOwnerAnchor(raw, target.path)),
         });
