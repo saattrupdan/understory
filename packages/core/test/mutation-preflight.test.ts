@@ -2103,12 +2103,13 @@ describe("mutation owner preflight", () => {
 
   it.each([
     { ownerHasOldHash: true, peerHasOldHash: false, ownerHasItem: true, passesAnchor: true },
+    { ownerHasOldHash: true, peerHasOldHash: false, ownerHasItem: true, strongerPeerTitle: true, passesAnchor: true },
     { ownerHasOldHash: false, peerHasOldHash: true, ownerHasItem: true, passesAnchor: false },
     { ownerHasOldHash: true, peerHasOldHash: true, ownerHasItem: true, passesAnchor: false },
     { ownerHasOldHash: true, peerHasOldHash: false, ownerHasItem: false, passesAnchor: false },
     { ownerHasOldHash: true, peerHasOldHash: false, ownerHasItem: true, laterHasOldHash: true, passesAnchor: false },
   ])("anchors metadata-selected hash corrections to one complete owner ($ownerHasOldHash, $peerHasOldHash, $ownerHasItem, $laterHasOldHash)",
-    async ({ ownerHasOldHash, peerHasOldHash, ownerHasItem, laterHasOldHash, passesAnchor }) => {
+    async ({ ownerHasOldHash, peerHasOldHash, ownerHasItem, laterHasOldHash, strongerPeerTitle, passesAnchor }) => {
       staged();
       const owner = "/projects/label-ledger.md";
       const peer = "/projects/experiment-history.md";
@@ -2120,7 +2121,8 @@ describe("mutation owner preflight", () => {
       const peerBody = `The TONO+ONOT experiment ${peerHasOldHash ? `reused ${oldHash}` : "used synthetic photos"}. ` +
         "Separate experiment history. ".repeat(1_600);
       await kb.writeConcept(owner, { type: "Project Continuation", title: "Label Ledger" }, ownerBody, "seed");
-      await kb.writeConcept(peer, { type: "Project", title: "September Experiment" }, peerBody, "seed");
+      await kb.writeConcept(peer, { type: "Project", title: strongerPeerTitle
+        ? "FS Fotovalidering Baseline Overview" : "September Experiment" }, peerBody, "seed");
       const neutral = "/projects/neutral-notes.md";
       const late = "/projects/later-source.md";
       if (laterHasOldHash) {
@@ -2131,7 +2133,8 @@ describe("mutation owner preflight", () => {
       vi.spyOn(kb, "search").mockResolvedValue([owner, peer, ...(laterHasOldHash ? [neutral, late] : [])]
         .map((conceptPath) => ({
           path: conceptPath, type: "Project", title: conceptPath === owner
-            ? "Label Ledger" : conceptPath === peer ? "September Experiment" : "Other Project",
+            ? "Label Ledger" : conceptPath === peer
+              ? strongerPeerTitle ? "FS Fotovalidering Baseline Overview" : "September Experiment" : "Other Project",
           score: 10, confidenceQualified: false,
         })));
       generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {

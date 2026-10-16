@@ -936,6 +936,17 @@ function stagedDiscriminativeOwnerAnchor(
   const otherTerms = new Set(terms.flatMap((set, i) => i === index ? [] : [...set]));
   const specificTerms = selectedTerms.filter((term) => !otherTerms.has(term));
   if (specificTerms.length && negatedMentions.some((mention) => specificTerms.every((term) => mention.has(term)))) return false;
+  const contrastedOldHash = !directAdd && stagedContrastedOldHash(input);
+  if (contrastedOldHash) {
+    // An exact old operand in one complete owner outweighs generic title
+    // rankings. Every search-hit body must have been read before this check.
+    const body = candidates.find((candidate) => candidate.path === selectedPath)?.body;
+    const itemIds = input.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [];
+    return !!body && body.split(contrastedOldHash).length === 2 &&
+      candidates.every((candidate) => candidate.path === selectedPath ||
+        !candidate.body?.includes(contrastedOldHash)) &&
+      itemIds.some((id) => body.includes(id));
+  }
   // Shared topics are acceptable, but not when the instruction points much
   // more specifically to a different retained owner.
   const positiveTerms = new Set([...inputTerms].filter((term) =>
@@ -954,7 +965,7 @@ function stagedDiscriminativeOwnerAnchor(
     if (!inputTerms.has(term)) return false;
     return !negatedMentions.some((mention) => mention.has(term));
   });
-  if (titleAnchor && !stagedContrastedOldHash(input)) return true;
+  if (titleAnchor) return true;
 
   // A title-less correction can still be grounded by a verbatim old claim or
   // an identifier that occurs in this complete body. Generic overlap and model
@@ -964,11 +975,9 @@ function stagedDiscriminativeOwnerAnchor(
   // Only the explicit old operand of a correction can establish ownership.
   // An incidental date, filename, new hash or negated reference in the same
   // request must not authorize a different concept.
-  const contrastedOldHash = stagedContrastedOldHash(input);
   const oldClaims = [
     input.match(/\breplace\s+(?:the\s+)?(?:exact\s+)?(?:phrase|text|claim)?\s*`([^`]{12,2000})`\s+with\b/i)?.[1],
     input.match(/\breplace\s+([\p{L}\p{N}][\p{L}\p{N}_-]*\d[\p{L}\p{N}_-]*)\s+with\b/iu)?.[1],
-    contrastedOldHash,
     // Workbook/content hashes are common correction operands but are not
     // identifier-shaped like domain IDs (e.g. godkendt_id2).
     input.match(/\breplace\s+(?:the\s+)?(?:old\s+)?(?:workbook\s+)?(?:hash\s+)?([a-f0-9]{8,64})\s+with\b/i)?.[1],
@@ -980,14 +989,8 @@ function stagedDiscriminativeOwnerAnchor(
     return occurrences(selectedBody) === 1 &&
       candidates.filter((candidate) => candidate.path !== selectedPath)
         .every((candidate) => !candidate.body?.includes(claim)) &&
-      (claim === contrastedOldHash ||
-        !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term)))) &&
-      (claim !== contrastedOldHash ||
-        (input.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [])
-          .some((id) => selectedBody.includes(id)));
+      !negatedMentions.some((mention) => stagedWords(claim).every((term) => mention.has(term)));
   };
-  if (contrastedOldHash) return positivelyPresent(contrastedOldHash);
-  if (titleAnchor) return true;
   if (directAdd) {
     // An item ID already in one complete owner body can locate an exact fact
     // about that item. Generic dates, hashes and ungrounded IDs cannot.
