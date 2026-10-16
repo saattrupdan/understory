@@ -1734,7 +1734,44 @@ async function runStagedMutation(
           state.checkCancellation();
           const finding = adjudication.object;
           let duplicate = finding.complete_duplicate;
-          if (finding.certain && duplicate && !finding.contradiction && !finding.stronger_owner) {
+          let strongerOwner = finding.stronger_owner;
+          if (finding.certain && strongerOwner && !duplicate && !finding.contradiction) {
+            // A broad project prefix can make an unrelated experiment appear
+            // to own a specific item correction. Challenge only that disputed
+            // owner verdict, with independently quoted evidence from both
+            // complete inputs. Absence of a fact from a peer is not enough.
+            const audit = await generateObject({
+              model: resolved.model,
+              schema: z.object({
+                distinctObservation: z.boolean(),
+                peerTopicQuote: z.string(),
+                factItemQuote: z.string(),
+                certain: z.boolean(),
+              }).strict(),
+              temperature: 0,
+              abortSignal: options.signal,
+              prompt: `Independent audit of a disputed STRONGER OWNER verdict. Is this peer's OWN specific topic distinct from the requested observation, rather than a competing owner of the same item or baseline? Quote an exact substring identifying that topic from BOTH the peer title and full peer body in peerTopicQuote; quote an exact substring of the fact containing its specific item ID in factItemQuote. Return distinctObservation=true and certain=true only when the peer does NOT own that item or its requested correction. Shared project names, merely missing claims, and uncertain scope are not distinctions. JSON only.\nFACT:\n${fact}\nPROPOSED OWNER: ${target.path}\nPEER TITLE: ${peer.title ?? "untitled"}\nFULL PEER BODY:\n${peer.body}`,
+            });
+            state.checkCancellation();
+            const { distinctObservation, peerTopicQuote, factItemQuote, certain } = audit.object;
+            const topic = peerTopicQuote.trim();
+            const item = factItemQuote.trim();
+            const itemPattern = /\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu;
+            const itemIds = item.match(itemPattern) ?? [];
+            const factItemIds = fact.match(itemPattern) ?? [];
+            const peerIdentity = `${peer.title ?? ""} ${peer.body}`.toLowerCase();
+            const noSharedItems = factItemIds.length > 0 &&
+              factItemIds.every((id) => !peerIdentity.includes(id.toLowerCase()));
+            const separateTopic = topic.length >= 5 && peer.body.includes(topic) &&
+              !!peer.title?.includes(topic) && !fact.includes(topic) &&
+              stagedWords(topic).some((word) => word.length >= 4 &&
+                !stagedWords(fact).includes(word));
+            if (certain && distinctObservation && separateTopic && noSharedItems &&
+                item.length >= 8 && fact.includes(item) && itemIds.length > 0) {
+              strongerOwner = false;
+            }
+          }
+          if (finding.certain && duplicate && !finding.contradiction && !strongerOwner) {
             // A shared project may have recorded a generic test result without
             // the new fact's specific version or failure. Challenge an asserted
             // complete duplicate with an independently quoted missing claim.
@@ -1758,13 +1795,14 @@ async function runStagedMutation(
             }
           }
           if (!finding.certain || duplicate || finding.contradiction ||
-              finding.stronger_owner) {
+              strongerOwner) {
             // Keep the diagnostic to boolean verdicts: peer bodies and facts
             // can contain private material and must not enter service logs.
             console.warn("[understory] disputed project peer rejected", {
               peer: peer.path,
               target: target.path,
               ...finding,
+              stronger_owner: strongerOwner,
             });
             throw new Error(`Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${peer.path}; target=${target.path}).`);
           }

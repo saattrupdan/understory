@@ -1294,6 +1294,76 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
+  it("challenges a false stronger-owner claim about a distinct project experiment", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const peer = "/projects/fs-fotovalidering-tono-onot.md";
+    const fact = "FS Fotovalidering October owner-blur baseline: godkendt_id2 is image_blurred=1; 257 photos yield TP245 TN8 FP1 FN3.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "The project tracks owner-labelled photos and a dated test baseline.", "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "FS Fotovalidering — TONO+ONOT Experiment" },
+      "The TONO+ONOT experiment compared synthetic training sets in September.", "seed");
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Independent audit of a disputed STRONGER OWNER verdict")) {
+        expect(prompt).toContain("FULL PEER BODY:\nThe TONO+ONOT experiment compared synthetic training sets");
+        expect(prompt).toContain(fact);
+        return { object: { distinctObservation: true, peerTopicQuote: "TONO+ONOT",
+          factItemQuote: "godkendt_id2 is image_blurred=1", certain: true } };
+      }
+      if (prompt.includes("DISPUTED FULL PEER:")) return { object: { distinct_topic: false,
+        complete_duplicate: false, contradiction: false, stronger_owner: true, certain: true } };
+      if (prompt.includes("COMPETING PROJECT OWNERS:")) return { object: { safe: false } };
+      expect(prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(peer)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    { peerBody: "The TONO+ONOT experiment compared synthetic training sets.",
+      peerTopicQuote: "FS Fotovalidering", factItemQuote: "godkendt_id2", certain: true },
+    { peerBody: "The TONO+ONOT experiment already tested godkendt_id2 in the owner baseline.",
+      peerTopicQuote: "TONO+ONOT", factItemQuote: "godkendt_id2", certain: true },
+    { peerBody: "The TONO+ONOT experiment compared synthetic training sets.",
+      peerTopicQuote: "TONO+ONOT", factItemQuote: "godkendt_id2", certain: false },
+    { peerBody: "The TONO+ONOT experiment compared synthetic training sets.",
+      peerTopicQuote: "TONO+ONOT", factItemQuote: "another_id9", certain: true },
+    { peerBody: "The TONO+ONOT experiment also tracks GODKENDT_ID9 in the same baseline.",
+      peerTopicQuote: "TONO+ONOT", factItemQuote: "godkendt_id2", certain: true,
+      fact: "FS Fotovalidering October baseline: godkendt_id2 is image_blurred=1 and godkendt_id9 has framing_too_close." },
+    { peerBody: "The TONO+ONOT experiment compared synthetic training sets.",
+      peerTitle: "FS Fotovalidering — TONO+ONOT Experiment GODKENDT_ID9",
+      peerTopicQuote: "TONO+ONOT", factItemQuote: "godkendt_id2", certain: true,
+      fact: "FS Fotovalidering October baseline: godkendt_id2 is image_blurred=1 and godkendt_id9 has framing_too_close." },
+  ])("keeps a stronger-owner veto without a certain, grounded scope distinction ($factItemQuote, $certain)",
+    async ({ peerBody, peerTitle, peerTopicQuote, factItemQuote, certain, fact: givenFact }) => {
+      staged();
+      const owner = "/projects/fs-fotovalidering.md";
+      const peer = "/projects/fs-fotovalidering-tono-onot.md";
+      const fact = givenFact ?? "FS Fotovalidering October baseline: godkendt_id2 is image_blurred=1.";
+      await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+        "The project tracks owner-labelled photos.", "seed");
+      await kb.writeConcept(peer, { type: "Project", title: peerTitle ?? "FS Fotovalidering — TONO+ONOT Experiment" },
+        peerBody, "seed");
+      generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+        if (prompt.includes("Independent audit of a disputed STRONGER OWNER verdict")) {
+          return { object: { distinctObservation: true, peerTopicQuote, factItemQuote, certain } };
+        }
+        if (prompt.includes("DISPUTED FULL PEER:")) return { object: { distinct_topic: false,
+          complete_duplicate: false, contradiction: false, stronger_owner: true, certain: true } };
+        return { object: { safe: false } };
+      });
+      expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+        .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing project owner") });
+      expect((await kb.readConcept(owner)).body).not.toContain(fact);
+      expect((await kb.readConcept(peer)).body).toBe(`${peerBody}\n`);
+      expect(generateObjectMock).toHaveBeenCalledTimes(3);
+    });
+
   it.each([
     { finding: { distinct_topic: true, complete_duplicate: true, contradiction: false, stronger_owner: false, certain: true } },
     { finding: { distinct_topic: false, complete_duplicate: false, contradiction: false, stronger_owner: true, certain: true } },
@@ -1312,13 +1382,16 @@ describe("mutation owner preflight", () => {
       if (prompt.includes("Independent evidence audit")) {
         return { object: { missingFactClause: "", absent: false, certain: false } };
       }
+      if (prompt.includes("Independent audit of a disputed STRONGER OWNER verdict")) {
+        return { object: { distinctObservation: false, peerTopicQuote: "", factItemQuote: "", certain: false } };
+      }
       return prompt.includes("DISPUTED FULL PEER:") ? { object: finding } : { object: { safe: false } };
     });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
       .toMatchObject({ ok: false, status: "failed",
         error: `Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${peer}; target=${owner}).` });
     expect((await kb.readConcept(owner)).body).not.toContain(fact);
-    expect(generateObjectMock).toHaveBeenCalledTimes(finding.complete_duplicate ? 3 : 2);
+    expect(generateObjectMock).toHaveBeenCalledTimes(finding.complete_duplicate || finding.stronger_owner ? 3 : 2);
   });
 
   it("rechecks every complete peer when aggregate overlap mistakes a shared corpus for the new observation", async () => {
