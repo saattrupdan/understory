@@ -2165,6 +2165,96 @@ async function runStagedMutation(
       const identityWords = new Set(stagedWords(`${target?.frontmatter.title ?? ""} ${target?.path ?? ""}`));
       const statusParagraph = target?.body.split(/\n\s*\n/).find((paragraph) =>
         paragraph.includes(p.old_text));
+      let boundedCorrection = false;
+      let correctionEvidence = raw;
+      if (target && correction && !options.directAdd && !repairedCorrection &&
+          !statusSubject && !namedParagraph &&
+          !/^correct the Claes training-design note recorded Oct 2026:/i.test(raw.trim()) &&
+          !stagedSingleClauseEdit(p.old_text, p.new_text) &&
+          p.old_text.length >= 12 && target.body.split(p.old_text).length === 2 &&
+          statusParagraph && statusParagraph.length >= 100 && statusParagraph.length <= 4_000 &&
+          target.body.split(statusParagraph).length === 2 &&
+          (stagedTitleMention(raw, target.frontmatter.title ?? "") || stagedOwnerAnchor(raw, target.path))) {
+        // An unscoped correction can address several findings in one paragraph.
+        // Never treat a generic shared sentence as uniquely owned: read all
+        // search-hit bodies before asking for a paragraph-level repair.
+        let uniquelyOwned = candidates.filter((candidate) => candidate.body.includes(statusParagraph)).length === 1;
+        for (const hit of hits) {
+          if (hit.path === target.path) continue;
+          const competitor = await kb.readConcept(hit.path);
+          recorder.record("read_concept", competitor.path, [competitor.path]);
+          state.checkCancellation();
+          if (competitor.body.length > STAGED_MAX_OWNER_CHARS) {
+            throw new Error("Staged mutation deferred: competing correction owner exceeds evidence limit.");
+          }
+          if (competitor.body.includes(statusParagraph)) {
+            uniquelyOwned = false;
+          } else if (uniquelyOwned) {
+            const ownership = await generateObject({
+              model: resolved.model,
+              schema: z.object({ sameClaimOwner: z.boolean(), certain: z.boolean() }).strict(),
+              temperature: 0,
+              abortSignal: options.signal,
+              prompt: `Independent competing-owner check for a proposed multi-clause correction. Does the FULL competing concept assert any CURRENT stale claim from the EXACT OLD PARAGRAPH that this instruction asks to correct, including paraphrases? A generic shared project reference is not ownership. If unsure, return certain=false. JSON only.\nINSTRUCTION:\n${raw}\nPROPOSED OWNER ${target.path}, OLD PARAGRAPH:\n${statusParagraph}\nCOMPETING OWNER ${competitor.path}:\n${competitor.body}`,
+            });
+            state.checkCancellation();
+            if (!ownership.object.certain || ownership.object.sameClaimOwner) uniquelyOwned = false;
+          }
+        }
+        if (uniquelyOwned) {
+          const repair = await generateObject({
+            model: proposer.model,
+            schema: z.object({ new_text: z.string() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Repair ONLY the EXACT OLD PARAGRAPH in the complete observed owner. Apply all applicable corrections in the instruction to this paragraph, preserve unrelated clauses and historical facts verbatim, and do not roll back later updates elsewhere in the owner. Keep the same heading. Return a single corrected paragraph; if the instruction requires changes outside it or cannot be fully satisfied safely, return empty new_text. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nEXACT OLD PARAGRAPH:\n${statusParagraph}\nREJECTED REWRITE:\n${p.new_text}`,
+          });
+          state.checkCancellation();
+          const corrected = repair.object.new_text;
+          // Every old content word removed from the paragraph must still be
+          // grounded in the caller's instruction. This protects related but
+          // unrequested qualifiers (for example, staging authentication in a
+          // correction about production port exposure). Paraphrase can vary
+          // morphology, but it cannot silently drop an unmentioned subject.
+          const supportedWords = stagedWords(`${raw} ${corrected}`);
+          const ungroundedOldWords = stagedStatusClauses(statusParagraph).flatMap((clause) =>
+            stagedWords(clause).filter((word) => !supportedWords.some((supported) =>
+              supported === word || (word.length >= 5 && supported.length >= 4 &&
+                word.slice(0, 4) === supported.slice(0, 4)))));
+          let clauseIssue = corrected && stagedStatusClauseIssue(statusParagraph, corrected, raw);
+          if (corrected && clauseIssue?.startsWith("old clause not requested")) {
+            // A caller can retract a stale claim by meaning rather than quote
+            // its former wording. Require an independent, exact-clause mapping;
+            // a merely related or unmentioned old claim remains protected.
+            const audit = await generateObject({
+              model: resolved.model,
+              schema: z.object({ supersededClauses: z.array(z.string()), certain: z.boolean() }).strict(),
+              temperature: 0,
+              abortSignal: options.signal,
+              prompt: `Independently identify EXACT old clauses whose assertion the caller explicitly corrects by meaning, even if the caller does not quote the stale wording. Select only verbatim clauses from OLD PARAGRAPH; do not include unrelated, historical, or already-correct claims. Return certain=false and no clauses if uncertain. This is an evidence check, not write approval. JSON only.\nINSTRUCTION:\n${raw}\nOLD PARAGRAPH:\n${statusParagraph}\nPROPOSED NEW PARAGRAPH:\n${corrected}`,
+            });
+            state.checkCancellation();
+            const clauses = stagedStatusClauses(statusParagraph);
+            const superseded = audit.object.supersededClauses;
+            if (audit.object.certain && superseded.length > 0 && superseded.length <= 8 &&
+                new Set(superseded).size === superseded.length &&
+                superseded.every((clause) => clauses.includes(clause) &&
+                  stagedOverlap(clause, raw) >= 0.15)) {
+              correctionEvidence = `${raw}\n${superseded.join("\n")}`;
+              clauseIssue = stagedStatusClauseIssue(statusParagraph, corrected, correctionEvidence);
+            }
+          }
+          if (corrected && ungroundedOldWords.length === 0 && corrected.length <= 4_000 &&
+              !/\n\s*\n/.test(corrected) && corrected !== statusParagraph &&
+              stagedOverlap(statusParagraph, corrected) >= 0.5 &&
+              stagedOverlap(corrected, `${raw} ${statusParagraph}`) >= 0.65 &&
+              !clauseIssue) {
+            p.old_text = statusParagraph;
+            p.new_text = corrected;
+            boundedCorrection = true;
+          }
+        }
+      }
       let statusUniqueAcrossHits = false;
       if (statusWords.length >= 2 && statusParagraph && p.old_text.length >= 200) {
         statusUniqueAcrossHits = true;
@@ -2348,7 +2438,8 @@ async function runStagedMutation(
         !/\n\s*\n/.test(p.new_text) &&
         stagedOverlap(p.old_text, p.new_text) >= 0.68 &&
         !trainingClauseIssue;
-      const boundedParagraphRepair = (repairedCorrection || (!!quotedOwner && quotedOwner === p.path) ||
+      const boundedParagraphRepair = (repairedCorrection || boundedCorrection ||
+        (!!quotedOwner && quotedOwner === p.path) ||
         (!!namedParagraph && namedParagraph.includes(p.old_text)) || boundedStatus || prStatusUnique || trainingDesignCorrection) &&
         p.old_text.length <= 4_000 &&
         p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
@@ -2385,7 +2476,8 @@ async function runStagedMutation(
       if (!newText || !(stagedSingleClauseEdit(p.old_text, newText) ||
           (boundedParagraphRepair && newText.length <= 4_000 && !/\n\s*\n/.test(newText) &&
             (prStatusUnique || stagedOverlap(p.old_text, newText) >= (boundedStatus ? 0.7 : 0.5)) &&
-            (!boundedStatus || !stagedStatusClauseIssue(p.old_text, newText, raw)) &&
+            (!(boundedStatus || boundedCorrection) || !stagedStatusClauseIssue(p.old_text, newText,
+              boundedCorrection ? correctionEvidence : raw)) &&
             (!trainingDesignCorrection ||
               (!newText.includes("For strict <1M multilingual student") &&
                 !stagedStatusClauseIssue(p.old_text, newText, trainingInstruction,

@@ -2992,6 +2992,115 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept("/apis/billing-api.md")).body).toContain(corrected);
   });
 
+  it("repairs several job-bot findings inside one uniquely owned paragraph without rolling back later status", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const oldParagraph = "Job-bot security findings: a site-wide provider spending ceiling is an open recommendation; " +
+      "successful cover letters were fully logged; Selenium port 4444 is exposed in production; " +
+      "Auth0 subjects remain isolated for account rate limits.";
+    const later = "Later hardening: local Selenium mapping was removed and Tika runs in a bounded subprocess.";
+    const corrected = "Job-bot security findings: Dan does not want a site-wide provider spending ceiling; " +
+      "only malformed cover-letter output was included in HTTP 422 and was sanitised at 08a090c; " +
+      "Selenium port 4444 was not exposed in production; Auth0 subjects remain isolated for account rate limits.";
+    const instruction = "Update job-bot security findings: remove the open recommendation for a site-wide provider spending ceiling, Dan does not want one; " +
+      "correct the old claim that successful cover letters were fully logged: only malformed cover-letter output was included in HTTP 422 and was sanitised at 08a090c; " +
+      "Selenium port 4444 was not exposed in production. Preserve later Tika hardening.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Job-bot" },
+      `${oldParagraph}\n\n${later}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: corrected } })
+      .mockResolvedValueOnce({ object: { new_text: corrected } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Corrections are grounded and later status retained." } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result, `${JSON.stringify(result)}; calls=${generateObjectMock.mock.calls.map(([request]) => request.prompt.slice(0, 75)).join(" | ")}`).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toBe(`${corrected}\n\n${later}\n`);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("blocks an unscoped multi-clause correction when the paragraph has another owner", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const peer = "/repos/job-bot-security.md";
+    const oldParagraph = "Job-bot security findings: a spending ceiling is recommended; " +
+      "successful cover letters were fully logged; Selenium port 4444 is exposed in production.";
+    for (const conceptPath of [owner, peer]) {
+      await kb.writeConcept(conceptPath, { type: "Repository", title: conceptPath === owner ? "Job-bot" : "Job-bot security" },
+        oldParagraph, "seed");
+    }
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((conceptPath, i) => ({
+      path: conceptPath, type: "Repository", title: i ? "Job-bot security" : "Job-bot", score: 100 - i,
+    })));
+    const instruction = "Update job-bot security findings: no spending ceiling; cover-letter logging was only a malformed HTTP 422; production Selenium is not exposed.";
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: "Job-bot security findings: no spending ceiling; only malformed HTTP 422 exposed model output; Selenium port 4444 is not exposed in production." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
+    expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks a paraphrased competing owner before a multi-clause paragraph repair", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const peer = "/repos/job-bot-security.md";
+    const oldParagraph = "Job-bot security findings: a site-wide spending cap is recommended; " +
+      "successful cover letters were fully logged; Selenium port 4444 is exposed in production.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Job-bot" }, oldParagraph, "seed");
+    await kb.writeConcept(peer, { type: "Security", title: "Security Review" },
+      "The job-bot audit recommends a global provider spend limit because the model-generated letters are logged.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((conceptPath, i) => ({
+      path: conceptPath, type: i ? "Security" : "Repository", title: i ? "Security Review" : "Job-bot", score: 100 - i,
+    })));
+    const instruction = "Update job-bot security findings: remove the spending cap recommendation, correct the successful letter logging, and correct production Selenium port 4444 exposure.";
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: "Job-bot security findings: no spending cap wanted; only malformed letter output was exposed; production Selenium port 4444 is not exposed." } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain("global provider spend limit");
+        return { object: { sameClaimOwner: true, certain: true } };
+      });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
+    expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps related staging authentication when correcting production Selenium exposure", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const oldParagraph = "Job-bot security findings: production Selenium port 4444 was exposed; " +
+      "Selenium port 4444 staging authentication remains mandatory; provider spending cap is recommended.";
+    const instruction = "Update job-bot security findings: production Selenium port 4444 was not host-exposed; Dan does not want the provider spending cap recommendation.";
+    const unsafe = "Job-bot security findings: production Selenium port 4444 was not host-exposed; " +
+      "provider spending cap is no longer recommended.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Job-bot" }, oldParagraph, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: unsafe } })
+      .mockResolvedValueOnce({ object: { new_text: unsafe } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Should never approve lost staging assertion." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
+    expect((await kb.readConcept(owner)).body).toContain("staging authentication remains mandatory");
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a job-bot paragraph repair that removes unrelated claims even if the verifier approves", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const oldParagraph = "Job-bot security findings: a spending ceiling is recommended; " +
+      "successful cover letters were fully logged; Auth0 subjects remain isolated for account rate limits.";
+    const instruction = "Update job-bot security findings: Dan does not want a spending ceiling; only malformed cover-letter output was sent in HTTP 422.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Job-bot" }, oldParagraph, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: "Job-bot security findings: Dan does not want a spending ceiling; only malformed cover-letter output was sent in HTTP 422." } })
+      .mockResolvedValueOnce({ object: { new_text: "Job-bot security findings: Dan does not want a spending ceiling; only malformed cover-letter output was sent in HTTP 422." } })
+      .mockResolvedValueOnce({ object: { supersededClauses: ["Auth0 subjects remain isolated for account rate limits"], certain: true } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Not sufficient to remove Auth0." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("change spans clauses") });
+    expect((await kb.readConcept(owner)).body).toContain(oldParagraph);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
   it("refuses a correction append when independent replacement verification fails", async () => {
     await billingFixture(); staged();
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "append",
