@@ -2244,6 +2244,13 @@ async function runStagedMutation(
               clauseIssue = stagedStatusClauseIssue(statusParagraph, corrected, correctionEvidence);
             }
           }
+          console.warn("[understory] bounded correction repair verdict", {
+            owner: target.path, correctedLength: corrected.length,
+            ungroundedWords: ungroundedOldWords.length,
+            clauseIssue: clauseIssue?.split(" (")[0] ?? null,
+            oldOverlap: corrected ? stagedOverlap(statusParagraph, corrected) : 0,
+            supportedOverlap: corrected ? stagedOverlap(corrected, `${raw} ${statusParagraph}`) : 0,
+          });
           if (corrected && ungroundedOldWords.length === 0 && corrected.length <= 4_000 &&
               !/\n\s*\n/.test(corrected) && corrected !== statusParagraph &&
               stagedOverlap(statusParagraph, corrected) >= 0.5 &&
@@ -2445,6 +2452,15 @@ async function runStagedMutation(
         p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
         (prStatusUnique || stagedOverlap(p.old_text, p.new_text) >= 0.5);
       const localEdit = stagedSingleClauseEdit(p.old_text, p.new_text) || boundedParagraphRepair;
+      if (!localEdit && correction && statusParagraph && !statusSubject) {
+        console.warn("[understory] multi-clause correction scope declined", {
+          owner: target?.path, boundedCorrection, repairedCorrection,
+          oldLength: p.old_text.length, paragraphLength: statusParagraph.length,
+          namedParagraph: !!namedParagraph,
+          ownerAnchored: !!target && (stagedTitleMention(raw, target.frontmatter.title ?? "") ||
+            stagedOwnerAnchor(raw, target.path)),
+        });
+      }
       if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 || !localEdit) {
         const reason = !target ? `owner missing: ${p.path.slice(0, 256) || "(empty)"}; candidates: ${candidates.map((candidate) => candidate.path).join(", ")}` : p.old_text.length < 12 ? "old text too short" :
