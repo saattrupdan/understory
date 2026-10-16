@@ -438,6 +438,31 @@ describe("mutation owner preflight", () => {
     expect((await fs.readdir(path.join(root, "apis"))).filter((name) => name.includes("continuation"))).toHaveLength(1);
   });
 
+  it("routes an explicitly named personal boundary to its positively matched Person", async () => {
+    staged();
+    const person = "/users/dan-smart.md";
+    const project = "/projects/euroeval.md";
+    await kb.writeConcept(person, { type: "Person", title: "Dan Smart" }, "Dan works on evaluation tooling.", "seed");
+    await kb.writeConcept(project, { type: "Project", title: "EuroEval" }, "Dan reviewed several EuroEval pull requests.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([
+      { path: project, type: "Project", title: "EuroEval", score: 100, confidence: 100, confidenceQualified: true },
+    ]);
+    const fact = "Dan's GitHub PR review boundary: Do not request changes without identifying a concrete blocker. EuroEval PR #2196 was reviewed accordingly.";
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("COMPETING OWNER /projects/euroeval.md");
+      expect(prompt).toContain("Dan reviewed several EuroEval pull requests.");
+      return { object: { safe: true } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(fact);
+      expect(prompt).toContain(`OWNER ${person}`);
+      return { object: { safe: true, reason: "Supported personal boundary." } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [person] } });
+    expect((await kb.readConcept(person)).body).toContain(fact);
+    expect((await kb.readConcept(project)).body).not.toContain(fact);
+  });
+
   it("routes an explicitly named personal preference to its positively matched Person despite misleading hits", async () => {
     staged();
     const person = "/users/dan-smart.md";
