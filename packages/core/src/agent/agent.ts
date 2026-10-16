@@ -2436,7 +2436,9 @@ async function runStagedMutation(
         }
       }
       const statusSubject = !options.directAdd && options.preflightInput
-        ? raw.trim().match(/^update\s+(?:the\s+)?([A-Z][\p{L}\p{N}\s-]{8,80}?)\s+status\s*:/iu)?.[1] : undefined;
+        ? raw.trim().match(/^update\s+(?:the\s+)?([A-Z][\p{L}\p{N}\s-]{8,80}?)\s+status\s*:/iu)?.[1] ??
+          raw.trim().match(/^correct\s+(?:the\s+)?([A-Z][\p{L}\p{N}\s-]{2,80}?\s+throughput)\s+status\s*:/iu)?.[1]
+        : undefined;
       const statusWords = statusSubject ? stagedWords(statusSubject) : [];
       const oldStatusWords = new Set(stagedWords(p.old_text));
       const identityWords = new Set(stagedWords(`${target?.frontmatter.title ?? ""} ${target?.path ?? ""}`));
