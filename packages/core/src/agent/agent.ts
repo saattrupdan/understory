@@ -1282,10 +1282,45 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: too many named tool owners.");
       }
     }
+    // An explicitly labelled possessive preference is a personal fact, not
+    // project history. Search the named person separately and accept only a
+    // positively title/slug-matched Person concept; mentions of the name in
+    // arbitrary project facts are not enough to route it.
+    const personalPreferenceName = options.directAdd && options.preflightInput
+      ? raw.trim().match(/^([\p{L}][\p{L}'’.-]{1,80})['’]s\s+(?:personal\s+)?(?:[\p{L}-]+\s+){0,4}preference\s*:/iu)?.[1]
+      : undefined;
+    const personalPreferenceHits: typeof hits = [];
+    if (personalPreferenceName) {
+      const personHits = await kb.search(personalPreferenceName, { limit: 200 });
+      recorder.record("search_knowledge", personalPreferenceName, personHits.map((hit) => hit.path));
+      state.checkCancellation();
+      if (personHits.length >= 200) {
+        throw new Error("Staged mutation deferred: named person search exceeds evidence limit.");
+      }
+      const name = personalPreferenceName.toLowerCase().replace(/[’]/g, "'");
+      for (const hit of personHits) {
+        const title = (hit.title ?? "").toLowerCase().replace(/[’]/g, "'");
+        const slug = path.posix.basename(hit.path, ".md").replace(/[-_]/g, " ").toLowerCase();
+        const titleName = title === name || title.startsWith(`${name} `);
+        const slugName = slug === name || slug.startsWith(`${name} `) || slug.startsWith(`${name.replace(/\s+/g, "-")}-`);
+        if (/^Person$/i.test(hit.type) && (titleName || slugName)) {
+          personalPreferenceHits.push(hit);
+          if (!hits.some((old) => old.path === hit.path)) hits.push(hit);
+        }
+      }
+      if (personalPreferenceHits.length !== 1) {
+        throw new Error("Staged mutation deferred: named personal preference has no unique positively matched Person owner.");
+      }
+      // Every competing search hit must be checked using its complete body,
+      // not just its title, before the Person owner can receive the fact.
+      for (const hit of hits) {
+        if (!namedOwnerHits.some((owner) => owner.path === hit.path)) namedOwnerHits.push(hit);
+      }
+    }
     const canonicalPath = namedApplication ? `/repos/${namedApplication.toLowerCase()}.md`
       : leadingTool ? `/tools/${leadingTool}.md` : undefined;
-    const existingNamedPath = canonicalPath && await kb.bundle.exists(canonicalPath)
-      ? canonicalPath : namedOwnerHits.length === 1 ? namedOwnerHits[0].path : undefined;
+    const existingNamedPath = personalPreferenceHits[0]?.path ?? (canonicalPath && await kb.bundle.exists(canonicalPath)
+      ? canonicalPath : namedOwnerHits.length === 1 ? namedOwnerHits[0].path : undefined);
     const requestedPath = options.ownerHint ?? existingNamedPath ?? leadingProject?.path ?? canonicalPath;
     // A ranked search cannot enumerate prior facts in sibling notes or
     // deterministic continuations. Bounded full-body batches check all peers

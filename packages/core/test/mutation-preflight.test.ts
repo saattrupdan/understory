@@ -438,6 +438,54 @@ describe("mutation owner preflight", () => {
     expect((await fs.readdir(path.join(root, "apis"))).filter((name) => name.includes("continuation"))).toHaveLength(1);
   });
 
+  it("routes an explicitly named personal preference to its positively matched Person despite misleading hits", async () => {
+    staged();
+    const person = "/users/dan-smart.md";
+    const project = "/projects/euroeval.md";
+    await kb.writeConcept(person, { type: "Person", title: "Dan Smart" }, "Dan works on evaluation tooling.", "seed");
+    await kb.writeConcept(project, { type: "Project", title: "EuroEval" }, "Dan reviewed several EuroEval pull requests.", "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query.toLowerCase() === "dan"
+      ? [
+          { path: project, type: "Project", title: "EuroEval", score: 100, confidence: 100, confidenceQualified: true },
+          { path: person, type: "Person", title: "Dan Smart", score: 1, confidence: 1, confidenceQualified: false },
+        ]
+      : [{ path: project, type: "Project", title: "EuroEval", score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "Dan's GitHub review preference: Always thank the contributor for their contribution in the review text, including when requesting changes. EuroEval PR #2234 review 5518245608 was updated to open with 'Thanks for contributing this, Eirik.' while retaining CHANGES_REQUESTED.";
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("COMPETING OWNER /projects/euroeval.md");
+      expect(prompt).toContain("Dan reviewed several EuroEval pull requests.");
+      return { object: { safe: true } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(fact);
+      expect(prompt).toContain(`OWNER ${person}`);
+      return { object: { safe: true, reason: "" } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [person] } });
+    expect((await kb.readConcept(person)).body).toContain(fact);
+    expect((await kb.readConcept(project)).body).not.toContain(fact);
+  });
+
+  it("does not route ordinary project history mentioning Dan to the Person owner", async () => {
+    staged();
+    const person = "/users/dan-smart.md";
+    const project = "/projects/euroeval.md";
+    await kb.writeConcept(person, { type: "Person", title: "Dan Smart" }, "Dan works on evaluation tooling.", "seed");
+    await kb.writeConcept(project, { type: "Project", title: "EuroEval" }, "EuroEval review history is tracked here.", "seed");
+    const fact = "EuroEval project history: Dan reviewed pull request 2234, which retained CHANGES_REQUESTED.";
+    vi.spyOn(kb, "search").mockResolvedValue([
+      { path: project, type: "Project", title: "EuroEval", score: 100, confidence: 100, confidenceQualified: true },
+      { path: person, type: "Person", title: "Dan Smart", score: 1, confidence: 1, confidenceQualified: false },
+    ]);
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true, reason: "" } });
+    const result = await runMutation(kb, fact, {
+      ownerHint: project, preflightInput: fact, directAdd: true,
+    });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [project] } });
+    expect((await kb.readConcept(project)).body).toContain(fact);
+    expect((await kb.readConcept(person)).body).not.toContain(fact);
+  });
+
   it("does not append a differently named project's generic dataset fact to the selected owner", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
