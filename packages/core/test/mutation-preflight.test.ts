@@ -412,6 +412,53 @@ describe("mutation owner preflight", () => {
     expect(body).toContain(fact);
   });
 
+  it("rechecks duplicate verdicts claim-by-claim before accepting partial-topic owner overlap", async () => {
+    await billingFixture(); staged();
+    const ownerPath = "/apis/billing-api.md";
+    const fact = "The Billing API logs a request ID for each charge created by support tooling; retry attempts retain the same request ID.";
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false, reason: "duplicate" } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain("COMPLETE OWNER");
+        expect(prompt).toContain("Monthly charges are scheduled");
+        expect(prompt).toContain("retry attempts retain the same request ID");
+        return { object: { non_duplicate: true, relevant: true, supported: true, consistent: true, certain: true } };
+      });
+    const result = await runMutation(kb, fact, { ownerHint: ownerPath, preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [ownerPath] } });
+    expect((await kb.readConcept(ownerPath)).body).toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["complete duplicate", { non_duplicate: false, relevant: true, supported: true, consistent: true, certain: true }],
+    ["contradiction", { non_duplicate: true, relevant: true, supported: true, consistent: false, certain: true }],
+    ["uncertainty", { non_duplicate: true, relevant: true, supported: true, consistent: true, certain: false }],
+    ["unrelated owner", { non_duplicate: true, relevant: false, supported: true, consistent: true, certain: true }],
+  ])("does not accept a duplicate recheck with %s", async (_label, recheck) => {
+    await billingFixture(); staged();
+    const ownerPath = "/apis/billing-api.md";
+    const fact = "The Billing API logs a request ID for each charge created by support tooling.";
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false, reason: "duplicate" } })
+      .mockResolvedValueOnce({ object: recheck });
+    const result = await runMutation(kb, fact, { ownerHint: ownerPath, preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(ownerPath)).body).not.toContain(fact);
+  });
+
+  it("does not recheck or override contradiction and uncertain safety failures", async () => {
+    await billingFixture(); staged();
+    const ownerPath = "/apis/billing-api.md";
+    const fact = "The Billing API logs a request ID for each charge created by support tooling.";
+    for (const reason of ["contradiction", "uncertain"] as const) {
+      generateObjectMock.mockReset();
+      generateObjectMock.mockResolvedValueOnce({ object: { safe: false, reason } });
+      const result = await runMutation(kb, fact, { ownerHint: ownerPath, preflightInput: fact, directAdd: true });
+      expect(result).toMatchObject({ ok: false, status: "failed" });
+      expect(generateObjectMock).toHaveBeenCalledTimes(1);
+      expect((await kb.readConcept(ownerPath)).body).not.toContain(fact);
+    }
+  });
+
   it("stores an exact verified fact in a deterministic continuation when the owner is full", async () => {
     await billingFixture(); staged();
     const ownerPath = "/apis/billing-api.md";
