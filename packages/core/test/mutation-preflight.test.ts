@@ -684,7 +684,8 @@ describe("mutation owner preflight", () => {
       confidence: 100, confidenceQualified: true }]);
     const fact = "FS Fotovalidering 15 Oct 2026 owner-completed YuNet factor gate: 94 owner choices and Excel-first label update; factor 1.15 remains calibration-only.";
     generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
-      expect(request.prompt).toContain(`COMPETING OWNER ${narrower}`);
+      expect(request.prompt).toContain("COMPETING PROJECT OWNERS:");
+      expect(request.prompt).toContain(narrower);
       expect(request.prompt).toContain("YuNet crop experiments");
       return { object: { safe: true } };
     }).mockImplementationOnce(async (request: { prompt: string }) => {
@@ -711,7 +712,8 @@ describe("mutation owner preflight", () => {
       confidence: 100, confidenceQualified: true }]);
     const fact = `FS Fotovalidering 15 Oct 2026 owner-completed YuNet factor gate: ${"94 verified owner choices. ".repeat(52)}`;
     generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
-      expect(request.prompt).toContain(`COMPETING OWNER ${narrower}`);
+      expect(request.prompt).toContain("COMPETING PROJECT OWNERS:");
+      expect(request.prompt).toContain(narrower);
       return { object: { safe: true } };
     }).mockImplementationOnce(async (request: { prompt: string }) => {
       expect(request.prompt).toContain(`OWNER ${owner}`);
@@ -739,7 +741,8 @@ describe("mutation owner preflight", () => {
       title: "FS Fotovalidering — Automatic Passport-Crop Investigation", score: 100,
       confidence: 100, confidenceQualified: true }]);
     generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
-      expect(request.prompt).toContain(`COMPETING OWNER ${narrower}`);
+      expect(request.prompt).toContain("COMPETING PROJECT OWNERS:");
+      expect(request.prompt).toContain(narrower);
       return { object: { safe: false } };
     });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
@@ -762,7 +765,8 @@ describe("mutation owner preflight", () => {
     vi.spyOn(kb, "search").mockResolvedValue([{ path: searchHit, type: "Project",
       title: "Unrelated Project", score: 100, confidence: 100, confidenceQualified: true }]);
     generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
-      expect(request.prompt).toContain(`COMPETING OWNER ${competing}`);
+      expect(request.prompt).toContain("COMPETING PROJECT OWNERS:");
+      expect(request.prompt).toContain(competing);
       expect(request.prompt).toContain("gate scaling of 1.15");
       return { object: { safe: false } };
     });
@@ -786,6 +790,35 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
       .toMatchObject({ ok: false, status: "failed" });
     expect(generateObjectMock).not.toHaveBeenCalled();
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+  });
+
+  it("checks every same-project owner beyond twelve in complete bounded batches", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const fact = "FS Fotovalidering 15 Oct 2026: 94 owner-labelled photos favor YuNet factor 1.15; leave production unchanged.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering uses YuNet on the dated test baseline.", "seed");
+    for (let i = 0; i < 13; i++) {
+      await kb.writeConcept(`/projects/fs-fotovalidering/note-${i.toString().padStart(2, "0")}.md`,
+        { type: "Note", title: `FS note ${i}` },
+        i === 12 ? `The last owner's 94 measurements favor 1.15; live factor unchanged. ${"x".repeat(5_900)}`
+          : `Unrelated observation ${i}. ${"x".repeat(5_900)}`, "seed");
+    }
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project",
+      title: "FS Fotovalidering — Phase 1 PoC", score: 100, confidence: 100,
+      confidenceQualified: true }]);
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).not.toContain("The last owner's 94 measurements");
+      return { object: { safe: true } };
+    }).mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain("The last owner's 94 measurements");
+      expect(request.prompt).toContain("note-12.md");
+      return { object: { safe: false } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
     expect((await kb.readConcept(owner)).body).not.toContain(fact);
   });
 

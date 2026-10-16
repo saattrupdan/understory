@@ -1244,30 +1244,18 @@ async function runStagedMutation(
     const existingNamedPath = canonicalPath && await kb.bundle.exists(canonicalPath)
       ? canonicalPath : namedOwnerHits.length === 1 ? namedOwnerHits[0].path : undefined;
     const requestedPath = options.ownerHint ?? existingNamedPath ?? leadingProject?.path ?? canonicalPath;
-    if (leadingProject) {
-      // Search ranking can omit an earlier fact in a sibling note or deterministic
-      // continuation. Enumerate every same-project path, including notes outside
-      // the first five hits; the direct-add loop reads each full competing body.
-      const projectRoot = leadingProject.path.replace(/\.md$/, "");
-      const projectPeers = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-        candidate !== leadingProject.path &&
-        (candidate.startsWith(`${projectRoot}/`) || candidate.startsWith(`${projectRoot}-`)));
-      state.checkCancellation();
-      if (projectPeers.length > 12) {
-        throw new Error("Staged mutation deferred: too many same-project owners to check completely.");
-      }
-      for (const peerPath of projectPeers) {
-        if (namedOwnerHits.some((hit) => hit.path === peerPath)) continue;
-        const peer = await kb.readConcept(peerPath);
-        recorder.record("read_concept", peer.path, [peer.path]);
-        state.checkCancellation();
-        if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
-          throw new Error("Staged mutation deferred: competing project owner exceeds evidence limit.");
-        }
-        namedOwnerHits.push({ path: peer.path, type: peer.frontmatter.type,
-          title: peer.frontmatter.title, description: peer.frontmatter.description,
-          score: 0, confidenceQualified: false });
-      }
+    // A ranked search cannot enumerate prior facts in sibling notes or
+    // deterministic continuations. Bounded full-body batches check all peers
+    // before a named project's append, not just the first five search hits.
+    const projectRoot = leadingProject?.path.replace(/\.md$/, "");
+    const projectPeerPaths = projectRoot
+      ? (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
+          candidate !== leadingProject!.path &&
+          (candidate.startsWith(`${projectRoot}/`) || candidate.startsWith(`${projectRoot}-`)))
+      : [];
+    state.checkCancellation();
+    if (projectPeerPaths.length > 200) {
+      throw new Error("Staged mutation deferred: same-project owner inventory exceeds limit.");
     }
     const missingDirectPath = !!(options.directAdd && options.preflightInput && requestedPath &&
       !(await kb.bundle.exists(requestedPath)));
@@ -1515,6 +1503,41 @@ async function runStagedMutation(
         raw.trim().length >= 30 && raw.trim().length <= 4_000) {
       let target = candidates.find((candidate) => candidate.path === directPath)!;
       const fact = raw.trim();
+      if (leadingProject && target.path === leadingProject.path && projectPeerPaths.length) {
+        const batchLimit = STAGED_MAX_EVIDENCE_CHARS - fact.length - 3_000;
+        if (batchLimit < 1_000) throw new Error("Staged mutation deferred: project fact exceeds peer-check budget.");
+        let batch: Array<{ path: string; title?: string; body: string }> = [];
+        const checkBatch = async () => {
+          if (!batch.length) return;
+          const judgement = await generateObject({
+            model: resolved.model,
+            schema: z.object({ safe: z.boolean() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Independent complete competing-project check. The proposed owner is ${target.path} (${target.frontmatter.title ?? "untitled"}). Do NONE of the FULL peer bodies below already record the complete FACT (including paraphrases), contradict it, or unambiguously own it instead of the proposed owner? Partial overlap and a shared project name are not duplication. Check EVERY peer, not just the first. If uncertain, safe=false. JSON only.\nFACT:\n${fact}\nCOMPETING PROJECT OWNERS:\n${JSON.stringify(batch)}`,
+          });
+          state.checkCancellation();
+          if (!judgement.object.safe) {
+            throw new Error("Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim.");
+          }
+          batch = [];
+        };
+        for (const peerPath of projectPeerPaths) {
+          const peer = await kb.readConcept(peerPath);
+          recorder.record("read_concept", peer.path, [peer.path]);
+          state.checkCancellation();
+          if (peer.body.length > STAGED_MAX_OWNER_CHARS || peer.body.includes(fact)) {
+            throw new Error("Staged mutation deferred: competing project owner exceeds limit or already contains exact fact.");
+          }
+          const next = { path: peer.path, title: peer.frontmatter.title, body: peer.body };
+          if (JSON.stringify([...batch, next]).length > batchLimit) await checkBatch();
+          if (JSON.stringify(next).length > batchLimit) {
+            throw new Error("Staged mutation deferred: competing project owner exceeds peer-check budget.");
+          }
+          batch.push(next);
+        }
+        await checkBatch();
+      }
       for (const hit of namedOwnerHits) {
         if (hit.path === target.path) continue;
         const competitor = await kb.readConcept(hit.path);
