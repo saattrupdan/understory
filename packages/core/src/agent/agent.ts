@@ -2179,7 +2179,7 @@ async function runStagedMutation(
         // Never treat a generic shared sentence as uniquely owned: read all
         // search-hit bodies before asking for a paragraph-level repair.
         const candidateOwners = candidates.filter((candidate) =>
-          !(target.frontmatter.type === "Repository" && candidate.frontmatter.type === "Person") &&
+          !(target.path.startsWith("/repos/") && candidate.path.startsWith("/users/")) &&
           candidate.body.includes(statusParagraph)).map((candidate) => candidate.path);
         let uniquelyOwned = candidateOwners.length === 1;
         if (!uniquelyOwned) console.warn("[understory] bounded correction candidate owners", candidateOwners);
@@ -2190,7 +2190,7 @@ async function runStagedMutation(
           state.checkCancellation();
           // A person's preference can inform a repository decision without
           // owning that repository's security-audit paragraph.
-          if (target.frontmatter.type === "Repository" && competitor.frontmatter.type === "Person") continue;
+          if (target.path.startsWith("/repos/") && competitor.path.startsWith("/users/")) continue;
           if (competitor.body.length > STAGED_MAX_OWNER_CHARS) {
             throw new Error("Staged mutation deferred: competing correction owner exceeds evidence limit.");
           }
@@ -2208,7 +2208,9 @@ async function runStagedMutation(
             state.checkCancellation();
             if (!ownership.object.certain || ownership.object.sameClaimOwner) {
               console.warn("[understory] bounded correction competing claim", {
-                owner: target.path, peer: competitor.path, ...ownership.object,
+                owner: target.path, ownerType: target.frontmatter.type,
+                peer: competitor.path, peerType: competitor.frontmatter.type,
+                ...ownership.object,
               });
               uniquelyOwned = false;
             }

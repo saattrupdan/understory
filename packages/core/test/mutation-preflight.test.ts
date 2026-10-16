@@ -3005,9 +3005,9 @@ describe("mutation owner preflight", () => {
     const instruction = "Update job-bot security findings: remove the open recommendation for a site-wide provider spending ceiling, Dan does not want one; " +
       "correct the old claim that successful cover letters were fully logged: only malformed cover-letter output was included in HTTP 422 and was sanitised at 08a090c; " +
       "Selenium port 4444 was not exposed in production. Preserve later Tika hardening.";
-    await kb.writeConcept(owner, { type: "Repository", title: "Job-bot" },
+    await kb.writeConcept(owner, { type: "Application", title: "Job-bot" },
       `${oldParagraph}\n\n${later}`, "seed");
-    await kb.writeConcept("/users/dan-smart.md", { type: "Person", title: "Dan Smart" },
+    await kb.writeConcept("/users/dan-smart.md", { type: "Knowledge", title: "Dan Smart" },
       "Dan does not want a site-wide provider spending ceiling for job-bot.", "seed");
     vi.spyOn(kb, "search").mockResolvedValue([
       { path: owner, type: "Repository", title: "Job-bot", score: 100 },
