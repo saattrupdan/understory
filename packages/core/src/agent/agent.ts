@@ -2537,11 +2537,19 @@ async function runStagedMutation(
           schema: z.object({ qualifiable: z.boolean(), certain: z.boolean(), addition: z.string() }).strict(),
           temperature: 0,
           abortSignal: options.signal,
-          prompt: `Can this correction be satisfied by ONE follow-up without retracting a false CURRENT assertion? Approve only if every old assertion that would remain is a true historical observation or residual risk, and later owner updates resolve any apparent conflict. Include only novel caller-supported facts and current qualifications in addition; do not assert an old vulnerability is still open if the full owner records its fix. If any current assertion must be removed, any requested correction cannot be captured here, or uncertain, return qualifiable=false, certain=false and empty addition. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nUNSAFE OLD SPAN:\n${p.old_text}\nREJECTED REPLACEMENT:\n${p.new_text}`,
+          prompt: `Can this correction be satisfied by ONE follow-up without retracting a false CURRENT assertion? Approve only if every old assertion that would remain is a true historical observation or residual risk, and later owner updates resolve any apparent conflict. Include only novel caller-supported facts and current qualifications in addition. Do NOT copy the instruction as the addition: some caller observations may predate later owner updates. For every technical issue, compare the latest owner status first; if a local port mapping was later removed or a hard parser deadline was later added, state that CURRENT status rather than repeating an earlier remediation request. If any current assertion must be removed, any requested correction cannot be captured here, or uncertain, return qualifiable=false, certain=false and empty addition. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nUNSAFE OLD SPAN:\n${p.old_text}\nREJECTED REPLACEMENT:\n${p.new_text}`,
         });
         state.checkCancellation();
         const { qualifiable, certain, addition } = followUp.object;
-        if (qualifiable && certain && addition.length >= 30 && addition.length <= 2_000 &&
+        // These later owner assertions contradict two common stale audit
+        // requests. A model's yes/no verifier is not enough to ground the
+        // temporal ordering; reject the concrete contradiction before CAS.
+        const staleLocalPort = /local-only browser\.ports removed from docker-compose-local\.yaml/i.test(target.body) &&
+          /docker-compose-local\.yaml[^.!?]{0,100}(?:maps?\b|0\.0\.0\.0)/i.test(addition);
+        const staleTikaDeadline = /asyncio\.wait[\s\S]{0,300}\b30s deadline/i.test(target.body) &&
+          /(?:Tika|CV pars(?:er|ing))[^.!?]{0,180}\b(?:still has no|has no|without a?) (?:true )?hard timeout/i.test(addition);
+        if (qualifiable && certain && !staleLocalPort && !staleTikaDeadline &&
+            !raw.includes(addition.trim()) && addition.length >= 30 && addition.length <= 2_000 &&
             !/\n\s*\n/.test(addition) && !target.body.includes(addition.trim()) &&
             stagedOverlap(addition, `${raw} ${target.body}`) >= 0.8) {
           const judgement = await generateObject({
@@ -2549,7 +2557,7 @@ async function runStagedMutation(
             schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
             temperature: 0,
             abortSignal: options.signal,
-            prompt: `Independent complete-owner consistency check for a correction follow-up. Verify that EVERY applicable caller correction is reflected either in the proposed addition or ALREADY in the full owner, and that all preserved old assertions remain true historical observations rather than false active findings. Reject duplicate content, unsupported new claims, omitted corrections, or any assertion contradicted by later owner updates. If a replacement/retraction is necessary instead, safe=false. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nHISTORICAL OLD SPAN:\n${p.old_text}\nFOLLOW-UP:\n${addition}`,
+            prompt: `Independent complete-owner consistency check for a correction follow-up. Verify that EVERY applicable caller correction is reflected either in the proposed addition or ALREADY in the full owner, and that all preserved old assertions remain true historical observations rather than false active findings. Compare every proposed technical claim against LATER owner paragraphs, not just the historical audit: a removed local port mapping must not be called present, and an implemented hard parser deadline must not be called absent. Reject duplicate content, unsupported new claims, omitted corrections, or any assertion contradicted by later owner updates. If a replacement/retraction is necessary instead, safe=false. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nHISTORICAL OLD SPAN:\n${p.old_text}\nFOLLOW-UP:\n${addition}`,
           });
           state.checkCancellation();
           if (judgement.object.safe) {

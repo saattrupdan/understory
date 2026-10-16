@@ -3073,6 +3073,30 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(4);
   });
 
+  it.each([
+    "Only docker-compose-local.yaml maps 0.0.0.0:4444 for the scrape profile.",
+    "Tika CV parsing still has no true hard timeout despite the earlier audit.",
+  ])("rejects a stale technical follow-up despite a model approval (%s)", async (stale) => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const oldParagraph = "Job-bot audit: no provider spending ceiling was added, so several accounts could exhaust budgets; " +
+      "Tika could consume resources despite upload and page limits.";
+    const later = "Local-only browser.ports removed from docker-compose-local.yaml; " +
+      "asyncio.wait now enforces 30s deadline for Tika and kills the parser process group.";
+    const instruction = "Update job-bot security findings: Dan does not want a spending ceiling; verify production port exposure and the current Tika deadline.";
+    await kb.writeConcept(owner, { type: "Application", title: "Job-bot" }, `${oldParagraph}\n\n${later}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: "Job-bot security audit updated." } })
+      .mockResolvedValueOnce({ object: { new_text: oldParagraph } })
+      .mockResolvedValueOnce({ object: { qualifiable: true, certain: true,
+        addition: `Dan does not want a provider spending ceiling. ${stale}` } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "A mistaken model approval cannot override later status." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).toBe(`${oldParagraph}\n\n${later}\n`);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
   it("rejects a follow-up when a current false assertion must instead be retracted", async () => {
     staged();
     const owner = "/repos/job-bot.md";
