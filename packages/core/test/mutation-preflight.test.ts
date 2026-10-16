@@ -671,6 +671,118 @@ describe("mutation owner preflight", () => {
     expect(await kb.bundle.exists("/repos/rate.md")).toBe(false);
   });
 
+  it("creates a named Pi CLI gotcha instead of writing to an unrelated project continuation", async () => {
+    staged();
+    const unrelated = "/projects/fs-fotovalidering-continuation-abcdef1234567890.md";
+    await kb.writeConcept(unrelated, { type: "Project", title: "FS Fotovalidering — Continuation" },
+      "FS Fotovalidering tracks baseline photo labels.", "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "xlsx" ? [] : [{
+      path: unrelated, type: "Project", title: "FS Fotovalidering — Continuation",
+      score: 100, confidence: 100, confidenceQualified: true,
+    }]);
+    const fact = "Pi xlsx skill gotcha on FS Fotovalidering labels.xlsx: `xlsx unpack` and `xlsx sheets` misresolve absolute worksheet relationship Targets; use a surgical ZIP XML edit.";
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain("/tools/xlsx.md");
+      expect(request.prompt).toContain("FS Fotovalidering tracks baseline photo labels.");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: ["/tools/xlsx.md"] } });
+    expect((await kb.readConcept("/tools/xlsx.md")).body).toBe(`${fact}\n`);
+    expect((await kb.readConcept("/tools/xlsx.md")).frontmatter.type).toBe("CLI Tool");
+    expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
+  });
+
+  it("routes a named Pi CLI gotcha to an existing tool absent from initial hits", async () => {
+    staged();
+    const owner = "/tools/xlsx.md";
+    const unrelated = "/projects/fs-fotovalidering-continuation-abcdef1234567890.md";
+    await kb.writeConcept(owner, { type: "CLI Tool", title: "Xlsx" }, "Xlsx edits Excel workbooks.", "seed");
+    await kb.writeConcept(unrelated, { type: "Project", title: "FS Fotovalidering" },
+      "FS Fotovalidering tracks baseline photo labels.", "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "xlsx" ? [{
+      path: owner, type: "CLI Tool", title: "Xlsx", score: 5, confidenceQualified: false,
+    }] : [{ path: unrelated, type: "Project", title: "FS Fotovalidering",
+      score: 100, confidence: 100, confidenceQualified: true }]);
+    const fact = "Pi xlsx skill gotcha on FS Fotovalidering labels.xlsx: `xlsx sheets` misresolves absolute worksheet relationship Targets.";
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(unrelated)).body).not.toContain(fact);
+  });
+
+  it("does not create a duplicate named Pi CLI owner at another path", async () => {
+    staged();
+    const owner = "/tools/xlsx-cli.md";
+    const unrelated = "/projects/fs-fotovalidering-continuation-abcdef1234567890.md";
+    const fact = "Pi xlsx skill gotcha on FS Fotovalidering labels.xlsx: `xlsx sheets` misresolves absolute worksheet relationship Targets.";
+    await kb.writeConcept(owner, { type: "CLI Tool", title: "Xlsx CLI" }, fact, "seed");
+    await kb.writeConcept(unrelated, { type: "Project", title: "FS Fotovalidering" },
+      "FS Fotovalidering tracks baseline photo labels.", "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "xlsx" ? [{
+      path: owner, type: "CLI Tool", title: "Xlsx CLI", score: 5, confidenceQualified: false,
+    }] : [{ path: unrelated, type: "Project", title: "FS Fotovalidering",
+      score: 100, confidence: 100, confidenceQualified: true }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { supported: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect(await kb.bundle.exists("/tools/xlsx.md")).toBe(false);
+    expect((await kb.readConcept(owner)).body).toBe(`${fact}\n`);
+  });
+
+  it("finds an existing xlsx gotcha outside the initial project hits", async () => {
+    staged();
+    const owner = "/gotchas/xlsx-absolute-worksheet-relationships.md";
+    const unrelated = "/projects/fs-fotovalidering-continuation-abcdef1234567890.md";
+    const fact = "Pi xlsx skill gotcha on FS Fotovalidering labels.xlsx: absolute worksheet relationships misresolve in `xlsx sheets`.";
+    await kb.writeConcept(owner, { type: "Gotcha", title: "Xlsx Absolute Worksheet Relationships" },
+      "The xlsx CLI can mishandle workbook relationship Targets.", "seed");
+    await kb.writeConcept(unrelated, { type: "Project", title: "FS Fotovalidering" },
+      "FS Fotovalidering tracks baseline photo labels.", "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "xlsx" ? [{
+      path: owner, type: "Gotcha", title: "Xlsx Absolute Worksheet Relationships", score: 5,
+      confidenceQualified: false,
+    }] : [{ path: unrelated, type: "Project", title: "FS Fotovalidering",
+      score: 100, confidence: 100, confidenceQualified: true }]);
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect(await kb.bundle.exists("/tools/xlsx.md")).toBe(false);
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+  });
+
+  it("rejects a paraphrased duplicate in a competing named xlsx gotcha", async () => {
+    staged();
+    const owner = "/tools/xlsx.md";
+    const competing = "/gotchas/xlsx-absolute-worksheet-relationships.md";
+    const fact = "Pi xlsx skill gotcha: `xlsx sheets` resolves absolute worksheet relationship targets to `xl/`.";
+    await kb.writeConcept(owner, { type: "CLI Tool", title: "Xlsx" },
+      "Xlsx edits spreadsheets surgically.", "seed");
+    await kb.writeConcept(competing, { type: "Gotcha", title: "Xlsx Absolute Worksheet Relationships" },
+      "Workbook targets beginning with /xl/worksheets cause xlsx sheets to resolve to the xl directory.", "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "xlsx" ? [
+      { path: owner, type: "CLI Tool", title: "Xlsx", score: 5, confidenceQualified: false },
+      { path: competing, type: "Gotcha", title: "Xlsx Absolute Worksheet Relationships", score: 4,
+        confidenceQualified: false },
+    ] : [{ path: owner, type: "CLI Tool", title: "Xlsx", score: 100,
+      confidence: 100, confidenceQualified: true }]);
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain("Workbook targets beginning with /xl/worksheets");
+      return { object: { safe: false } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+    expect((await kb.readConcept(competing)).body).not.toContain(fact);
+  });
+
   it("rejects a missing hinted path unrelated to the exact fact", async () => {
     staged();
     await kb.writeConcept("/projects/general-datasets.md", { type: "Project", title: "General Datasets" },

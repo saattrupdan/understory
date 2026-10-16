@@ -1146,6 +1146,8 @@ async function runStagedMutation(
     // that a hyphenated word is an application (e.g. "Rate-limit policy").
     // Classification locates a candidate; the full independent owner check
     // below still controls any creation or write.
+    const leadingTool = !options.ownerHint && options.directAdd && options.preflightInput &&
+      raw.trim().match(/^Pi\s+([a-z][a-z0-9-]{2,})\s+(?:skill|CLI)\s+gotcha\b/i)?.[1].toLowerCase();
     const leadingPullRequest = !options.ownerHint && options.directAdd && options.preflightInput &&
       raw.trim().match(/^([A-Z][a-z]{2,})\s+PR\s+#\d+\b/)?.[1];
     const possibleRepository = !options.ownerHint && options.directAdd && options.preflightInput &&
@@ -1193,7 +1195,31 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: too many named owner candidates.");
       }
     }
-    const canonicalPath = namedApplication ? `/repos/${namedApplication.toLowerCase()}.md` : undefined;
+    // A Pi skill/CLI gotcha names its tool, not the project supplying its
+    // example. Keep the original search hits as competing evidence while
+    // locating an existing named tool or proposing its own concept.
+    if (leadingTool) {
+      const subjectHits = await kb.search(leadingTool, { limit: 200 });
+      recorder.record("search_knowledge", leadingTool, subjectHits.map((hit) => hit.path));
+      state.checkCancellation();
+      if (subjectHits.length >= 200) {
+        throw new Error("Staged mutation deferred: named tool search exceeds evidence limit.");
+      }
+      for (const hit of subjectHits) {
+        const slug = path.posix.basename(hit.path, ".md").replace(/[-_]/g, " ");
+        if (!stagedWords(`${hit.title ?? ""} ${slug}`).includes(leadingTool) ||
+            !(/^(?:CLI Tool|Skill|Extension|Gotcha)$/i.test(hit.type) ||
+              hit.path.startsWith("/tools/") || hit.path.startsWith("/skills/") ||
+              hit.path.startsWith("/gotchas/"))) continue;
+        namedOwnerHits.push(hit);
+        if (!hits.some((old) => old.path === hit.path)) hits.push(hit);
+      }
+      if (namedOwnerHits.length > 12) {
+        throw new Error("Staged mutation deferred: too many named tool owners.");
+      }
+    }
+    const canonicalPath = namedApplication ? `/repos/${namedApplication.toLowerCase()}.md`
+      : leadingTool ? `/tools/${leadingTool}.md` : undefined;
     const existingNamedPath = canonicalPath && await kb.bundle.exists(canonicalPath)
       ? canonicalPath : namedOwnerHits.length === 1 ? namedOwnerHits[0].path : undefined;
     const requestedPath = options.ownerHint ?? existingNamedPath ?? canonicalPath;
@@ -1213,7 +1239,7 @@ async function runStagedMutation(
       const distinctiveOverlap = [...pathTerms].filter((term) => factTerms.has(term));
       // The proposed new concept must be specifically named by the exact fact;
       // generic search overlap is not evidence that an arbitrary path belongs.
-      if (distinctiveOverlap.length < (leadingPullRequest && namedApplication === leadingPullRequest ? 1 : 2) || hits.length === 0) {
+      if (distinctiveOverlap.length < ((leadingPullRequest && namedApplication === leadingPullRequest) || leadingTool ? 1 : 2) || hits.length === 0) {
         throw new Error("Staged mutation deferred: missing suggested path lacks a positive fact-topic anchor.");
       }
       const evidence = [];
@@ -1256,7 +1282,7 @@ async function runStagedMutation(
         .map((part) => part[0].toUpperCase() + part.slice(1)).join(" ").slice(0, 256);
       await kb.createConceptIfUnchanged(
         anchor.path, sha256(anchor.body), requestedPath!,
-        { type: "Knowledge", title, description: raw.trim().slice(0, 400) },
+        { type: leadingTool ? "CLI Tool" : "Knowledge", title, description: raw.trim().slice(0, 400) },
         `${raw.trim()}\n`, "Staged mutation: create exact verified fact", options.signal,
         (writtenPath) => { changed = [writtenPath]; }
       );
@@ -1454,6 +1480,20 @@ async function runStagedMutation(
         if (competitor.body.includes(fact)) {
           throw new Error("Staged mutation deferred: exact fact already belongs to another named owner.");
         }
+        if (fact.length + competitor.body.length + 2_000 > STAGED_MAX_EVIDENCE_CHARS) {
+          throw new Error("Staged mutation deferred: competing named owner exceeds prompt budget.");
+        }
+        const competingCheck = await generateObject({
+          model: resolved.model,
+          schema: z.object({ safe: z.boolean() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Independent complete competing-owner check. The proposed target is ${target.path} (${target.frontmatter.title ?? "untitled"}). Does the FULL competing owner below neither already record the caller's complete fact (including paraphrases), nor contradict it, nor unambiguously own it instead of the proposed target? Partial overlap is not duplication. A shared tool or project word alone does not establish ownership. If uncertain, safe=false. JSON only.\nFACT:\n${fact}\nCOMPETING OWNER ${competitor.path} (${competitor.frontmatter.title ?? "untitled"}):\n${competitor.body}`,
+        });
+        state.checkCancellation();
+        if (!competingCheck.object.safe) {
+          throw new Error("Staged mutation deferred: competing named owner has a duplicate, contradiction, or stronger claim.");
+        }
       }
       // A continuation may match only by a broad project prefix. When it does
       // not mention the requested item, verify against its parent instead of
@@ -1494,7 +1534,7 @@ async function runStagedMutation(
         if (!hintedPath && (wouldOverflow || target.path.includes("-continuation-")) &&
             !groundedContinuation && !derivedParent &&
             (!target.frontmatter.title || !stagedTitleMention(raw, target.frontmatter.title))) {
-          throw new Error("Staged mutation deferred: unhinted continuation owner was not explicitly named.");
+          throw new Error(`Staged mutation deferred: unhinted continuation owner was not explicitly named (target=${target.path}, named_tool=${leadingTool ?? "none"}, requested=${requestedPath ?? "none"}).`);
         }
         const judgement = await generateObject({
           model: resolved.model,
