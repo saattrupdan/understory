@@ -1048,6 +1048,40 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body).not.toContain(fact);
   });
 
+  it("selects the UI continuation over a privacy continuation mentioning the same file", async () => {
+    staged();
+    const parent = "/projects/fs-fotovalidering.md";
+    const artifact = "file:///tmp/shared-review.html";
+    const privacy = "/projects/fs-fotovalidering-continuation-11111111.md";
+    const ui = "/projects/fs-fotovalidering-continuation-22222222.md";
+    await kb.writeConcept(parent, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "The FS test-photo project has an annotation page.", "seed");
+    await kb.writeConcept(privacy, { type: "Project Continuation", title: "FS Fotovalidering — Private Photos" },
+      `Private photos in ${artifact} are served only through the token-gated local image server.`, "seed");
+    await kb.writeConcept(ui, { type: "Project Continuation", title: "FS Fotovalidering — Annotation UI" },
+      `The annotation UI in ${artifact} saves the reviewed count and lets Up/Down arrows navigate without marking photos reviewed.`, "seed");
+    const fact = `FS Fotovalidering annotation page ${artifact} now moves its visual position bar on Up/Down navigation independently of reviewed count.`;
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Read-only artifact owner selection")) {
+        expect(prompt).toContain(privacy);
+        expect(prompt).toContain(ui);
+        return { object: { path: ui } };
+      }
+      if (prompt.includes("COMPETING PROJECT OWNERS:")) {
+        expect(prompt).toContain(`The proposed owner is ${ui}`);
+        expect(prompt).toContain(privacy);
+        expect(prompt).toContain(parent);
+      } else {
+        expect(prompt).toContain(`OWNER ${ui}`);
+      }
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [ui] } });
+    expect((await kb.readConcept(ui)).body).toContain(fact);
+    expect((await kb.readConcept(privacy)).body).not.toContain(fact);
+  });
+
   it("keeps the parent route and reports paths when two continuations own the same artifact", async () => {
     staged();
     const parent = "/projects/fs-fotovalidering.md";

@@ -1664,8 +1664,31 @@ async function runStagedMutation(
           // siblings still undergo the full competing-owner check below.
           const continuations = matchingPeers.filter((peer) =>
             /-continuation-[a-f0-9]{8,16}\.md$/.test(peer.path));
-          const artifactOwner = matchingPeers.length === 1 ? matchingPeers[0]
+          let artifactOwner = matchingPeers.length === 1 ? matchingPeers[0]
             : continuations.length === 1 ? continuations[0] : undefined;
+          if (!artifactOwner && continuations.length > 1 && continuations.length <= 8) {
+            // Only locate an owner here. The complete bodies of all peers are
+            // still checked below, and the chosen owner is checked before CAS.
+            const contexts = continuations.map((peer) => {
+              const index = Math.min(...artifacts.map((artifact) => {
+                const position = peer.body.indexOf(artifact);
+                return position < 0 ? peer.body.length : position;
+              }));
+              return { path: peer.path, title: peer.frontmatter.title,
+                context: peer.body.slice(Math.max(0, index - 1_000), index + 3_000) };
+            });
+            if (JSON.stringify(contexts).length + fact.length <= STAGED_MAX_EVIDENCE_CHARS) {
+              const selection = await generateObject({
+                model: resolved.model,
+                schema: z.object({ path: z.string() }).strict(),
+                temperature: 0,
+                abortSignal: options.signal,
+                prompt: `Read-only artifact owner selection. Several project continuations mention the SAME exact file URI. Choose the ONE continuation whose local context positively owns the requested change's specific topic and operational behavior; a cross-reference, generic privacy rule, or unrelated data fact is not ownership. If they fit equally, return an empty path. This choice never authorizes a write. JSON only.\nFACT:\n${fact}\nCANDIDATE CONTEXTS:\n${JSON.stringify(contexts)}`,
+              });
+              state.checkCancellation();
+              artifactOwner = continuations.find((peer) => peer.path === selection.object.path);
+            }
+          }
           if (!artifactOwner) {
             // Paths only: distinguish a genuinely ambiguous artifact from a
             // missing match without logging private knowledge-body content.
