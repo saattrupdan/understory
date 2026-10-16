@@ -1121,7 +1121,42 @@ async function runStagedMutation(
           score: 0, confidenceQualified: false }, ...hits];
       }
     }
-    let sectionOwnerPath: string | undefined;
+    // A PR status correction must locate the owner of the stale review, not
+    // merely the repository whose PR is discussed in the request. Search the
+    // exact old-state marker and require the same named PR in ONE full-body
+    // paragraph; this is candidate selection, never write authorization.
+    let prReviewOwnerPath: string | undefined;
+    const requestedReview = !options.directAdd && options.preflightInput && !options.ownerHint &&
+      /\bCHANGES_REQUESTED\b/.test(raw) && /\bAPPROVED\b/.test(raw)
+      ? raw.trim().match(/^update\s+(?:the\s+)?([\p{L}\p{N}./_-]+)\s+PR\s*#(\d+)\s+status\s*:/iu) : null;
+    if (requestedReview) {
+      const reviewHits = await kb.search("CHANGES_REQUESTED", { limit: 200 });
+      recorder.record("search_knowledge", "CHANGES_REQUESTED", reviewHits.map((hit) => hit.path));
+      state.checkCancellation();
+      if (reviewHits.length >= 200) throw new Error("Staged mutation deferred: PR review owner search exceeds limit.");
+      const owners: string[] = [];
+      const prNumber = new RegExp(`\\bPR\\s*#${requestedReview[2]}\\b`, "i");
+      for (const hit of reviewHits) {
+        const concept = await kb.readConcept(hit.path);
+        recorder.record("read_concept", concept.path, [concept.path]);
+        state.checkCancellation();
+        if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: PR review owner exceeds evidence limit.");
+        }
+        if (concept.body.split(/\n\s*\n/).some((paragraph) =>
+          paragraph.toLowerCase().includes(requestedReview[1].toLowerCase()) &&
+          prNumber.test(paragraph) && /\bCHANGES_REQUESTED\b/.test(paragraph) &&
+          /\breview\b/i.test(paragraph))) owners.push(hit.path);
+      }
+      if (owners.length > 1) throw new Error("Staged mutation deferred: PR review status has multiple owners.");
+      prReviewOwnerPath = owners[0];
+      if (prReviewOwnerPath && !hits.some((hit) => hit.path === prReviewOwnerPath)) {
+        const owner = await kb.readConcept(prReviewOwnerPath);
+        hits.push({ path: owner.path, type: owner.frontmatter.type, title: owner.frontmatter.title,
+          description: owner.frontmatter.description, score: 0, confidenceQualified: false });
+      }
+    }
+    let sectionOwnerPath: string | undefined = prReviewOwnerPath;
     if (namedSection) {
       const sectionOwners: string[] = [];
       for (const hit of hits) {

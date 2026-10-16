@@ -1674,6 +1674,48 @@ describe("mutation owner preflight", () => {
     expect(body).not.toContain(oldStatus);
   });
 
+  it("locates the stale PR review outside the repository named in the correction", async () => {
+    staged();
+    const topic = "/repos/prezzi.md";
+    const owner = "/repos/syv-ai-agentbase.md";
+    const stale = "The prior CHANGES_REQUESTED GitHub review remains unless he explicitly asks to update it.";
+    const corrected = "Dan explicitly approved the remaining nav behavior. GitHub reviewDecision is now APPROVED; the earlier CHANGES_REQUESTED review has been superseded.";
+    const instruction = `Update the Syv-ai/prezzi PR #21 status: ${corrected} Correct any older note saying the review still remains changes requested.`;
+    const context = "Syv-ai/prezzi PR #21: Dan tested navigation before approving it. ";
+    await kb.writeConcept(topic, { type: "Repository", title: "Prezzi" },
+      "In Syv-ai/prezzi PR #21, 82/83 tests passed during review.", "seed");
+    await kb.writeConcept(owner, { type: "Repository", title: "Syv-ai Agentbase" },
+      `${context}${stale}\n\nOther history remains.`, "seed");
+    vi.spyOn(kb, "search").mockImplementation(async (query) => query === "CHANGES_REQUESTED"
+      ? [{ path: topic, type: "Repository", score: 10 }, { path: owner, type: "Repository", score: 9 }]
+      : [{ path: topic, type: "Repository", title: "Prezzi", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: stale, new_text: corrected } })
+      .mockResolvedValueOnce({ object: { safe: true } })
+      .mockImplementation(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain(`OWNER ${owner}`);
+        expect(prompt).toContain(context);
+        return { object: { safe: true, reason: "Only this active PR review changed." } };
+      });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(corrected);
+    expect((await kb.readConcept(owner)).body).toContain(context);
+    expect((await kb.readConcept(topic)).body).toContain("82/83 tests passed");
+  });
+
+  it("rejects ambiguous exact PR review owners before proposing a replacement", async () => {
+    staged();
+    const instruction = "Update the Syv-ai/prezzi PR #21 status: APPROVED replaces the prior CHANGES_REQUESTED review.";
+    const body = "Syv-ai/prezzi PR #21: The prior CHANGES_REQUESTED review remains active.";
+    const paths = ["/repos/prezzi.md", "/repos/review-copy.md"];
+    for (const owner of paths) await kb.writeConcept(owner, { type: "Repository", title: "Prezzi" }, body, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue(paths.map((owner) => ({ path: owner, type: "Repository", score: 10 })));
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("multiple owners") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
   it("narrows a broad proposed operand to the one uniquely scoped PR review sentence", async () => {
     staged();
     const owner = "/repos/syv-ai-agentbase.md";
