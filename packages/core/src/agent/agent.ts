@@ -2058,10 +2058,18 @@ async function runStagedMutation(
           .map((match) => match[1].toLowerCase());
         const continuationClauses = fact.split(/;\s*|(?<=[.!?])\s+|\n+/)
           .map((clause) => clause.trim()).filter((clause) => stagedWords(clause).length >= 4);
+        const genericContinuationTerms = new Set([
+          "fs", "fotovalidering", "project", "record", "records", "label", "labels",
+          "fact", "source", "data", "new", "unknown", "retain", "checked",
+        ]);
+        const clauseHasDistinctiveEvidence = (clause: string): boolean => {
+          const evidenceTerms = new Set(stagedWords(target.body));
+          const distinctive = stagedWords(clause).filter((term) =>
+            !genericContinuationTerms.has(term) && evidenceTerms.has(term));
+          return new Set(distinctive).size >= 2;
+        };
         const groundedMultiFactContinuation = target.path.includes("-continuation-") && !wouldOverflow &&
-          continuationClauses.length >= 2 && continuationClauses.every((clause) =>
-            stagedOverlap(clause, target.body) >= 0.25) &&
-          stagedOverlap(fact, target.body) >= 0.35 &&
+          continuationClauses.length >= 2 && continuationClauses.every(clauseHasDistinctiveEvidence) &&
           !negativeSpans.some((span) => stagedOverlap(span, target.body) >= 0.5);
         const groundedContinuation = target.path.includes("-continuation-") && !wouldOverflow &&
           (itemIds.some((id) => target.body.includes(id) &&
