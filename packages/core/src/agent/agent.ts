@@ -1708,7 +1708,7 @@ async function runStagedMutation(
         let batch: Array<{ path: string; title?: string; body: string }> = [];
         const checkDisputedPeer = async (peer: { path: string; title?: string; body: string }) => {
           // A boolean refusal can conflate a shared project prefix with a
-          // complete duplicate. A distinct-topic finding must be explicit;
+          // complete duplicate. Shared topics alone are not conflicts;
           // uncertainty or any concrete conflict still blocks the append.
           const adjudication = await generateObject({
             model: resolved.model,
@@ -1721,12 +1721,12 @@ async function runStagedMutation(
             }).strict(),
             temperature: 0,
             abortSignal: options.signal,
-            prompt: `Independent structured review of a disputed project peer. Compare the EXACT FACT against the FULL PEER BODY claim by claim, not against its shared project name. Return distinct_topic=true only when the peer's own subject is positively different from the fact's specific observation, not merely when it lacks an exact quote. A complete paraphrase counts as complete_duplicate; conflicting assertions count as contradiction; an owner unambiguously covering this specific observation counts as stronger_owner. Return certain=false on any uncertainty. JSON only.\nFACT:\n${fact}\nPROPOSED OWNER: ${target.path}\nDISPUTED FULL PEER:\n${JSON.stringify(peer)}`,
+            prompt: `Independent structured review of a disputed project peer. Compare the EXACT FACT against the FULL PEER BODY claim by claim, not against its shared project name. Return distinct_topic=true only when the peer's own subject is positively different from the fact's specific observation, not merely when it lacks an exact quote. A complete paraphrase counts as complete_duplicate; conflicting assertions count as contradiction; an owner unambiguously covering this specific observation counts as stronger_owner. A shared project topic alone is none of these: you can be certain that none applies even when distinct_topic=false. Return certain=false if you cannot confidently rule out a concrete conflict. JSON only.\nFACT:\n${fact}\nPROPOSED OWNER: ${target.path}\nDISPUTED FULL PEER:\n${JSON.stringify(peer)}`,
           });
           state.checkCancellation();
           const finding = adjudication.object;
-          if (!finding.certain || !finding.distinct_topic || finding.complete_duplicate ||
-              finding.contradiction || finding.stronger_owner) {
+          if (!finding.certain || finding.complete_duplicate || finding.contradiction ||
+              finding.stronger_owner) {
             throw new Error(`Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${peer.path}; target=${target.path}).`);
           }
         };

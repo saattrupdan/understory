@@ -1215,8 +1215,35 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
+  it("allows a new test-environment observation when a peer shares the project topic", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const peer = "/projects/fs-fotovalidering-tono-onot.md";
+    const fact = "FS Fotovalidering test environment gotcha: a fresh worktree used CPython 3.14 and missed _pillow_heif; uv sync --all-groups --python 3.12 and npm ci fixed make test.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering has a Python test suite.", "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "FS Fotovalidering — TONO+ONOT" },
+      "The TONO+ONOT experiment uses synthetic data for FS Fotovalidering model training.", "seed");
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("DISPUTED FULL PEER:")) {
+        expect(prompt).toContain("The TONO+ONOT experiment uses synthetic data");
+        return { object: { distinct_topic: false, complete_duplicate: false,
+          contradiction: false, stronger_owner: false, certain: true } };
+      }
+      if (prompt.includes("COMPETING PROJECT OWNERS:")) return { object: { safe: false } };
+      expect(prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(peer)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
   it.each([
     { finding: { distinct_topic: true, complete_duplicate: true, contradiction: false, stronger_owner: false, certain: true } },
+    { finding: { distinct_topic: false, complete_duplicate: false, contradiction: false, stronger_owner: true, certain: true } },
     { finding: { distinct_topic: false, complete_duplicate: false, contradiction: true, stronger_owner: false, certain: true } },
     { finding: { distinct_topic: false, complete_duplicate: false, contradiction: false, stronger_owner: false, certain: false } },
   ])("blocks a disputed peer on duplicate, contradiction, or uncertainty ($finding)", async ({ finding }) => {
