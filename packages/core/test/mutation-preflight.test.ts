@@ -2516,6 +2516,43 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(peer)).body).toContain("remains pending");
   });
 
+  it.each([false, true])("distinguishes historical peer deferral from a current contradiction (%s)", async (currentStale) => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const peer = "/servers/sparkie.md";
+    const old = "Claes Laya throughput status: High-concurrency live sweep WAS NOT run. " +
+      "The task-first benchmark uses a 1,000-name pool on router port 31000. " +
+      "The unrelated Jev validation history is retained for this project. " +
+      "The worker-count checkpoint policy remains separately documented.";
+    const newer = old.replace("WAS NOT run", "was run on 13 Oct 2026") +
+      " 32 workers measured 5.223 assignments/s.";
+    const peerBody = "Earlier scheduling plan on 2 Oct 2026 deferred the Claes Laya high-concurrency sweep. " +
+      "Claes Laya high-concurrency sweep completed on 13 Oct 2026 after jobbot became idle. " +
+      (currentStale ? "Current Claes Laya sweep status: still pending despite that completed run." : "Qwen GPU roadmap is separate.");
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, old, "seed");
+    await kb.writeConcept(peer, { type: "Server", title: "Sparkie" }, peerBody, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((path, i) => ({
+      path, type: i ? "Server" : "Project", title: i ? "Sparkie" : "Claes Jev Diagnostics", score: 10 - i,
+    })));
+    const instruction = "Correct Claes Laya throughput status: the high-concurrency live sweep was run on 13 Oct 2026 after jobbot idle; 32 workers measured 5.223 assignments/s.";
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
+        ...baseProposal, action: "replace", path: owner, old_text: old, new_text: newer,
+      } };
+      if (prompt.includes("Independent competing-owner check for a named throughput status")) {
+        return { object: { certain: true, sameClaimOwner: true } };
+      }
+      if (prompt.includes("Independent temporal peer check")) return { object: {
+        certain: true, currentStaleQuote: currentStale ? "Current Claes Laya sweep status: still pending" : "",
+      } };
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result.ok, JSON.stringify(result)).toBe(!currentStale);
+    expect((await kb.readConcept(owner)).body).toContain(currentStale ? "WAS NOT run" : "was run on 13 Oct 2026");
+    expect((await kb.readConcept(peer)).body).toBe(`${peerBody}\n`);
+  });
+
   it("does not let a shared throughput word make Sparkie Qwen the Claes owner", async () => {
     staged();
     const wrong = "/notes/sparkie-qwen38-throughput-roadmap.md";

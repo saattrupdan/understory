@@ -2736,8 +2736,32 @@ async function runStagedMutation(
               prompt: `Independent competing-owner check for a named throughput status correction. Does this COMPLETE competing concept assert the SAME CURRENT stale throughput/run-status claim as the proposed owner, including paraphrases? Shared host or project mentions alone do not establish ownership. If uncertain, certain=false. JSON only.\nINSTRUCTION:\n${raw}\nPROPOSED OWNER ${target?.path}, OLD STATUS:\n${p.old_text}\nCOMPETING OWNER ${competitor.path}:\n${competitor.body}`,
             });
             state.checkCancellation();
-            if (!ownership.object.certain || ownership.object.sameClaimOwner) {
-              throw new Error(`Staged mutation deferred: competing throughput claim in ${competitor.path} (certain=${ownership.object.certain}, same_claim=${ownership.object.sameClaimOwner}).`);
+            if (!ownership.object.certain) {
+              throw new Error(`Staged mutation deferred: uncertain competing throughput claim in ${competitor.path}.`);
+            }
+            if (ownership.object.sameClaimOwner) {
+              // A server note can retain an earlier scheduling plan after its
+              // CURRENT status is corrected. Require a positive completed-run
+              // statement in the peer and a separate full-body adjudication;
+              // never dismiss a still-current contradiction as history.
+              const completedPeer = competitor.body.split(/\n\s*\n/).some((paragraph) =>
+                /\bClaes\b/i.test(paragraph) && /\bLaya\b/i.test(paragraph) &&
+                /\b(?:sweep|throughput)\b/i.test(paragraph) &&
+                /\b(?:completed|ran|run)\b/i.test(paragraph) && paragraph.includes("13 Oct 2026"));
+              if (!completedPeer) {
+                throw new Error(`Staged mutation deferred: competing throughput claim in ${competitor.path} lacks a completed update.`);
+              }
+              const currentStatus = await generateObject({
+                model: resolved.model,
+                schema: z.object({ certain: z.boolean(), currentStaleQuote: z.string() }).strict(),
+                temperature: 0,
+                abortSignal: options.signal,
+                prompt: `Independent temporal peer check. This COMPLETE peer contains a Claes Laya sweep completed on 13 Oct 2026. Does it ALSO assert as CURRENT that this same high-concurrency sweep remains NOT run, still deferred or pending? A clearly dated earlier plan is historical; an undated contradictory present status is current. If current, quote an EXACT substring identifying that current stale claim in currentStaleQuote. If all stale language is explicitly historical/superseded, return certain=true with an empty quote. If uncertain, certain=false. JSON only.\nINSTRUCTION:\n${raw}\nPROPOSED OWNER ${target?.path}, OLD STATUS:\n${p.old_text}\nCOMPLETE PEER ${competitor.path}:\n${competitor.body}`,
+              });
+              state.checkCancellation();
+              if (!currentStatus.object.certain || currentStatus.object.currentStaleQuote) {
+                throw new Error(`Staged mutation deferred: competing throughput claim remains current or uncertain in ${competitor.path}.`);
+              }
             }
           }
         }
