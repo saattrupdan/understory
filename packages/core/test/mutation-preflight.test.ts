@@ -1492,9 +1492,9 @@ describe("mutation owner preflight", () => {
       title: "Understory Query Latency", score: 10, confidenceQualified: false }]);
     const fact = "Understory memory-queue recovery checks historical done receipts before replaying a failed update.";
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
-      expect(prompt).toContain(`"path":"${owner}"`);
-      expect(prompt).toContain(`"path":"${wrong}"`);
-      return { object: { path: owner } };
+      expect(prompt).toContain(`COMPETING OWNER ${wrong}`);
+      expect(prompt).toContain("Understory recall latency depends on search throughput.");
+      return { object: { safe: true } };
     }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain(`OWNER ${owner}`);
       return { object: { safe: true } };
@@ -1506,7 +1506,7 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(wrong)).body).not.toContain(fact);
   });
 
-  it("retains all five original owners when a named repository enters metadata selection", async () => {
+  it("checks all five original owners when routing to a canonical repository", async () => {
     staged();
     const named = "/repos/understory.md";
     const original = [1, 2, 3, 4, 5].map((i) => `/repos/understory-topic-${i}.md`);
@@ -1521,19 +1521,22 @@ describe("mutation owner preflight", () => {
       score: 10 - i, confidenceQualified: false,
     })));
     const fact = "Understory's topic 5 already records this incident fact.";
-    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
-      expect(prompt).toContain("CANDIDATE METADATA");
-      expect(prompt).toContain(`"path":"${named}"`);
-      expect(prompt).toContain(`"path":"${original[4]}"`);
-      return { object: { path: original[4] } };
-    }).mockImplementationOnce(async () => ({ object: { safe: false, reason: "duplicate" } }));
+    const checked: string[] = [];
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      const match = prompt.match(/COMPETING OWNER (\/repos\/understory-topic-\d\.md)/);
+      expect(match).not.toBeNull();
+      checked.push(match![1]);
+      expect(prompt).toContain(`Understory topic ${Number(match![1].match(/\d+/)![0])} context.`);
+      return { object: { safe: match![1] !== original[4] } };
+    });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("duplicate") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing named owner") });
+    expect(checked).toEqual(original);
     expect((await kb.readConcept(named)).body).not.toContain(fact);
     expect((await kb.readConcept(original[4])).body).not.toContain(fact);
   });
 
-  it("does not let an oversized named repository hide a valid search owner", async () => {
+  it("defers rather than bypassing an oversized canonical repository", async () => {
     staged();
     const named = "/repos/understory.md";
     const relevant = "/repos/understory-memory.md";
@@ -1544,12 +1547,9 @@ describe("mutation owner preflight", () => {
     vi.spyOn(kb, "search").mockResolvedValue([{ path: relevant, type: "Repository",
       title: "Understory Memory", score: 10, confidenceQualified: false }]);
     const fact = "Understory Memory queue checks completed receipts before retrying a failed write.";
-    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
-      expect(prompt).not.toContain(`"path":"${named}"`);
-      return { object: { path: relevant } };
-    }).mockResolvedValueOnce({ object: { safe: true } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
-      .toMatchObject({ ok: true, result: { filesChanged: [relevant] } });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("named repository owner exceeds evidence limit") });
+    expect((await kb.readConcept(relevant)).body).not.toContain(fact);
   });
 
   it("reports the rejected exact-fact owner and reason without appending", async () => {
