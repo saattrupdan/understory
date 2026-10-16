@@ -1058,14 +1058,17 @@ async function runStagedMutation(
       const matches = target.body.split(/(?<=[.!?])\s+/).filter((sentence) => sentence === oldText);
       const oldWords = new Set(stagedWords(oldText));
       const requestedWords = new Set(stagedWords(raw));
+      const unsupported = stagedWords(newText).filter((word) => !oldWords.has(word) && !requestedWords.has(word));
+      const oldOccurrences = oldText ? target.body.split(oldText).length - 1 : 0;
+      const missingSubject = subjectWords.slice(0, 2).filter((word) => !oldWords.has(word));
+      const overlap = stagedOverlap(newText, `${raw} ${oldText}`);
       if (oldText.length < 30 || oldText.length > 700 || newText.length < 30 || newText.length > 1000 ||
-          /\n\s*\n/.test(newText) || target.body.split(oldText).length !== 2 || matches.length !== 1 ||
-          subjectWords.length < 2 || subjectWords.slice(0, 2).some((word) => !oldWords.has(word)) ||
+          /\n\s*\n/.test(newText) || oldOccurrences !== 1 || matches.length !== 1 ||
+          subjectWords.length < 2 || missingSubject.length > 0 ||
           !/\b(?:deferred|not run|pending)\b/i.test(oldText) ||
           !/\b(?:completed|ran|run)\b/i.test(newText) || !newText.includes("13 Oct 2026") ||
-          stagedOverlap(newText, `${raw} ${oldText}`) < 0.65 ||
-          stagedWords(newText).some((word) => !oldWords.has(word) && !requestedWords.has(word))) {
-        throw new Error("Staged mutation deferred: local status sentence is not uniquely supported.");
+          overlap < 0.65 || unsupported.length > 0) {
+        throw new Error(`Staged mutation deferred: local status sentence is not uniquely supported (old=${oldText.length}, new=${newText.length}, occurrences=${oldOccurrences}, whole_sentence=${matches.length}, subject=${subjectWords.length}/${missingSubject.length}, stale=${/\b(?:deferred|not run|pending)\b/i.test(oldText)}, completed=${/\b(?:completed|ran|run)\b/i.test(newText)}, date=${newText.includes("13 Oct 2026")}, overlap=${overlap.toFixed(2)}, unsupported=${unsupported.length}).`);
       }
       const judgement = await generateObject({
         model: resolved.model,
