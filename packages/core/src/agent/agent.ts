@@ -1760,8 +1760,10 @@ async function runStagedMutation(
         // authorizes a replacement: the full-owner verifier and CAS still apply.
         const paragraphs = target.body.split(/\n\s*\n/).filter((part) =>
           part.includes(p.old_text) && part.length <= 4_000 && target.body.split(part).length === 2);
-        duplicateRepair = paragraphs.length === 0 ? "no unique bounded paragraph" :
-          paragraphs.length > 12 ? "too many candidate paragraphs" : "model declined indexed repair";
+        const containing = target.body.split(/\n\s*\n/).filter((part) => part.includes(p.old_text));
+        duplicateRepair = paragraphs.length === 0
+          ? `no unique bounded paragraph (occurrences=${target.body.split(p.old_text).length - 1}, paragraphs=${containing.length}, largest=${Math.max(0, ...containing.map((part) => part.length))})`
+          : paragraphs.length > 12 ? "too many candidate paragraphs" : "model declined indexed repair";
         if (paragraphs.length > 0 && paragraphs.length <= 12) {
           const repair = await generateObject({
             model: proposer.model,
