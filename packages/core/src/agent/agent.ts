@@ -1145,10 +1145,13 @@ async function runStagedMutation(
         }
         if (concept.body.split(/\n\s*\n/).some((paragraph) =>
           paragraph.toLowerCase().includes(requestedReview[1].toLowerCase()) &&
-          prNumber.test(paragraph) && /\bCHANGES_REQUESTED\b/.test(paragraph) &&
-          /\breview\b/i.test(paragraph))) owners.push(hit.path);
+          prNumber.test(paragraph) &&
+          paragraph.split(/(?<=[.!?])\s+/).some((sentence) =>
+            /\bCHANGES_REQUESTED\b/.test(sentence) && /\breview\b/i.test(sentence) &&
+            /\b(?:remains?|still|pending|active|not)\b/i.test(sentence) &&
+            !/\b(?:superseded|already approved)\b/i.test(sentence)))) owners.push(hit.path);
       }
-      if (owners.length > 1) throw new Error("Staged mutation deferred: PR review status has multiple owners.");
+      if (owners.length > 1) throw new Error(`Staged mutation deferred: PR review status has multiple active owners (${owners.join(", ")}).`);
       prReviewOwnerPath = owners[0];
       if (prReviewOwnerPath && !hits.some((hit) => hit.path === prReviewOwnerPath)) {
         const owner = await kb.readConcept(prReviewOwnerPath);

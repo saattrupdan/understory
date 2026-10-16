@@ -1683,7 +1683,7 @@ describe("mutation owner preflight", () => {
     const instruction = `Update the Syv-ai/prezzi PR #21 status: ${corrected} Correct any older note saying the review still remains changes requested.`;
     const context = "Syv-ai/prezzi PR #21: Dan tested navigation before approving it. ";
     await kb.writeConcept(topic, { type: "Repository", title: "Prezzi" },
-      "In Syv-ai/prezzi PR #21, 82/83 tests passed during review.", "seed");
+      "In Syv-ai/prezzi PR #21, the earlier CHANGES_REQUESTED review was superseded. During review, 82/83 tests passed.", "seed");
     await kb.writeConcept(owner, { type: "Repository", title: "Syv-ai Agentbase" },
       `${context}${stale}\n\nOther history remains.`, "seed");
     vi.spyOn(kb, "search").mockImplementation(async (query) => query === "CHANGES_REQUESTED"
@@ -1701,6 +1701,7 @@ describe("mutation owner preflight", () => {
       .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
     expect((await kb.readConcept(owner)).body).toContain(corrected);
     expect((await kb.readConcept(owner)).body).toContain(context);
+    expect((await kb.readConcept(topic)).body).toContain("CHANGES_REQUESTED review was superseded");
     expect((await kb.readConcept(topic)).body).toContain("82/83 tests passed");
   });
 
@@ -1712,7 +1713,7 @@ describe("mutation owner preflight", () => {
     for (const owner of paths) await kb.writeConcept(owner, { type: "Repository", title: "Prezzi" }, body, "seed");
     vi.spyOn(kb, "search").mockResolvedValue(paths.map((owner) => ({ path: owner, type: "Repository", score: 10 })));
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("multiple owners") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("multiple active owners") });
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
 
