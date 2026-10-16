@@ -2178,7 +2178,9 @@ async function runStagedMutation(
         // An unscoped correction can address several findings in one paragraph.
         // Never treat a generic shared sentence as uniquely owned: read all
         // search-hit bodies before asking for a paragraph-level repair.
-        let uniquelyOwned = candidates.filter((candidate) => candidate.body.includes(statusParagraph)).length === 1;
+        const candidateOwners = candidates.filter((candidate) => candidate.body.includes(statusParagraph)).map((candidate) => candidate.path);
+        let uniquelyOwned = candidateOwners.length === 1;
+        if (!uniquelyOwned) console.warn("[understory] bounded correction candidate owners", candidateOwners);
         for (const hit of hits) {
           if (hit.path === target.path) continue;
           const competitor = await kb.readConcept(hit.path);
@@ -2188,6 +2190,7 @@ async function runStagedMutation(
             throw new Error("Staged mutation deferred: competing correction owner exceeds evidence limit.");
           }
           if (competitor.body.includes(statusParagraph)) {
+            console.warn("[understory] bounded correction duplicate paragraph", { owner: target.path, peer: competitor.path });
             uniquelyOwned = false;
           } else if (uniquelyOwned) {
             const ownership = await generateObject({
@@ -2198,7 +2201,12 @@ async function runStagedMutation(
               prompt: `Independent competing-owner check for a proposed multi-clause correction. Does the FULL competing concept assert any CURRENT stale claim from the EXACT OLD PARAGRAPH that this instruction asks to correct, including paraphrases? A generic shared project reference is not ownership. If unsure, return certain=false. JSON only.\nINSTRUCTION:\n${raw}\nPROPOSED OWNER ${target.path}, OLD PARAGRAPH:\n${statusParagraph}\nCOMPETING OWNER ${competitor.path}:\n${competitor.body}`,
             });
             state.checkCancellation();
-            if (!ownership.object.certain || ownership.object.sameClaimOwner) uniquelyOwned = false;
+            if (!ownership.object.certain || ownership.object.sameClaimOwner) {
+              console.warn("[understory] bounded correction competing claim", {
+                owner: target.path, peer: competitor.path, ...ownership.object,
+              });
+              uniquelyOwned = false;
+            }
           }
         }
         if (uniquelyOwned) {
