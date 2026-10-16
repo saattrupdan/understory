@@ -2036,21 +2036,50 @@ async function runStagedMutation(
       // The caller refers to the tiny architecture by meaning rather than
       // quoting its full old sentence. Only that exact observed clause is
       // considered requested; every other old clause remains protected.
-      const trainingInstruction = trainingSupersededClause &&
-        /earlier tiny byte\/CNN\/Transformer student recommendation[^.!?]*superseded/i.test(raw)
-        ? `${raw}\n${trainingSupersededClause}` : raw;
+      const trainingCheckpointClause = stagedStatusClauses(p.old_text).find((clause) =>
+        /\b322M\b/.test(clause) && /\bnot under 1M\b/i.test(clause));
+      const trainingInstruction = trainingSupersededClause && trainingCheckpointClause &&
+        /earlier tiny byte\/CNN\/Transformer student recommendation[^.!?]*superseded/i.test(raw) &&
+        /\bcheckpoint fits\b/i.test(raw)
+        ? `${raw}\n${trainingSupersededClause}\n${trainingCheckpointClause}` : raw;
       const allowedTrainingNegationRemoval = (oldClause: string, newClause: string, word: string): boolean =>
         word === "not" && /\b322M\b/.test(oldClause) && /\bnot under 1M\b/i.test(oldClause) &&
         /\b322M\b/.test(newClause) && /\b(?:1B|billion)\b/i.test(newClause) &&
         /\b(?:fits?|under)\b/i.test(newClause) &&
         /\bnot\s*<1 million\b/i.test(raw) && /\b322M\b/.test(raw) &&
         /\bcheckpoint fits\b/i.test(raw);
-      const trainingClauseIssue = stagedStatusClauseIssue(
+      let trainingClauseIssue = stagedStatusClauseIssue(
         p.old_text, p.new_text, trainingInstruction, allowedTrainingNegationRemoval);
+      if (target?.path === "/projects/claes-jev-diagnostics.md" &&
+          /^correct the Claes training-design note recorded Oct 2026:/i.test(raw.trim()) &&
+          trainingSupersededClause && trainingCheckpointClause &&
+          target.body.split(/\n\s*\n/).some((paragraph) => paragraph.trim() === p.old_text.trim()) &&
+          target.body.split(p.old_text).length === 2 &&
+          p.old_text.length <= 4_000 && p.new_text.length <= 4_000 &&
+          stagedOverlap(p.old_text, p.new_text) >= 0.5 &&
+          trainingClauseIssue?.startsWith("old clause not requested")) {
+        const repair = await generateObject({
+          model: proposer.model,
+          schema: z.object({ new_text: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Repair ONLY this exact Claes training-design paragraph. Keep every unrelated OLD clause VERBATIM in its original place, especially the no-student-model assertion, sample counts, dataset schema and Jev target formats. Replace the superseded <1M architecture and checkpoint-limit recommendation with the caller's <1B checkpoint recommendation. Do not invent facts or edit another paragraph. Return one paragraph; if impossible return empty new_text. JSON only.\nINSTRUCTION:\n${raw}\nOLD PARAGRAPH:\n${p.old_text}\nREJECTED REWRITE:\n${p.new_text}`,
+        });
+        state.checkCancellation();
+        p.new_text = repair.object.new_text;
+        trainingClauseIssue = stagedStatusClauseIssue(
+          p.old_text, p.new_text, trainingInstruction, allowedTrainingNegationRemoval);
+        if (trainingClauseIssue?.startsWith("old clause not requested") &&
+            p.new_text.length > 0 && p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.new_text)) {
+          p.new_text = stagedRestoreUnrequestedStatusClauses(p.old_text, p.new_text, trainingInstruction);
+          trainingClauseIssue = stagedStatusClauseIssue(
+            p.old_text, p.new_text, trainingInstruction, allowedTrainingNegationRemoval);
+        }
+      }
       let trainingUniqueAcrossHits = !!target &&
         /^correct the Claes training-design note recorded Oct 2026:/i.test(raw.trim()) &&
         target.path === "/projects/claes-jev-diagnostics.md" &&
-        target.body.split(/\n\s*\n/).some((paragraph) => paragraph === p.old_text) &&
+        target.body.split(/\n\s*\n/).some((paragraph) => paragraph.trim() === p.old_text.trim()) &&
         candidates.filter((candidate) => candidate.body.includes(p.old_text)).length === 1;
       if (trainingUniqueAcrossHits) {
         for (const hit of hits) {

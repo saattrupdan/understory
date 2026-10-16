@@ -1813,7 +1813,8 @@ describe("mutation owner preflight", () => {
       `${oldParagraph}\n\nIndependent survey history remains intact.`, "seed");
     vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", title: "Claes Jev Diagnostics", score: 10 }]);
     generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
-      old_text: oldParagraph, new_text: newParagraph } })
+      old_text: oldParagraph, new_text: intro + corrected } })
+      .mockResolvedValueOnce({ object: { new_text: newParagraph } })
       .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
         expect(prompt).toContain(`OWNER ${owner}`);
         expect(prompt).toContain("1,536 choice, 1,017 noul, 447 score");
@@ -1825,6 +1826,27 @@ describe("mutation owner preflight", () => {
     expect(body).toContain(newParagraph);
     expect(body).not.toContain(stale);
     expect(body).toContain("Independent survey history remains intact.");
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("restores a Claes dataset clause verbatim after an incomplete repair", async () => {
+    staged();
+    const owner = "/projects/claes-jev-diagnostics.md";
+    const oldParagraph = "Claes training-design investigation (Oct 2026): current repo has no student model/training/evaluation. For strict <1M multilingual student recommend evaluating a byte-input CNN-downsample student. Existing public syvai/claes-preview checkpoint is 322M, not under 1M. In first 3,000 live rows: 32 languages and 1,536 choice cases.";
+    const proposed = "Claes training-design investigation (Oct 2026): current repo has no student model/training/evaluation. The earlier tiny byte/CNN/Transformer student recommendation is superseded. Existing public syvai/claes-preview checkpoint is 322M and fits under <1B.";
+    const instruction = "Correct the Claes training-design note recorded Oct 2026: actual limit <1 BILLION, not <1 million. The earlier tiny byte/CNN/Transformer student recommendation was conditional on the mistaken limit and is superseded. Under <1B, the existing 322M syvai/claes-preview checkpoint fits. Retain the accurate dataset schema and sample stats.";
+    await kb.writeConcept(owner, { type: "Project", title: "Claes Jev Diagnostics" }, oldParagraph, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", title: "Claes Jev Diagnostics", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldParagraph, new_text: proposed } })
+      .mockResolvedValueOnce({ object: { new_text: proposed } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Original counts and no-student claim retained." } });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result, `${JSON.stringify(result)}; calls=${generateObjectMock.mock.calls.length}`).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain("In first 3,000 live rows: 32 languages and 1,536 choice cases.");
+    expect(body).toContain("no student model/training/evaluation");
+    expect(body).not.toContain("For strict <1M multilingual student");
   });
 
   it("rejects a Claes training correction when the stale paragraph has two owners", async () => {
