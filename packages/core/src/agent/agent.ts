@@ -1753,6 +1753,29 @@ async function runStagedMutation(
       await kb.patchConcept(target.path, { replaceBody: appended }, "Staged mutation: append verified fact", sha256(target.body), options.signal, (path) => { changed = [path]; });
     } else if (p.action === "replace") {
       const target = candidates.find((c) => c.path === p.path);
+      if (target && p.old_text.length > 0 && target.body.split(p.old_text).length !== 2) {
+        // A duplicate short operand may occur in both a stale claim and an
+        // unrelated clause. Ask once for the exact containing paragraph, but
+        // accept it only when that complete context is uniquely present.
+        const repair = await generateObject({
+          model: proposer.model,
+          schema: z.object({ old_text: z.string(), new_text: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Repair ONLY the non-unique old operand. Identify the single exact paragraph or clause in this owner that contains the actively stale assertion addressed by the instruction, and return it as old_text. Return a local corrected new_text that preserves every unrelated clause and statement verbatim. Do not combine separate passages or choose an already negated/historical mention. If there is not exactly one clearly active target, return both fields empty. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nNON-UNIQUE OLD OPERAND:\n${p.old_text}\nPROPOSED CORRECTION:\n${p.new_text}`,
+        });
+        state.checkCancellation();
+        const repairedOld = repair.object.old_text;
+        const repairedNew = repair.object.new_text;
+        if (repairedOld.length >= 12 && repairedOld.length <= 4_000 &&
+            repairedNew.length > 0 && repairedNew.length <= 4_000 &&
+            !/\\n\\s*\\n/.test(repairedOld) && !/\\n\\s*\\n/.test(repairedNew) &&
+            repairedOld.includes(p.old_text) && target.body.split(repairedOld).length === 2) {
+          p.old_text = repairedOld;
+          p.new_text = repairedNew;
+          repairedCorrection = true;
+        }
+      }
       const namedParagraph = target && namedSection && sectionOwnerPath === p.path
         ? target.body.split(/\n\s*\n/).find((paragraph) =>
           namedSection.test(paragraph.split("\n", 1)[0] ?? "")) : undefined;
