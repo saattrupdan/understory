@@ -2625,6 +2625,9 @@ async function runStagedMutation(
         // cannot make a Qwen roadmap the owner of Claes Laya's run.
         statusUniqueAcrossHits = !namedThroughputStatus ||
           (!!target && ownerIdentity.includes(statusWords[0]) && oldStatusWords.has(statusWords[1]));
+        if (namedThroughputStatus && !statusUniqueAcrossHits) {
+          throw new Error(`Staged mutation deferred: named throughput subject does not identify ${target?.path ?? "an owner"}.`);
+        }
         for (const hit of hits) {
           if (hit.path === target?.path) continue;
           const competitor = await kb.readConcept(hit.path);
@@ -2633,8 +2636,10 @@ async function runStagedMutation(
           if (competitor.body.length > STAGED_MAX_OWNER_CHARS) {
             throw new Error("Staged mutation deferred: competing status owner exceeds evidence limit.");
           }
-          if (competitor.body.includes(p.old_text)) statusUniqueAcrossHits = false;
-          else if (statusUniqueAcrossHits && namedThroughputStatus) {
+          if (competitor.body.includes(p.old_text)) {
+            if (namedThroughputStatus) throw new Error(`Staged mutation deferred: duplicate throughput status in ${competitor.path}.`);
+            statusUniqueAcrossHits = false;
+          } else if (statusUniqueAcrossHits && namedThroughputStatus) {
             const ownership = await generateObject({
               model: resolved.model,
               schema: z.object({ sameClaimOwner: z.boolean(), certain: z.boolean() }).strict(),
@@ -2643,7 +2648,9 @@ async function runStagedMutation(
               prompt: `Independent competing-owner check for a named throughput status correction. Does this COMPLETE competing concept assert the SAME CURRENT stale throughput/run-status claim as the proposed owner, including paraphrases? Shared host or project mentions alone do not establish ownership. If uncertain, certain=false. JSON only.\nINSTRUCTION:\n${raw}\nPROPOSED OWNER ${target?.path}, OLD STATUS:\n${p.old_text}\nCOMPETING OWNER ${competitor.path}:\n${competitor.body}`,
             });
             state.checkCancellation();
-            if (!ownership.object.certain || ownership.object.sameClaimOwner) statusUniqueAcrossHits = false;
+            if (!ownership.object.certain || ownership.object.sameClaimOwner) {
+              throw new Error(`Staged mutation deferred: competing throughput claim in ${competitor.path} (certain=${ownership.object.certain}, same_claim=${ownership.object.sameClaimOwner}).`);
+            }
           }
         }
       }
