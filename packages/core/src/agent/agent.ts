@@ -848,6 +848,14 @@ function stagedStatusClauseIssue(
   return undefined;
 }
 
+function stagedRequiredCorrectionAnchors(input: string): string[] {
+  // Distinctive advisory names, HTTP status codes, and commit IDs in a
+  // multi-finding correction must survive in the resulting owner. A model's
+  // broad "all corrections applied" verdict cannot replace this evidence.
+  return [...new Set((input.match(/\b(?:[a-f0-9]{7,40}|Accelerate|(?:HTTP\s*)?422)\b/gi) ?? [])
+    .map((anchor) => anchor.toLowerCase().replace(/\s+/g, " ")))];
+}
+
 function stagedCorrectionIntent(input: string): boolean {
   // Ordinary add payloads often discuss a dataset "update" or say "rather
   // than" without asking to change an existing assertion. Treat only an
@@ -2542,8 +2550,7 @@ async function runStagedMutation(
         state.checkCancellation();
         const { qualifiable, certain } = followUp.object;
         let addition = followUp.object.addition;
-        const requestedAnchors = [...new Set((raw.match(/\b(?:[a-f0-9]{7,40}|Accelerate|422)\b/gi) ?? [])
-          .map((anchor) => anchor.toLowerCase()))];
+        const requestedAnchors = stagedRequiredCorrectionAnchors(raw);
         const missingAnchors = (text: string): string[] => requestedAnchors.filter((anchor) =>
           !`${target.body} ${text}`.toLowerCase().includes(anchor));
         const missingDecision = (text: string): boolean =>
@@ -2678,6 +2685,10 @@ async function runStagedMutation(
         throw new Error("Staged mutation rejected: an added negation was not requested.");
       }
       const replacement = target.body.replace(p.old_text, newText);
+      if (!options.directAdd && correction && stagedRequiredCorrectionAnchors(raw).some((anchor) =>
+        !replacement.toLowerCase().replace(/\s+/g, " ").includes(anchor))) {
+        throw new Error("Staged mutation deferred: replacement omits requested correction identifiers.");
+      }
       if (replacement === target.body || replacement.length > STAGED_MAX_OWNER_CHARS) {
         throw new Error("Staged mutation rejected: replacement is empty or oversized.");
       }

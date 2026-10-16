@@ -3049,6 +3049,26 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(4);
   });
 
+  it("does not mark a multi-finding update complete after correcting only its first clause", async () => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const oldParagraph = "Job-bot security audit: no site-wide provider spending ceiling was added; " +
+      "multiple accounts can exhaust provider budgets and Tika parsing was initially unbounded.";
+    const instruction = "Update job-bot security findings: Dan does NOT want a site-wide provider spending ceiling. " +
+      "Ignore the optional Accelerate advisory. Malformed cover-letter HTTP 422 output was sanitised at 08a090c " +
+      "and deployed at de3eedf; keep later Selenium and Tika hardening.";
+    await kb.writeConcept(owner, { type: "Application", title: "Job-bot" }, oldParagraph, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: "no site-wide provider spending ceiling was added",
+      new_text: "Dan does NOT want a site-wide provider spending ceiling" } })
+      .mockResolvedValueOnce({ object: { safe: true, reason: "Incorrectly claimed completeness." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed",
+        error: "Staged mutation deferred: replacement omits requested correction identifiers." });
+    expect((await kb.readConcept(owner)).body).toBe(`${oldParagraph}\n`);
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
   it("qualifies a true historical audit instead of erasing it when later mitigation exists", async () => {
     staged();
     const owner = "/repos/job-bot.md";
