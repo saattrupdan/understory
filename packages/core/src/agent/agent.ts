@@ -1658,6 +1658,12 @@ async function runStagedMutation(
       if (!target || paragraphs.length !== 1 || stale.length !== 1 || !statusOnly ||
           !newText || newText.length > 2_000 || target.body.split(oldText).length !== 2 ||
           !/\bapproved\b/i.test(newText) || !/\bsquash-merged\b/i.test(newText)) {
+        console.warn("[understory] final PR status scope declined", {
+          owner: target?.path, paragraphs: paragraphs.length, stale: stale.length,
+          statusOnly, oldLength: oldText?.length ?? 0, newLength: newText?.length ?? 0,
+          uniqueOld: !!target && !!oldText && target.body.split(oldText).length === 2,
+          oldHasComma: /[,;]/.test(statusClause), oldHasConjunction: /\b(?:but|while|also|whereas|with|and)\b/i.test(statusClause),
+        });
         throw new Error("Staged mutation deferred: final PR status has no unique review-only sentence.");
       }
       const judgement = await generateObject({
