@@ -2451,15 +2451,33 @@ describe("mutation owner preflight", () => {
     vi.spyOn(kb, "search").mockImplementation(async (query) => query === "2234"
       ? [{ path: owner, type: "Repository", title: "EuroEval review history", score: 9 }]
       : [{ path: person, type: "Person", title: "Dan Smart", score: 10 }]);
-    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
-      old_text: oldReview, new_text: finalStatus } })
-      .mockResolvedValueOnce({ object: { safe: true, reason: "Only the PR's stale status changed." } });
-    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
-      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`OLD SENTENCE:\n${oldReview}`);
+      expect(prompt).toContain(`NEW TEXT:\n${finalStatus}`);
+      return { object: { safe: true } };
+    });
+    const outcome = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(outcome, JSON.stringify(outcome)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
     expect((await kb.readConcept(owner)).body).toContain(finalStatus);
     expect((await kb.readConcept(owner)).body).not.toContain(oldReview);
     expect((await kb.readConcept(owner)).body).toContain("six review threads were resolved");
     expect((await kb.readConcept(person)).body).toContain("prior preference");
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a mixed-scope PR sentence rather than erasing unrelated status", async () => {
+    staged();
+    const owner = "/repos/euroeval-review.md";
+    const oldText = "PR #2234 remains open, but CI for PR #2200 is also failing.";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval review history" },
+      `EuroEval PR #2234: ${oldText}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", score: 10 }]);
+    const instruction = "EuroEval PR #2234 final status: Dan approved and squash-merged it as commit ac33731f88806b1a45593c83dbfd473f1cc877fa. Replace any prior status saying PR is open.";
+    expect(await runMutation(kb, instruction, { preflightInput: instruction })).toMatchObject({
+      ok: false, status: "failed", error: expect.stringContaining("no unique review-only sentence"),
+    });
+    expect((await kb.readConcept(owner)).body).toContain(oldText);
+    expect(generateObjectMock).not.toHaveBeenCalled();
   });
 
   it("does not edit a person's note when a final PR status has no observed owner", async () => {

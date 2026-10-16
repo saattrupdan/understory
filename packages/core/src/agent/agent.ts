@@ -1637,6 +1637,50 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: selected owner exceeds prompt budget.");
       }
     }
+    // A final PR status supplies exact new facts and asks to retract one
+    // active old review sentence. A prose proposer may try to rewrite the
+    // entire review paragraph (or a person's unrelated note). Select the
+    // single status sentence from the uniquely located PR owner instead.
+    if (finalPrStatus && prReviewOwnerPath) {
+      const target = candidates.find((candidate) => candidate.path === prReviewOwnerPath);
+      const prNumber = new RegExp(`\\bPR\\s*#${finalPrStatus[2]}\\b`, "i");
+      const paragraphs = target?.body.split(/\n\s*\n/).filter((paragraph) =>
+        paragraph.toLowerCase().includes(finalPrStatus[1].toLowerCase()) && prNumber.test(paragraph)) ?? [];
+      const stale = paragraphs.flatMap((paragraph) => paragraph.split(/(?<=[.!?])\s+/).filter((sentence) =>
+        /\b(?:CHANGES_REQUESTED|changes requested|open)\b/i.test(sentence) &&
+        /\b(?:review|PR|pull request)\b/i.test(sentence) &&
+        /\b(?:remains?|still|pending|active|open)\b/i.test(sentence) &&
+        !/\b(?:superseded|already approved|squash-merged)\b/i.test(sentence)));
+      const oldText = stale[0];
+      const newText = raw.trim().match(/^.+?\s+PR\s*#\d+\s+final\s+status\s*:\s*([\s\S]+?)\s+Replace any prior status saying\b[\s\S]*$/iu)?.[1]?.trim();
+      const statusClause = oldText?.replace(/\bopen (?:and|with) changes requested\b/ig, "open") ?? "";
+      const statusOnly = !!oldText && !/[,;\n]|\b(?:but|while|also|whereas|with|and)\b/i.test(statusClause);
+      if (!target || paragraphs.length !== 1 || stale.length !== 1 || !statusOnly ||
+          !newText || newText.length > 2_000 || target.body.split(oldText).length !== 2 ||
+          !/\bapproved\b/i.test(newText) || !/\bsquash-merged\b/i.test(newText)) {
+        throw new Error("Staged mutation deferred: final PR status has no unique review-only sentence.");
+      }
+      const judgement = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent final PR status check. Does the EXACT OLD SENTENCE assert only the still-active, now superseded review/open status of the PR identified in the complete owner paragraph? Does the caller's exact NEW TEXT faithfully replace that status with ALL supplied final facts, preserve all other history outside the sentence, and avoid contradictions with later owner updates? An unrelated or historically qualified review is unsafe. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${target.path}:\n${target.body}\nOLD SENTENCE:\n${oldText}\nNEW TEXT:\n${newText}`,
+      });
+      state.checkCancellation();
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: final PR status failed independent check.");
+      const current = await kb.readConcept(target.path);
+      if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+      const replacement = target.body.replace(oldText, newText);
+      if (replacement.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: final PR owner exceeds limit.");
+      await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: replace final PR status", sha256(target.body), options.signal,
+        (writtenPath) => { changed = [writtenPath]; });
+      const summary = `Staged mutation changed ${changed.join(", ")}.`;
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+        { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+    }
     // An explicit correction supplies its own exact old/new text. Avoid a
     // generated proposal, but still check the full owner, support, and CAS.
     const quotedCorrection = !options.directAdd && options.preflightInput
