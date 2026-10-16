@@ -2759,8 +2759,31 @@ async function runStagedMutation(
                 prompt: `Independent temporal peer check. This COMPLETE peer contains a Claes Laya sweep completed on 13 Oct 2026. Does it ALSO assert as CURRENT that this same high-concurrency sweep remains NOT run, still deferred or pending? A clearly dated earlier plan is historical; an undated contradictory present status is current. If current, quote an EXACT substring identifying that current stale claim in currentStaleQuote. If all stale language is explicitly historical/superseded, return certain=true with an empty quote. If uncertain, certain=false. JSON only.\nINSTRUCTION:\n${raw}\nPROPOSED OWNER ${target?.path}, OLD STATUS:\n${p.old_text}\nCOMPLETE PEER ${competitor.path}:\n${competitor.body}`,
               });
               state.checkCancellation();
-              if (!currentStatus.object.certain || currentStatus.object.currentStaleQuote) {
-                throw new Error(`Staged mutation deferred: competing throughput claim remains current or uncertain in ${competitor.path} (certain=${currentStatus.object.certain}, quoted=${!!currentStatus.object.currentStaleQuote}, grounded=${!!currentStatus.object.currentStaleQuote && competitor.body.includes(currentStatus.object.currentStaleQuote)}).`);
+              const staleQuote = currentStatus.object.currentStaleQuote;
+              if (!currentStatus.object.certain || (staleQuote && competitor.body.includes(staleQuote))) {
+                throw new Error(`Staged mutation deferred: competing throughput claim remains current or uncertain in ${competitor.path} (certain=${currentStatus.object.certain}, grounded=${!!staleQuote && competitor.body.includes(staleQuote)}).`);
+              }
+              if (staleQuote) {
+                // A generated, non-verbatim quote is not evidence of a current
+                // contradiction. Re-adjudicate against selectable EXACT peer
+                // sentences; abstention, excess evidence or a selected current
+                // clause all keep the write blocked.
+                const peerSentences = competitor.body.split(/(?<=[.!?;])\s+|\n+/).filter((sentence) =>
+                  /\b(?:Claes|Laya|sweep|throughput)\b/i.test(sentence));
+                if (peerSentences.length === 0 || peerSentences.length > 80) {
+                  throw new Error(`Staged mutation deferred: competing throughput evidence exceeds bounded adjudication in ${competitor.path}.`);
+                }
+                const adjudication = await generateObject({
+                  model: resolved.model,
+                  schema: z.object({ certain: z.boolean(), currentStaleIndex: z.number().int() }).strict(),
+                  temperature: 0,
+                  abortSignal: options.signal,
+                  prompt: `Independent exact-clause adjudication after a non-verbatim proposed stale quote. Select the INDEX of a sentence that CURRENTLY claims Claes Laya's high-concurrency sweep is still pending/not run. Earlier dated planning and a later completed run on 13 Oct 2026 are not a current stale claim. Return currentStaleIndex=-1 ONLY if certain there is no current stale assertion; otherwise return certain=false. Index must refer to these EXACT observed sentences; no generated quotes. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE PEER ${competitor.path}:\n${competitor.body}\nCANDIDATE SENTENCES:\n${JSON.stringify(peerSentences.map((text, index) => ({ index, text })))}`,
+                });
+                state.checkCancellation();
+                if (!adjudication.object.certain || adjudication.object.currentStaleIndex !== -1) {
+                  throw new Error(`Staged mutation deferred: competing throughput exact-clause check found a current or uncertain claim in ${competitor.path}.`);
+                }
               }
             }
           }
