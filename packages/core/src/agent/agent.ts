@@ -1302,7 +1302,7 @@ async function runStagedMutation(
       const normalizedRepoTitle = normalizeIdentity(canonicalRepo.frontmatter.title ?? "");
       const ownsDotfilesExtensions = !dotfilesExtensionsTests ||
         /(?:^|[\s`])agentic\/pi\/extensions\/(?:[\s`.,;:]|$)/m.test(canonicalRepo.body);
-      if (canonicalRepo.frontmatter.type === "Repository" &&
+      if ((canonicalRepo.frontmatter.type === "Repository" || canonicalRepo.frontmatter.type === "Knowledge") &&
           (normalizedRepoTitle === normalizedRepoName || normalizedRepoTitle === `${normalizedRepoName} repository`) &&
           ownsDotfilesExtensions) {
         if (canonicalRepo.body.length > STAGED_MAX_OWNER_CHARS) {
