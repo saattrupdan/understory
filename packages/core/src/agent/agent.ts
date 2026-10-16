@@ -1913,11 +1913,43 @@ async function runStagedMutation(
         candidates.filter((candidate) => candidate.body.includes(p.old_text)).length === 1 &&
         p.old_text.length >= 200 && p.old_text.length <= 4_000 && p.new_text.length <= 4_000 &&
         stagedOverlap(p.old_text, p.new_text) >= 0.7 && !statusClauseIssue;
+      // A PR review can supersede one short status sentence with a longer
+      // caller-supported approval. The run-status rule above deliberately
+      // requires 200+ characters and high overlap; do not extend that rule to
+      // arbitrary short edits or to another PR's review.
+      const prStatus = raw.trim().match(/^update\s+(?:the\s+)?([\p{L}\p{N}./_-]+)\s+PR\s*#(\d+)\s+status\s*:/iu);
+      const repoSlug = prStatus?.[1].split("/").pop()?.toLowerCase();
+      const prIdentities = statusParagraph ? [...statusParagraph.matchAll(/\bPR\s*#(\d+)\b/gi)]
+        .map((match) => match[1]) : [];
+      // Only the review assertion itself may be replaced. In particular, a
+      // conjunction about a different build or PR cannot be lost along with
+      // this status. The surrounding paragraph must identify exactly this PR.
+      const reviewOnly = /^(?:The |A )?(?:prior|previous|earlier|existing) CHANGES_REQUESTED (?:GitHub )?review (?:remains|is still active)(?: unless (?:he|Dan) explicitly asks to update it)?[.!?]?$/i.test(p.old_text.trim());
+      let prStatusUnique = !!target && !!prStatus && !!repoSlug && !!statusParagraph &&
+        (target.path === `/repos/${repoSlug}.md` || statusParagraph.toLowerCase().includes(prStatus[1].toLowerCase())) &&
+        prIdentities.length > 0 && prIdentities.every((id) => id === prStatus[2]) &&
+        reviewOnly && /\bCHANGES_REQUESTED\b/.test(raw) && /\bAPPROVED\b/.test(raw) &&
+        /\bAPPROVED\b/.test(p.new_text) &&
+        p.old_text.length <= 200 && p.new_text.length <= 4_000 &&
+        !/\n\s*\n/.test(p.new_text) &&
+        candidates.filter((candidate) => candidate.body.includes(p.old_text)).length === 1;
+      if (prStatusUnique) {
+        for (const hit of hits) {
+          if (hit.path === target!.path) continue;
+          const competitor = await kb.readConcept(hit.path);
+          recorder.record("read_concept", competitor.path, [competitor.path]);
+          state.checkCancellation();
+          if (competitor.body.length > STAGED_MAX_OWNER_CHARS) {
+            throw new Error("Staged mutation deferred: competing PR status owner exceeds evidence limit.");
+          }
+          if (competitor.body.includes(p.old_text)) prStatusUnique = false;
+        }
+      }
       const boundedParagraphRepair = (repairedCorrection || (!!quotedOwner && quotedOwner === p.path) ||
-        (!!namedParagraph && namedParagraph.includes(p.old_text)) || boundedStatus) &&
+        (!!namedParagraph && namedParagraph.includes(p.old_text)) || boundedStatus || prStatusUnique) &&
         p.old_text.length <= 4_000 &&
         p.new_text.length <= 4_000 && !/\n\s*\n/.test(p.old_text) && !/\n\s*\n/.test(p.new_text) &&
-        stagedOverlap(p.old_text, p.new_text) >= 0.5;
+        (prStatusUnique || stagedOverlap(p.old_text, p.new_text) >= 0.5);
       const localEdit = stagedSingleClauseEdit(p.old_text, p.new_text) || boundedParagraphRepair;
       if (!target || p.old_text.length < 12 || !p.new_text || target.body.split(p.old_text).length !== 2 ||
           stagedOverlap(p.new_text, `${raw} ${p.old_text}`) < 0.65 || !localEdit) {
@@ -1948,7 +1980,7 @@ async function runStagedMutation(
       }
       if (!newText || !(stagedSingleClauseEdit(p.old_text, newText) ||
           (boundedParagraphRepair && newText.length <= 4_000 && !/\n\s*\n/.test(newText) &&
-            stagedOverlap(p.old_text, newText) >= (boundedStatus ? 0.7 : 0.5) &&
+            (prStatusUnique || stagedOverlap(p.old_text, newText) >= (boundedStatus ? 0.7 : 0.5)) &&
             (!boundedStatus || !stagedStatusClauseIssue(p.old_text, newText, raw)))) ||
           stagedOverlap(newText, `${raw} ${p.old_text}`) < 0.65 || unsupportedWords(newText).length) {
         throw new Error("Staged mutation rejected: replacement introduces facts absent from the request.");

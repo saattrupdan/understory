@@ -1645,6 +1645,62 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(unrelated[0])).body).toContain("Unrelated provider notes");
   });
 
+  it("corrects one superseded PR review sentence with the complete supported approval status", async () => {
+    staged();
+    const owner = "/repos/prezzi.md";
+    const oldStatus = "The prior CHANGES_REQUESTED GitHub review remains unless Dan explicitly asks to update it.";
+    const unchanged = "The unrelated visual-sync cleanup remains part of PR #21 history.";
+    const newStatus = "Dan explicitly approved the remaining nav behavior, stopped the /tmp demo server on localhost:3031 and submitted a new APPROVED review on PR head c6ee887. GitHub reviewDecision is now APPROVED (the earlier CHANGES_REQUESTED review has been superseded).";
+    const instruction = `Update the Syv-ai/prezzi PR #21 status: ${newStatus} Correct any older note saying the review still remains changes requested.`;
+    await kb.writeConcept(owner, { type: "Repository", title: "Prezzi" },
+      `Prezzi PR #21: ${unchanged} ${oldStatus}\n\nOther PR #18 history is unchanged.`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Repository", title: "Prezzi", score: 10 }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: oldStatus, new_text: newStatus } })
+      .mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+        expect(prompt).toContain(`OWNER ${owner}`);
+        expect(prompt).toContain(unchanged);
+        expect(prompt).toContain(oldStatus);
+        expect(prompt).toContain(newStatus);
+        return { object: { safe: true, reason: "Approval supersedes the one old review sentence." } };
+      });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(newStatus);
+    expect(body).toContain(unchanged);
+    expect(body).toContain("Other PR #18 history is unchanged.");
+    expect(body).not.toContain(oldStatus);
+  });
+
+  it.each(["wrong PR", "mixed PR", "mixed claim", "wrong owner", "competing owner", "verifier refusal"])(
+    "does not relax a superseded PR review when there is a %s", async (caseName) => {
+      staged();
+      const owner = caseName === "wrong owner" ? "/repos/other.md" : "/repos/prezzi.md";
+      const oldStatus = "The prior CHANGES_REQUESTED GitHub review remains unless Dan explicitly asks to update it." +
+        (caseName === "mixed claim" ? " The unrelated build passed." : "");
+      const newStatus = "Dan explicitly approved the remaining nav behavior. GitHub reviewDecision is now APPROVED; the earlier CHANGES_REQUESTED review has been superseded.";
+      const instruction = `Update the Syv-ai/prezzi PR #21 status: ${newStatus} Correct any older note saying the review still remains changes requested.`;
+      const paragraph = `Prezzi PR #${caseName === "wrong PR" ? 22 : 21}` +
+        (caseName === "mixed PR" ? " and PR #22" : "") + `: ${oldStatus}`;
+      await kb.writeConcept(owner, { type: "Repository", title: "Prezzi" }, paragraph, "seed");
+      const competitor = "/repos/other-copy.md";
+      if (caseName === "competing owner") {
+        await kb.writeConcept(competitor, { type: "Repository", title: "Prezzi Archive" }, paragraph, "seed");
+      }
+      vi.spyOn(kb, "search").mockResolvedValue([owner, ...(caseName === "competing owner" ? [competitor] : [])]
+        .map((conceptPath) => ({ path: conceptPath, type: "Repository", title: "Prezzi", score: 10 })));
+      generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+        old_text: oldStatus, new_text: newStatus } });
+      if (caseName === "verifier refusal") {
+        generateObjectMock.mockResolvedValueOnce({ object: { safe: false, reason: "Uncertain." } });
+      }
+      expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+        .toMatchObject({ ok: false, status: "failed" });
+      expect((await kb.readConcept(owner)).body).toContain(oldStatus);
+    },
+  );
+
   it("corrects multiple clauses only inside a uniquely named incident paragraph", async () => {
     staged();
     const owner = "/repos/pi-agent/memory-async.md";
