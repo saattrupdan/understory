@@ -1241,6 +1241,59 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(3);
   });
 
+  it("rejects a false complete duplicate when the peer lacks the exact Python failure claim", async () => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const peer = "/projects/fs-fotovalidering-tono-onot.md";
+    const fact = "FS Fotovalidering test environment gotcha: in a fresh worktree, CPython 3.14 missed _pillow_heif; uv sync --all-groups --python 3.12 fixed make test after npm ci.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering — Phase 1 PoC" },
+      "FS Fotovalidering has a Python test suite.", "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "FS Fotovalidering — TONO+ONOT" },
+      "The TONO+ONOT experiment passed make test and make check.", "seed");
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Independent evidence audit")) {
+        expect(prompt).toContain("The TONO+ONOT experiment passed make test");
+        return { object: { missingFactClause: "CPython 3.14 missed _pillow_heif", absent: true, certain: true } };
+      }
+      if (prompt.includes("DISPUTED FULL PEER:")) return { object: { distinct_topic: false,
+        complete_duplicate: true, contradiction: false, stronger_owner: false, certain: true } };
+      if (prompt.includes("COMPETING PROJECT OWNERS:")) return { object: { safe: false } };
+      expect(prompt).toContain(`OWNER ${owner}`);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(peer)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    { missingFactClause: "CPython 3.15 failed", peerBody: "CPython 3.14 failed; make test passed." },
+    { missingFactClause: "CPython 3.14 failed", peerBody: "CPython 3.14 failed; make test passed." },
+    { missingFactClause: "make test passed", peerBody: "make test passed." },
+  ])("keeps a duplicate veto without a grounded missing claim ($missingFactClause)", async ({ missingFactClause, peerBody }) => {
+    staged();
+    const owner = "/projects/fs-fotovalidering.md";
+    const peer = "/projects/fs-fotovalidering-tono-onot.md";
+    const fact = "FS Fotovalidering: CPython 3.14 failed; make test passed after npm ci.";
+    await kb.writeConcept(owner, { type: "Project", title: "FS Fotovalidering" }, "Project tests.", "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "FS Fotovalidering — TONO+ONOT" }, peerBody, "seed");
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Independent evidence audit")) {
+        return { object: { missingFactClause, absent: true, certain: true } };
+      }
+      if (prompt.includes("DISPUTED FULL PEER:")) return { object: { distinct_topic: false,
+        complete_duplicate: true, contradiction: false, stronger_owner: false, certain: true } };
+      return { object: { safe: false } };
+    });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed",
+        error: `Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${peer}; target=${owner}).` });
+    expect((await kb.readConcept(owner)).body).not.toContain(fact);
+    expect(generateObjectMock).toHaveBeenCalledTimes(3);
+  });
+
   it.each([
     { finding: { distinct_topic: true, complete_duplicate: true, contradiction: false, stronger_owner: false, certain: true } },
     { finding: { distinct_topic: false, complete_duplicate: false, contradiction: false, stronger_owner: true, certain: true } },
@@ -1255,12 +1308,17 @@ describe("mutation owner preflight", () => {
       "The project evaluates photos.", "seed");
     await kb.writeConcept(peer, { type: "Project", title: "FS Fotovalidering — TONO+ONOT" },
       "Synthetic review data is tracked by the TONO+ONOT experiment.", "seed");
-    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) =>
-      prompt.includes("DISPUTED FULL PEER:") ? { object: finding } : { object: { safe: false } });
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Independent evidence audit")) {
+        return { object: { missingFactClause: "", absent: false, certain: false } };
+      }
+      return prompt.includes("DISPUTED FULL PEER:") ? { object: finding } : { object: { safe: false } };
+    });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
-      .toMatchObject({ ok: false, status: "failed" });
+      .toMatchObject({ ok: false, status: "failed",
+        error: `Staged mutation deferred: competing project owner has a duplicate, contradiction, or stronger claim (${peer}; target=${owner}).` });
     expect((await kb.readConcept(owner)).body).not.toContain(fact);
-    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(generateObjectMock).toHaveBeenCalledTimes(finding.complete_duplicate ? 3 : 2);
   });
 
   it("rechecks every complete peer when aggregate overlap mistakes a shared corpus for the new observation", async () => {

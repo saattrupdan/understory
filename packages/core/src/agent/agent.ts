@@ -1725,7 +1725,31 @@ async function runStagedMutation(
           });
           state.checkCancellation();
           const finding = adjudication.object;
-          if (!finding.certain || finding.complete_duplicate || finding.contradiction ||
+          let duplicate = finding.complete_duplicate;
+          if (finding.certain && duplicate && !finding.contradiction && !finding.stronger_owner) {
+            // A shared project may have recorded a generic test result without
+            // the new fact's specific version or failure. Challenge an asserted
+            // complete duplicate with an independently quoted missing claim.
+            const audit = await generateObject({
+              model: resolved.model,
+              schema: z.object({ missingFactClause: z.string(), absent: z.boolean(), certain: z.boolean() }).strict(),
+              temperature: 0,
+              abortSignal: options.signal,
+              prompt: `Independent evidence audit of an asserted COMPLETE DUPLICATE. Is there a specific assertion in the FACT that the FULL PEER BODY does NOT state, even in paraphrase? If so, quote an EXACT contiguous substring of the FACT containing that assertion in missingFactClause, and return absent=true only when you are certain it is not recorded anywhere in the peer. Prefer a specific version, code identifier, count, or artifact; generic project names and shared test commands are insufficient. If every claim is already recorded or you are unsure, return absent=false and certain=false. JSON only.\nFACT:\n${fact}\nFULL PEER BODY:\n${peer.body}`,
+            });
+            state.checkCancellation();
+            const { missingFactClause, absent, certain } = audit.object;
+            const anchors = missingFactClause.match(/\b(?:\d+(?:\.\d+)+|[a-f0-9]{12,}|[A-Za-z_][\w]*(?:_[\w]+)+|\d{2,})\b/gi) ?? [];
+            // A model assertion alone cannot overrule a duplicate. Require a
+            // literal excerpt of the fact with a distinctive identifier absent
+            // from the complete peer; the model must also certify semantic absence.
+            if (certain && absent && missingFactClause.length >= 8 &&
+                fact.includes(missingFactClause) && anchors.some((anchor) =>
+                  !peer.body.toLowerCase().includes(anchor.toLowerCase()))) {
+              duplicate = false;
+            }
+          }
+          if (!finding.certain || duplicate || finding.contradiction ||
               finding.stronger_owner) {
             // Keep the diagnostic to boolean verdicts: peer bodies and facts
             // can contain private material and must not enter service logs.
