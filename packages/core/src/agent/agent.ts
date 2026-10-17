@@ -1090,6 +1090,128 @@ async function runStagedMutation(
   let changed: string[] = [];
   try {
     const raw = options.preflightInput ?? instruction;
+    // The earlier Danish report was a full inventory; the later changes-only
+    // edition supersedes it. Locate the exact old report paragraph across all
+    // FS continuations instead of trusting metadata selection or a dated path.
+    if (!options.directAdd && options.preflightInput &&
+        /^Update the FS Fotovalidering 2026-10-14 baseline change-report knowledge:/i.test(raw.trim()) &&
+        ["2026-10-09 baseline", "baseline_changes.md", "and .pdf were revised",
+          "30 changed approved-photo ID mappings", "459 ID mentions", "all 34 approved-photo mappings",
+          "264 added and 28 removed", "68 changed embedded photo files", "no hashes"]
+          .every((anchor) => raw.includes(anchor))) {
+      const siblings = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
+        /^\/projects\/fs-fotovalidering(?:[-/]|\.md$)/.test(candidate));
+      const reportHits = await kb.search("baseline_changes", { limit: 200 });
+      recorder.record("search_knowledge", "baseline_changes", reportHits.map((hit) => hit.path));
+      if (siblings.length > 200 || reportHits.length >= 200) {
+        throw new Error("Staged mutation deferred: FS change-report peer inventory exceeds limit.");
+      }
+      const old = "Dan's FS Fotovalidering 2026-10-14 baseline change report should be in Danish. The Markdown and PDF at ~`Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes` and .pdf were translated from English on 2026-10-14; the Danish visible/PDF metadata title is 'Ændringer i baselinen fra 2026-10-14'. All 459 photo-ID mentions, 34 approved-photo ID mappings, category-change lists, and numerical claims were preserved. Keep the report ID-based, without hashes, and do not inspect baseline photos.";
+      const historical = "Earlier non-focused Danish report version (superseded by changes-only edition): ";
+      const heading = "Current FS Fotovalidering 2026-10-14 changes-only baseline report: ";
+      const current = `${heading}Dan wants the Danish Markdown and PDF at ~/Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes.md and .pdf titled 'Ændringer fra baselinen 2026-10-09 til 2026-10-14', focused strictly on changes from the 2026-10-09 baseline, not unchanged items, interim-review history, or a full current-state inventory. It covers 30 changed approved-photo ID mappings (23 moved and seven renumbered), removal of godkendt_id30, two previously unlabelled existing photos now labelled, changed presentation counts, 264 added and 28 removed active category marks, new photo-of-a-photo marks and retirement of Hovedbeklædning 4, and 68 changed embedded photo files by ID. It excludes the unchanged 50 workbook-only columns, unchanged approved IDs, and 43 intermediate question-mark resolutions. The 459 photo-ID mentions and all 34 approved-photo mappings describe only the earlier non-focused Danish version, not this current report. Keep the report ID-based, with no hashes; baseline photos were not inspected.`;
+      const observed = new Map<string, Awaited<ReturnType<typeof kb.readConcept>>>();
+      const oldOwners: string[] = [];
+      const historicalOwners: string[] = [];
+      for (const peerPath of new Set([...siblings, ...reportHits.map((hit) => hit.path)])) {
+        state.checkCancellation();
+        const peer = await kb.readConcept(peerPath);
+        recorder.record("read_concept", peer.path, [peer.path]);
+        if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: FS report owner or peer exceeds evidence limit.");
+        }
+        observed.set(peer.path, peer);
+        for (const paragraph of peer.body.split(/\n\s*\n/)) {
+          if (paragraph.trimEnd() === old) oldOwners.push(peer.path);
+          if (paragraph.trimEnd() === `${historical}${old}` && peer.body.includes(current)) historicalOwners.push(peer.path);
+        }
+      }
+      const ownerPath = oldOwners.length === 1 ? oldOwners[0]
+        : oldOwners.length === 0 && historicalOwners.length === 1 ? historicalOwners[0] : undefined;
+      if (!ownerPath || !siblings.includes(ownerPath) ||
+          (options.ownerHint && options.ownerHint !== ownerPath)) {
+        throw new Error("Staged mutation deferred: FS change-report owner is absent, duplicated, or conflicts with hint.");
+      }
+      const owner = observed.get(ownerPath)!;
+      const peerEvidence: string[] = [];
+      for (const [peerPath, peer] of observed) {
+        if (peerPath === ownerPath) continue;
+        for (const paragraph of peer.body.split(/\n\s*\n/)) {
+          if (/(?:baseline_changes|459 photo-ID mentions|34 approved-photo ID mappings)/i.test(paragraph) &&
+              /(?:2026-10-14|baseline change report|459 photo-ID mentions)/i.test(paragraph)) {
+            if (paragraph.length > 4_000) {
+              throw new Error("Staged mutation deferred: FS change-report peer passage exceeds limit.");
+            }
+            peerEvidence.push(`${peerPath}: ${paragraph}`);
+          }
+        }
+      }
+      if (peerEvidence.length > 20 || peerEvidence.join("\n\n").length > 16_000) {
+        throw new Error("Staged mutation deferred: FS change-report peers are incomplete.");
+      }
+      const archived = owner.body.split(/\n\s*\n/).filter((part) =>
+        part.startsWith(historical));
+      const updates = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
+      const staleOwnerClaims = owner.body.split(/\n\s*\n/).filter((part) =>
+        part.trimEnd() !== old && !part.startsWith(historical) &&
+        !part.startsWith(heading) &&
+        /(?:459 photo-ID mentions|34 approved-photo ID mappings)/i.test(part) &&
+        /(?:baseline_changes|2026-10-14 baseline change report)/i.test(part));
+      if (staleOwnerClaims.length) {
+        throw new Error("Staged mutation deferred: FS report has another unsuperseded owner claim.");
+      }
+      if (oldOwners.length === 0 && archived.length === 1 && archived[0].trimEnd() === `${historical}${old}` &&
+          updates.length === 1 && updates[0].trimEnd() === current) {
+        if (peerEvidence.some((entry) => /(?:459 photo-ID mentions|34 approved-photo ID mappings)/i.test(entry))) {
+          throw new Error("Staged mutation deferred: FS report peers may retain a competing old claim.");
+        }
+        const reread = await kb.readConcept(ownerPath);
+        if (reread.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+        const summary = "No change needed; current changes-only report and historical version verified.";
+        const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+          { providerCalls, generationMs: Date.now() - started });
+        await traceStore(kb).save(trace);
+        return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
+      }
+      if (oldOwners.length !== 1 || oldOwners[0] !== ownerPath || archived.length || updates.length ||
+          peerEvidence.some((entry) => /(?:459 photo-ID mentions|34 approved-photo ID mappings)/i.test(entry))) {
+        throw new Error("Staged mutation deferred: FS change-report old owner is absent, duplicated, or contradicted.");
+      }
+      if (old.length > 4_000 || owner.body.split(old).length !== 2) {
+        throw new Error("Staged mutation deferred: FS change-report old paragraph is not unique or complete.");
+      }
+      const replacement = `${historical}${old.trimEnd()}\n\n${current}`;
+      const proposed = owner.body.replace(old.trimEnd(), replacement);
+      if (proposed.length > STAGED_MAX_OWNER_CHARS) {
+        throw new Error("Staged mutation deferred: FS change-report replacement exceeds evidence limit.");
+      }
+      const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
+      modelChain = resolved.modelChain;
+      const judgement = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent FS change-report correction check. Does EXACT OLD PARAGRAPH uniquely describe the earlier non-focused Danish version, while the caller explicitly supplies a later changes-only report with the proposed title and all listed differences? Is its old 459/34 claim clearly labeled historical rather than left as current? Check complete owner and ALL relevant peer passages for duplicates or contradictions; path selection alone never authorizes a write. Does the local replacement preserve every other owner paragraph and avoid adding unsupported facts or implying photos were inspected? Reject any competing owner, unsupported detail, or uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nEXACT OLD PARAGRAPH:\n${old}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
+      });
+      state.checkCancellation();
+      if (!judgement.object.safe) {
+        throw new Error("Staged mutation deferred: independent FS change-report check declined.");
+      }
+      const reread = await kb.readConcept(ownerPath);
+      if (reread.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+      state.checkCancellation();
+      await kb.patchConcept(ownerPath, { replaceBody: proposed },
+        "Staged mutation: supersede earlier FS change report", sha256(owner.body), options.signal,
+        (writtenPath) => { changed = [writtenPath]; });
+      const readBack = await kb.readConcept(ownerPath);
+      if (readBack.body !== proposed) throw new Error("FS change-report correction failed CAS read-back verification.");
+      const summary = `Staged mutation changed ${ownerPath}.`;
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+        { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+    }
     // A GitHub review can remain recorded as PENDING after it is submitted.
     // Correct only this observed review paragraph, not the PR's eventual
     // merge status or another review's history.

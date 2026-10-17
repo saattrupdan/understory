@@ -4865,6 +4865,100 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body.trim()).toBe(oldText);
   });
 
+  const fsChangesOwner = "/projects/fs-fotovalidering-continuation-c03a2624495c6bd5.md";
+  const fsChangesOld = "Dan's FS Fotovalidering 2026-10-14 baseline change report should be in Danish. The Markdown and PDF at ~`Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes` and .pdf were translated from English on 2026-10-14; the Danish visible/PDF metadata title is 'Ændringer i baselinen fra 2026-10-14'. All 459 photo-ID mentions, 34 approved-photo ID mappings, category-change lists, and numerical claims were preserved. Keep the report ID-based, without hashes, and do not inspect baseline photos.";
+  const fsChangesInstruction = "Update the FS Fotovalidering 2026-10-14 baseline change-report knowledge: Dan wants a Danish report focused strictly on differences from the 2026-10-09 baseline, not unchanged items, interim-review history, or a full current-state inventory. The existing ~/Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes.md and .pdf were revised to use title 'Ændringer fra baselinen 2026-10-09 til 2026-10-14'. The current report includes only 30 changed approved-photo ID mappings (23 moved, seven renumbered), removal of godkendt_id30, two previously unlabelled existing photos now labelled, changed presentation counts, 264 added and 28 removed active category marks, new photo-of-a-photo marks / retired Hovedbeklædning 4, and 68 changed embedded photo files by ID. It excludes unchanged 50 workbook-only columns, unchanged approved IDs, and the 43 intermediate question-mark resolutions. Supersede any statement that the CURRENT report preserves 459 ID mentions or all 34 approved-photo mappings; those referred to the earlier non-focused Danish version. Keep it ID-based, no hashes, no inspecting baseline photos.";
+
+  it("archives the earlier FS report and records the complete changes-only edition", async () => {
+    staged();
+    const later = "Separate source-only baseline milestone retains 5779826 and 257 unique photo SHA-256s.";
+    await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" },
+      `${fsChangesOld}\n\n${later}`, "seed");
+    await kb.writeConcept("/projects/fs-fotovalidering-continuation-other.md", { type: "Project", title: "FS peer" },
+      "2026-10-14 baseline image audit is an unrelated milestone.", "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(fsChangesOld);
+      expect(prompt).toContain(later);
+      expect(prompt).toContain("RELEVANT PEERS:");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsChangesOwner] } });
+    const body = (await kb.readConcept(fsChangesOwner)).body;
+    expect(body).toContain(`Earlier non-focused Danish report version (superseded by changes-only edition): ${fsChangesOld}`);
+    expect(body).toContain("Current FS Fotovalidering 2026-10-14 changes-only baseline report:");
+    for (const item of ["Ændringer fra baselinen 2026-10-09 til 2026-10-14", "30 changed approved-photo ID mappings",
+      "23 moved and seven renumbered", "godkendt_id30", "two previously unlabelled", "264 added and 28 removed",
+      "Hovedbeklædning 4", "68 changed embedded photo files by ID", "unchanged 50 workbook-only columns",
+      "43 intermediate question-mark resolutions", "459 photo-ID mentions and all 34 approved-photo mappings describe only the earlier non-focused Danish version"])
+      expect(body).toContain(item);
+    expect(body).toContain(later);
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept(fsChangesOwner)).body).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("rejects FS change-report correction if another peer owns the old report", async () => {
+    staged();
+    await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" }, fsChangesOld, "seed");
+    const peer = "/projects/fs-fotovalidering-continuation-other.md";
+    await kb.writeConcept(peer, { type: "Project", title: "FS change report copy" }, fsChangesOld, "seed");
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("owner is absent, duplicated") });
+    expect((await kb.readConcept(fsChangesOwner)).body).toContain(fsChangesOld);
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("locates the unique complete old FS report in another continuation", async () => {
+    staged();
+    const movedOwner = "/projects/fs-fotovalidering/continuation-report.md";
+    await kb.writeConcept(fsChangesOwner, { type: "Project", title: "Other FS milestone" },
+      "Other FS source-only baseline checkpoint.", "seed");
+    await kb.writeConcept(movedOwner, { type: "Project", title: "FS report" }, fsChangesOld, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [movedOwner] } });
+    expect((await kb.readConcept(fsChangesOwner)).body).toContain("Other FS source-only baseline checkpoint");
+    expect((await kb.readConcept(movedOwner)).body).toContain("changes-only baseline report");
+  });
+
+  it("rejects a nested FS peer claiming the obsolete report without the filename", async () => {
+    staged();
+    await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" }, fsChangesOld, "seed");
+    const peer = "/projects/fs-fotovalidering/report-duplicate.md";
+    await kb.writeConcept(peer, { type: "Project", title: "FS report copy" },
+      "The 2026-10-14 baseline change report currently preserves all 459 photo-ID mentions and 34 approved-photo ID mappings.", "seed");
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("contradicted") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a completed FS report with its earlier full-history paragraph truncated", async () => {
+    staged();
+    const historical = `Earlier non-focused Danish report version (superseded by changes-only edition): ${fsChangesOld}`;
+    await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" }, fsChangesOld, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsChangesOwner] } });
+    const completed = (await kb.readConcept(fsChangesOwner)).body;
+    await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" },
+      completed.replace(historical, historical.replace("category-change lists, and numerical claims", "category-change lists")), "damage");
+    const result = await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(fsChangesOwner)).body).not.toContain(historical);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("rejects FS change-report correction if independent peer check declines", async () => {
+    staged();
+    await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" }, fsChangesOld, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS change-report check declined") });
+    expect((await kb.readConcept(fsChangesOwner)).body).toContain(fsChangesOld);
+  });
+
   const euroevalSubmittedInstruction = "Update EuroEval PR #2234 review status: review ID 5518245608 by saattrupdan, previously PENDING, was submitted on 14 Oct 2026 with state CHANGES_REQUESTED. It contains four inline comments: two substantive findings on multilingual ranking refresh and invalid-marker display, plus Dan's two readability/style comments in task_metadata.py and invalid_results.py. No longer describe it as unsubmitted.";
   const euroevalOldReview = "On 14 Oct 2026 Dan's GitHub account saattrupdan created unsubmitted PENDING review 5518245608 on head 0f255b1278c47a2051d348cd222ed0f2f862bdce with two inline comments: (1) leaderboard_generation.py:252 compares only overall ranked membership, so a per-language rank change for an overall-unranked model leaves multilingual CSVs stale on non-force runs; (2) leaderboard_generation.py:841 appends '(invalid)' to orthogonal percentage scores but LeaderboardTable.vue percent formatter and scatter tooltip drop the suffix (and interval). Comment IDs 4271055779 and 4271055802. Review was intentionally NOT submitted.";
 
