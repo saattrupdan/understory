@@ -2588,6 +2588,7 @@ async function runStagedMutation(
     const evidenceLookup = !options.directAdd && !!options.preflightInput && !options.ownerHint &&
       /^(?:update|add|correct|revise)\b/i.test(raw.trim()) &&
       (hits.length !== 1 || !hits[0].confidenceQualified);
+    let evidenceConflict = false;
     if (evidenceLookup) {
       const paths = await kb.bundle.listConceptPaths();
       if (paths.length > 10_000) {
@@ -2600,8 +2601,8 @@ async function runStagedMutation(
         const concepts = [];
         for (const conceptPath of paths.slice(offset, offset + 32)) {
           const concept = await kb.readConcept(conceptPath);
-          concepts.push({ path: concept.path, title: concept.frontmatter.title,
-            type: concept.frontmatter.type, body: concept.body });
+          concepts.push({ path: concept.path, title: concept.frontmatter.title ?? "",
+            type: concept.frontmatter.type ?? "", body: concept.body });
         }
         const plan = planMutationEvidence(raw, concepts, { batchSize: 32, maxBodyChars: 64_000 });
         for (const candidate of plan.candidates) {
@@ -2609,10 +2610,8 @@ async function runStagedMutation(
           if (!candidate.rejected && candidate.compositeAnchors.length > 0) located.add(candidate.path);
         }
       }
-      if (rejected || located.size > 1) {
-        throw new Error("Staged mutation deferred: evidence inventory found oversized or competing candidates.");
-      }
-      if (located.size === 1) {
+      evidenceConflict = rejected || located.size > 1;
+      if (!evidenceConflict && located.size === 1) {
         const candidatePath = [...located][0];
         if (!hits.some((hit) => hit.path === candidatePath)) {
           const metadata = await kb.readConcept(candidatePath);
@@ -3125,6 +3124,12 @@ async function runStagedMutation(
     }
     const candidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> = [];
     const locatedOwner = sectionOwnerPath ?? uiKeyboardOwnerPath ?? zeroWorkbookOwnerPath;
+    // A more explicitly grounded section or observed old-claim owner retains
+    // its own peer check. Otherwise ambiguity in the full evidence inventory
+    // must not be hidden by the ranked top-five search.
+    if (!locatedOwner && evidenceConflict) {
+      throw new Error("Staged mutation deferred: evidence inventory found oversized or competing candidates.");
+    }
     if (hintedPath && locatedOwner && hintedPath !== locatedOwner) {
       throw new Error("Staged mutation deferred: suggested owner conflicts with named section.");
     }
