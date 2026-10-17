@@ -5070,6 +5070,7 @@ describe("mutation owner preflight", () => {
   const fsPriorityInstruction = "Update FS Fotovalidering 15 Oct 2026 retrained 5,441-card synthetic annotation-page order at file:///tmp/fs-v3-merged24-retrained-binary-review-20261014.html. Dan requested focus on the three 2026-10-14 test false-rejection trigger categories, without adding test photos to synthetic annotation: `image_blurred`, `background_not_uniform`, `eyes_not_looking_straight`. Current page uses four stable buckets in order: 657 fitting train/validation samples with a false-positive model flag at fixed0.50 in any target category; 1,483 other fitting samples; 504 excluded-from-fitting target-category false positives; 2,797 other excluded samples. Within each bucket, prior descending class-balanced BCE model-error priority, disagreement-count and stable-ID ties remain unchanged. All 5,441 IDs, category display order, annotations by ID, storage key, server 127.0.0.1:8782 and original immutable queues remain intact. New private queue: `.../retrained-sparkie-binary-exclude-review-20261014/next-review-queue-fit-first-target-fp.jsonl`, SHA `79828fca1165dc1f94d58d9d5f4b90307c9b4f9fca971ad5b70a609f9da869a0`; new page SHA `31bf05689e43c6b3388664d78b88fcf578a724bad7871b30e9ce47f255dc4eb7` supersedes old fit-first page SHA `f478b3d193fd8276a8e25899726fcc98ad4c100a59571dbf5d7642e942e33bb4`. `/tmp/recreate-fs-retrained-binary-review.py` updated to reconstruct current priority from frozen private queue; preserving same page path/key is critical for browser autosave.";
   const fsPriorityOwner = "/projects/fs-fotovalidering/continuation-retrained.md";
   const fsPriorPage = "Inference on all 24,285 synthetic images produced 5,441 class-balanced-BCE-prioritised cards at file:///tmp/fs-v3-merged24-retrained-binary-review-20261014.html, local-only server 127.0.0.1:8782 and page SHA f381c4ab888136d905d0db51bdc336f77ff7a45f68f6de229bbabe2e8daf3bda. The previous display order remains; owner reviews retain their annotations.";
+  const fsPriorityHeading = "Current retrained annotation-page order: ";
 
   it("records the retrained FS page's four priority buckets without discarding its earlier order", async () => {
     staged();
@@ -5086,7 +5087,7 @@ describe("mutation owner preflight", () => {
       .toMatchObject({ ok: true, result: { filesChanged: [fsPriorityOwner] } });
     const body = (await kb.readConcept(fsPriorityOwner)).body;
     expect(body).toContain(fsPriorPage);
-    expect(body).not.toContain("Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority):");
+    expect(body).not.toContain("Earlier retrained annotation-page snapshot (superseded):");
     for (const anchor of ["657", "1,483", "504", "2,797", "image_blurred", "background_not_uniform",
       "eyes_not_looking_straight", "79828fca", "31bf0568", "f478b3d1", "127.0.0.1:8782"])
       expect(body).toContain(anchor);
@@ -5097,19 +5098,42 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
+  it("derives renamed synthetic page identity and bucket counts from the request", async () => {
+    staged();
+    const instruction = fsPriorityInstruction
+      .replace("fs-v3-merged24-retrained-binary-review-20261014.html", "synthetic-review-renamed.html")
+      .replace("image_blurred", "blurred_surface")
+      .replace("background_not_uniform", "uneven_scene")
+      .replace("eyes_not_looking_straight", "gaze_off_axis")
+      .replace("657", "111").replace("1,483", "222").replace("504", "333").replace("2,797", "444")
+      .replaceAll("5,441", "1,110")
+      .replace("31bf05689e43c6b3388664d78b88fcf578a724bad7871b30e9ce47f255dc4eb7", "a".repeat(64));
+    const prior = fsPriorPage
+      .replace("24,285", "8,888").replace("5,441", "1,110")
+      .replace("fs-v3-merged24-retrained-binary-review-20261014.html", "synthetic-review-renamed.html");
+    await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "Synthetic review" }, prior, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsPriorityOwner] } });
+    const body = (await kb.readConcept(fsPriorityOwner)).body;
+    for (const anchor of ["synthetic-review-renamed.html", "blurred_surface", "uneven_scene", "gaze_off_axis", "111", "222", "333", "444"])
+      expect(body).toContain(anchor);
+    expect(body).toContain(prior);
+  });
+
   it("corrects a broad superseded label without retracting current FS training policy", async () => {
     staged();
     const mixed = `FS Fotovalidering 14 Oct 2026 owner-confirmed source policy: every image in the current train/validation corpus is synthetic; only the separate test sets are excluded. ${fsPriorPage}`;
-    const current = `Current FS retrained synthetic review-page priority (15 Oct 2026): ${fsPriorityInstruction.replace(/^Update FS Fotovalidering 15 Oct 2026 retrained 5,441-card synthetic annotation-page order at /i, "The 5,441-card synthetic annotation page at ")}`;
+    const current = `${fsPriorityHeading}${fsPriorityInstruction.replace(/^Update FS Fotovalidering 15 Oct 2026 retrained 5,441-card synthetic annotation-page order at /i, "The 5,441-card synthetic annotation page at ")}`;
     await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "FS retrained annotation" },
-      `Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority): ${mixed}\n\n${current}`, "seed");
+      `Earlier retrained annotation-page snapshot (superseded): ${mixed}\n\n${current}`, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
     expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
       .toMatchObject({ ok: true, result: { filesChanged: [fsPriorityOwner] } });
     const body = (await kb.readConcept(fsPriorityOwner)).body;
     expect(body).toContain(mixed);
     expect(body).toContain(current);
-    expect(body).not.toContain("Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority):");
+    expect(body).not.toContain("Earlier retrained annotation-page snapshot (superseded):");
     expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
       .toMatchObject({ ok: true, result: { filesChanged: [] } });
     expect(generateObjectMock).toHaveBeenCalledOnce();
