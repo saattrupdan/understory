@@ -5178,7 +5178,7 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "FS retrained annotation" }, fsPriorPage, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
     expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS review-page check declined") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent annotation-page review declined") });
     expect((await kb.readConcept(fsPriorityOwner)).body).toContain(fsPriorPage);
   });
 

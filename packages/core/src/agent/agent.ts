@@ -1251,7 +1251,9 @@ async function runStagedMutation(
       }
       const heading = "Current retrained annotation-page order: ";
       const historical = "Earlier retrained annotation-page snapshot (superseded): ";
-      const update = `${heading}${raw.trim().replace(/^Update .+? annotation-page order at\s+/i, "The annotation page at ")}`;
+      const pageDescriptor = annotationRequest[1].match(/(\d[\d,]*-card\s+synthetic)$/i)?.[1];
+      const update = `${heading}${raw.trim().replace(/^Update .+? annotation-page order at\s+/i,
+        pageDescriptor ? `The ${pageDescriptor} annotation page at ` : "The annotation page at ")}`;
       const paths = await kb.bundle.listConceptPaths();
       if (paths.length > 10_000) throw new Error("Staged mutation deferred: annotation-page concept inventory exceeds limit.");
       const observed = new Map<string, Awaited<ReturnType<KnowledgeBase["readConcept"]>>>();
@@ -1281,11 +1283,14 @@ async function runStagedMutation(
         const current = paragraphs.filter((part) => part.startsWith(heading));
         const archived = paragraphs.filter((part) => part.startsWith(historical));
         const original = paragraphs.filter((part) => part.includes(page) && /\b\d[\d,]*\b/.test(part) && !part.startsWith(heading) && !part.startsWith(historical));
-        if (current.length === 1 && current[0].trimEnd() === update && current[0].split(currentSha).length === 2 &&
-            target.body.split(currentSha).length === 2 && [...observed.values()].every((peer) => peer.path === target.path || !peer.body.includes(currentSha))) {
+        if (current.length === 1 && (current[0].trimEnd() === update || current[0].startsWith(`${update} (Prior snapshot SHA-256: `)) &&
+            current[0].split(currentSha).length === 2 && target.body.split(currentSha).length === 2 &&
+            [...observed.values()].every((peer) => peer.path === target.path || !peer.body.includes(currentSha))) {
           if (archived.length === 1 && original.length === 0 && archived[0].includes(page) &&
               archived[0].length > 150 && [...archived[0].matchAll(/\b\d[\d,]*\b/g)].length >= 2 && /\b[a-f0-9]{64}\b/i.test(archived[0])) {
-            const proposed = target.body.replace(historical, "");
+            const priorBody = archived[0].slice(historical.length);
+            const proposed = `${target.body.replace(historical, "")
+              .replace(current[0], `${update} (Prior snapshot SHA-256: ${sha256(priorBody)})`).trimEnd()}\n`;
             const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
             modelChain = resolved.modelChain;
             const judgement = await generateObject({ model: resolved.model, schema: z.object({ safe: z.boolean() }).strict(), temperature: 0,
@@ -1303,7 +1308,8 @@ async function runStagedMutation(
             await traceStore(kb).save(trace);
             return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
           }
-          if (archived.length === 0 && original.length === 1) {
+          if (archived.length === 0 && original.length === 1 &&
+              current[0].trimEnd() === `${update} (Prior snapshot SHA-256: ${sha256(original[0].trimEnd())})`) {
             const fresh = await kb.readConcept(target.path);
             if (fresh.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
             const summary = "No change needed; annotation-page order and history verified.";
@@ -1317,12 +1323,13 @@ async function runStagedMutation(
       if (!ownerPath || completed.length || (options.ownerHint && options.ownerHint !== ownerPath)) throw new Error("Staged mutation deferred: annotation-page owner is absent, duplicated, or conflicts with hint.");
       const owner = observed.get(ownerPath)!;
       if (owner.body.split(historical).length > 1 || owner.body.split(heading).length > 1 ||
-          observed.size && [...observed.values()].some((peer) => peer.path !== ownerPath && peer.body.includes(currentSha))) {
+          owner.body.includes(currentSha) ||
+          [...observed.values()].some((peer) => peer.path !== ownerPath && peer.body.includes(currentSha))) {
         throw new Error("Staged mutation deferred: annotation-page status is already present, partial, or owned by a peer.");
       }
       const prior = owners[0].paragraph.trimEnd();
       if (prior.length > 4_000 || owner.body.split(prior).length !== 2 || !prior.includes(page) || !/\b[a-f0-9]{64}\b/i.test(prior)) throw new Error("Staged mutation deferred: annotation-page prior snapshot is not unique or complete.");
-      const proposed = owner.body.replace(prior, `${prior}\n\n${update}`);
+      const proposed = owner.body.replace(prior, `${prior}\n\n${update} (Prior snapshot SHA-256: ${sha256(prior)})`);
       if (proposed.length > STAGED_MAX_OWNER_CHARS || update.length > 3_000) throw new Error("Staged mutation deferred: annotation-page replacement exceeds evidence limit.");
       const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
