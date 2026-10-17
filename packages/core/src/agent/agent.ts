@@ -13,6 +13,7 @@ import type { KnowledgeBase } from "../okf/index.js";
 import { z } from "zod";
 import {
   createModel,
+  isLocalModelEndpoint,
   resolveFallbackConfig,
   resolveModelConfig,
   type ModelConfig,
@@ -97,6 +98,15 @@ export async function resolveAgentModel(
   onProviderCall?: (call: NonNullable<TraceTiming["providerCalls"]>[number]) => void
 ): Promise<ResolvedAgentModel> {
   const scopedConfig = (config: ModelConfig | null | undefined): ModelConfig | null | undefined => {
+    if (mode === "mutate" && config && isLocalModelEndpoint(config.baseURL)) {
+      // Local llama.cpp may otherwise spend indefinitely reasoning before response
+      // headers arrive. Bound mutation generations only; hosted and query calls
+      // retain their configured behavior. Explicit max_tokens always wins.
+      const extraBody = config.extraBody ?? {};
+      if (extraBody.max_tokens === undefined) {
+        config = { ...config, extraBody: { ...extraBody, max_tokens: 4096 } };
+      }
+    }
     const disableThinking =
       (mode === "query" && env.QUERY_ENABLE_THINKING === "false") ||
       (mode === "mutate" && env.MUTATION_ENABLE_THINKING === "false");

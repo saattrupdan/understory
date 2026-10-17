@@ -64,6 +64,44 @@ describe("deep-query thinking configuration", () => {
     ]);
   });
 
+  it("defaults only local mutation models to a bounded output cap", async () => {
+    createModelMock.mockResolvedValue({});
+    await resolveAgentModel({}, "mutate", {
+      LLM_API_BASE_URL: "http://localhost:8080/v1",
+      LLM_MODEL: "local-model",
+      LLM_FALLBACK_API_BASE_URL: "http://127.0.0.1:8081/v1",
+      LLM_FALLBACK_MODEL: "local-fallback",
+    });
+
+    expect(createModelMock.mock.calls.map(([config]) => config.extraBody)).toEqual([
+      { max_tokens: 4096 },
+      { max_tokens: 4096 },
+    ]);
+  });
+
+  it("preserves explicit mutation caps and leaves local query and hosted mutations uncapped by default", async () => {
+    createModelMock.mockResolvedValue({});
+    await resolveAgentModel({}, "mutate", {
+      LLM_API_BASE_URL: "http://localhost:8080/v1",
+      LLM_MODEL: "local-model",
+      LLM_MAX_OUTPUT_TOKENS: "1200",
+      LLM_FALLBACK_API_BASE_URL: "https://hosted.example/v1",
+      LLM_FALLBACK_MODEL: "hosted-model",
+    });
+    expect(createModelMock.mock.calls.map(([config]) => config.extraBody)).toEqual([
+      { max_tokens: 1200 },
+      undefined,
+    ]);
+
+    createModelMock.mockReset();
+    createModelMock.mockResolvedValue({});
+    await resolveAgentModel({}, "query", {
+      LLM_API_BASE_URL: "http://localhost:8080/v1",
+      LLM_MODEL: "local-model",
+    });
+    expect(createModelMock.mock.calls[0][0].extraBody).toBeUndefined();
+  });
+
   it("records separate numeric provider calls for loop steps and repair", async () => {
     const model = {
       specificationVersion: "v1",

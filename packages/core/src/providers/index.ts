@@ -195,7 +195,7 @@ const DISCOVERY_TTL_MS = 60_000;
 const LOCAL_HEADERS_TIMEOUT_MS = 8 * 60_000;
 const localDispatcher = new Agent({ headersTimeout: LOCAL_HEADERS_TIMEOUT_MS });
 
-function localModelEndpoint(baseURL: string): boolean {
+export function isLocalModelEndpoint(baseURL: string): boolean {
   const hostname = new URL(baseURL).hostname;
   return hostname === "localhost" || hostname === "127.0.0.1" ||
     hostname === "::1" || hostname === "host.docker.internal";
@@ -360,7 +360,7 @@ export async function createModel(
         // This only affects callers requesting structured output; ordinary
         // chat/tool calls continue using their existing request bodies.
         supportsStructuredOutputs: true,
-        ...(localModelEndpoint(cfg.baseURL) ? { fetch: localModelFetch } : {}),
+        ...(isLocalModelEndpoint(cfg.baseURL) ? { fetch: localModelFetch } : {}),
         ...(cfg.extraBody && Object.keys(cfg.extraBody).length
           ? {
               transformRequestBody: (args: Record<string, unknown>) => ({
