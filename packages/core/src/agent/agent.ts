@@ -1768,7 +1768,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent EuroEval PR #2234 review-state check. Does the EXACT old paragraph describe the previously unsubmitted review 5518245608, now submitted with CHANGES_REQUESTED? Does the proposed replacement contain ONLY facts supported by the caller, preserve both substantive details and their comment IDs, and preserve all unrelated PR, review, and eventual merge history? Do any peers own, duplicate or contradict this review status? The path and review ID are candidate locators, not write permission. Reject on uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${ownerPath}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nEXACT OLD PARAGRAPH:\n${old}\nEXACT PROPOSED PARAGRAPH:\n${updated}`,
+        prompt: `Independent submitted-review state check. Does the EXACT old paragraph describe this review's previously unsubmitted state, and does the caller support its newly submitted outcome? Does the proposed replacement contain ONLY facts supported by the caller, preserve both substantive details and their comment IDs, and preserve all unrelated PR, review, and eventual merge history? Do any peers own, duplicate or contradict this review status? The path and review ID are candidate locators, not write permission. Reject on uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${ownerPath}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nEXACT OLD PARAGRAPH:\n${old}\nEXACT PROPOSED PARAGRAPH:\n${updated}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) {
