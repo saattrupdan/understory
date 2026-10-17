@@ -105,13 +105,23 @@ export function planMutationEvidence(
     const bodyEvidence = bodyFits ? extract(concept.body) : [];
     const shared = bodyEvidence.filter((item) => usableRequest.some((requestItem) => requestItem.kind === item.kind && normalize(requestItem.value) === normalize(item.value)));
     const oldClaim = bodyEvidence.filter((item) => item.kind === "claim" && requestNorm.includes(normalize(item.value)));
-    const evidence = [...shared, ...oldClaim];
+    // When the request identifies one artifact but the candidate attaches the
+    // same item to a different artifact, generic identifiers cannot make that
+    // candidate the owner. An unseen new artifact alone cannot prove ownership.
+    const requestedArtifacts = usableRequest.filter((item) => item.kind === "artifact");
+    const conflictingArtifact = requestedArtifacts.some((item) => {
+      if (shared.some((match) => match.kind === "artifact" && normalize(match.value) === normalize(item.value))) return false;
+      const lastPart = item.value.split("/").at(-1);
+      return !!lastPart && bodyEvidence.some((match) => match.kind === "artifact" &&
+        match.value.split("/").at(-1) === lastPart && normalize(match.value) !== normalize(item.value));
+    });
+    const evidence = conflictingArtifact ? [] : [...shared, ...oldClaim];
     const candidate: EvidenceCandidate = {
       path: concept.path, title: concept.title, type: concept.type, evidence,
       compositeAnchors: composite(evidence),
     };
     if (!bodyFits && (inventoryMatch || oversizedMatch)) candidate.rejected = "oversized-matching-evidence";
-    if (inventoryMatch || evidence.length) candidates.push(candidate);
+    if (inventoryMatch || evidence.length || oversizedMatch) candidates.push(candidate);
   }
   const eligible = candidates.filter((candidate) => !candidate.rejected && candidate.compositeAnchors.length > 0);
   const conflicts = eligible.map((candidate) => candidate.path);
