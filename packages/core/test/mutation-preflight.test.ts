@@ -83,6 +83,55 @@ describe("mutation owner preflight", () => {
     frontmatter: { type: "", title: "", description: "" }, claim: "", reason: "",
   };
 
+  const claesSeedlessOwner = "/projects/claes-jev-diagnostics.md";
+  const claesSeedlessInstruction = "Update Claes design/preference: Dan explicitly does not want reproducibility seeds set anywhere in remaining repository code for this dataset. He chose to REMOVE all archived pilot workflows (scripts/modules/tests and runnable workflow docs), but preserve historical data artifacts. On feat/laya-taxonomy-sampler at 942642e, remaining task-first Laya sampler/collector and benchmark have no --seed parameters, derived seeds, or seed fields in new manifests; local draws use fresh system entropy. Resume uses source-bound manifest + append-only checkpoint for completed row identities, tasks validated against pool and persisted informal row-index schedule; a seed-bearing legacy manifest is rejected rather than migrated. Generic Jev question-answering and task-first Luna generation/review remain. Historic docs/samples/seed-* data artifacts and old ignored data/ outputs were preserved. make check and 81 tests pass; independent reviewer LGTM. Seedless throughput should be benchmarked anew when needed; previous 32-worker ~5.22 assignments/s measurement was from seeded implementation, though Laya transport/concurrency otherwise unchanged.";
+  const claesSeedlessHistory = "Claes Laya throughput knowledge: the task-first pipeline update uses a seed-spread Informal pilot; historical seed20261013 benchmark files measured 5.223 assignments/s with 32 workers. Pilot observations and data artifacts remain.";
+
+  it("supersedes Claes seed guidance without erasing historical artifacts and verifies a repeat", async () => {
+    staged();
+    await kb.writeConcept(claesSeedlessOwner, { type: "Project", title: "Claes Jev Diagnostics" },
+      `${claesSeedlessHistory}\n\nUnrelated Jev answer history remains intact.`, "seed");
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(claesSeedlessHistory);
+      expect(prompt).toContain("942642e");
+      expect(prompt).toContain("supersedes earlier seeded workflow and pilot guidance");
+      return { object: { safe: true, reason: "Later status is complete and historical measurements retained." } };
+    });
+    expect(await runMutation(kb, claesSeedlessInstruction, { preflightInput: claesSeedlessInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [claesSeedlessOwner] } });
+    const body = (await kb.readConcept(claesSeedlessOwner)).body;
+    expect(body).toContain(`Historical Claes workflow snapshot (superseded by seedless 942642e; earlier pilot and seeded benchmark advice is not current guidance): ${claesSeedlessHistory}`);
+    expect(body).not.toMatch(/^Claes Laya throughput knowledge:/m);
+    expect(body).toContain("Unrelated Jev answer history remains intact.");
+    expect(body).toContain("REMOVE all archived pilot workflows");
+    expect(body).toContain("seed-bearing legacy manifest is rejected rather than migrated");
+    expect(body).toContain("previous 32-worker ~5.22 assignments/s measurement was from seeded implementation");
+    expect(await runMutation(kb, claesSeedlessInstruction, { preflightInput: claesSeedlessInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept(claesSeedlessOwner)).body).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("defers a Claes seedless update when a competing owner already records the same release", async () => {
+    staged();
+    await kb.writeConcept(claesSeedlessOwner, { type: "Project", title: "Claes Jev Diagnostics" }, claesSeedlessHistory, "seed");
+    await kb.writeConcept("/projects/claes/workflow-copy.md", { type: "Project", title: "Claes Workflow" },
+      "At 942642e the seedless workflow rejected legacy manifests.", "seed");
+    expect(await runMutation(kb, claesSeedlessInstruction, { preflightInput: claesSeedlessInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing owner") });
+    expect((await kb.readConcept(claesSeedlessOwner)).body).not.toContain("REMOVE all archived pilot workflows");
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("defers Claes seedless status when the independent owner check declines", async () => {
+    staged();
+    await kb.writeConcept(claesSeedlessOwner, { type: "Project", title: "Claes Jev Diagnostics" }, claesSeedlessHistory, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false, reason: "Unresolved contradiction" } });
+    expect(await runMutation(kb, claesSeedlessInstruction, { preflightInput: claesSeedlessInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent Claes seedless") });
+    expect((await kb.readConcept(claesSeedlessOwner)).body).toContain(claesSeedlessHistory);
+  });
+
   const yuNetOwner = "/projects/fs-fotovalidering/auto-crop-investigation.md";
   const yuNetOld = "FS Fotovalidering YuNet face gate (feat/yunet-face-gate, Oct 2026): /preprocess screens NSFW. /validate checks 0.90. The old cache uses rendered crop JPEG digest.";
   const yuNetInstruction = "Update FS Fotovalidering YuNet face gate architecture (feat/yunet-face-gate, Oct 2026): Upload selection calls /content-screen at 0.90. Cache by original exact bytes and model revision/SHA. Camera /preprocess must NOT fall back to local crop. Tests: 2 backend passed, 3 frontend passed.";
