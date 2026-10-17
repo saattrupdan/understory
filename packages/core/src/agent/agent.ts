@@ -1,7 +1,7 @@
 import path from "node:path";
 import {
   generateText,
-  generateObject,
+  generateObject as sdkGenerateObject,
   wrapLanguageModel,
   modelMessageSchema,
   streamText,
@@ -38,6 +38,16 @@ import {
   isUnsafeSynthesisAnswer,
   MALFORMED_ANSWER_MESSAGE,
 } from "./answer-validation.js";
+
+// A syntactically complete JSON object can still be cut off after reaching a
+// generation cap. Never accept it as an independent safety decision or a write.
+const generateObject: typeof sdkGenerateObject = async (options) => {
+  const result = await sdkGenerateObject(options);
+  if (result.finishReason === "length") {
+    throw new Error("Mutation generation hit its output cap; result is incomplete");
+  }
+  return result;
+};
 
 export interface AgentOptions {
   model?: string;
@@ -202,7 +212,10 @@ export function prepareFinalSynthesisStep(maxSteps: number) {
     stepNumber >= maxSteps - 1 ? { activeTools: [] } : undefined;
 }
 
-function assertSynthesised(steps: ReadonlyArray<{ toolCalls?: unknown[] }>): void {
+function assertSynthesised(steps: ReadonlyArray<{ toolCalls?: unknown[]; finishReason?: string }>): void {
+  if (steps.some((step) => step.finishReason === "length")) {
+    throw new Error("Mutation generation hit its output cap; result is incomplete");
+  }
   const last = steps.at(-1);
   if (last?.toolCalls && last.toolCalls.length > 0) {
     throw new Error("Agent reached the step limit before producing a final answer");

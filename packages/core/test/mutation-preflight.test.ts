@@ -238,6 +238,19 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
 
+  it("rejects a capped staged safety decision even when its JSON says safe", async () => {
+    staged();
+    const owner = "/projects/owner.md";
+    const paragraph = "This complete owner paragraph has a distinctive beginning and a distinctive ending.";
+    await kb.writeConcept(owner, { type: "Project", title: "Owner" },
+      `Before.\n\n${paragraph}\n\nAfter.`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true }, finishReason: "length" });
+    const result = await runMutation(kb,
+      `In \`${owner}\`, remove ONLY the exact paragraph beginning \`This complete owner paragraph\` and ending \`a distinctive ending.\`.`);
+    expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("output cap") });
+    expect((await kb.readConcept(owner)).body).toContain(paragraph);
+  });
+
   it("removes only one uniquely endpoint-anchored paragraph after checking its middle", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering/synthetic-dataset-generation.md";
@@ -4503,6 +4516,18 @@ describe("mutation owner preflight", () => {
 
     const result = await runMutation(kb, updateInstruction, { preflightInput: updateInstruction });
     expect(result).toMatchObject({ ok: true, result: { filesChanged: ["/apis/billing-api.md"] } });
+    expect((await kb.readConcept("/apis/billing-api.md")).body.trim()).toBe(newBody);
+  });
+
+  it("reports a capped post-write generation as partial, not success", async () => {
+    await billingFixture();
+    generateTextMock.mockImplementationOnce(async (request: MutationRequest) => {
+      await patchRequest(request);
+      return { text: "Updated Billing API approval rule.", steps: [{ toolCalls: [], finishReason: "length" }] };
+    });
+    const result = await runMutation(kb, updateInstruction, { preflightInput: updateInstruction });
+    expect(result).toMatchObject({ ok: false, status: "partial", filesChanged: ["/apis/billing-api.md"],
+      error: expect.stringContaining("output cap") });
     expect((await kb.readConcept("/apis/billing-api.md")).body.trim()).toBe(newBody);
   });
 
