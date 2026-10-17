@@ -5149,6 +5149,107 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(fsChangesOwner)).body).toContain(fsChangesOld);
   });
 
+  const euroevalResolvedThreadsInstruction = "EuroEval PR #2234: after verifying head 67fe25b4a06099b423916f9de6285ad340ab7e1e, all six review threads (Dan's four plus Copilot's two) were resolved on GitHub. The CHANGES_REQUESTED review has not been replaced with an approval; resolving threads alone does not change review decision.";
+  const euroevalFollowup = "EuroEval PR #2234 follow-up: new head 67fe25b4a06099b423916f9de6285ad340ab7e1e fixes the two substantive requested changes and Dan's two readability notes. Recheck LGTM; prior review still CHANGES_REQUESTED until an explicit approval.";
+  const euroevalThreadsOwner = "/repos/euroeval/orthogonal-leaderboard-confidence-intervals.md";
+
+  it("records six resolved EuroEval review threads without approving the existing review", async () => {
+    staged();
+    const later = "PR #2234 was subsequently squash-merged; retain this separate lifecycle record.";
+    await kb.writeConcept(euroevalThreadsOwner, { type: "Repository", title: "EuroEval review follow-up" },
+      `${euroevalFollowup}\n\n${later}`, "seed");
+    await kb.writeConcept("/repos/euroeval.md", { type: "Repository", title: "EuroEval" },
+      "EuroEval PR #2234 review 5518245608 was submitted with CHANGES_REQUESTED and four inline comments.", "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(euroevalFollowup);
+      expect(prompt).toContain(later);
+      expect(prompt).toContain("RELEVANT PEERS:");
+      expect(prompt).toContain("CHANGES_REQUESTED and four inline comments");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [euroevalThreadsOwner] } });
+    const body = (await kb.readConcept(euroevalThreadsOwner)).body;
+    expect(body).toContain(euroevalFollowup);
+    expect(body).toContain(later);
+    expect(body).toContain(euroevalResolvedThreadsInstruction);
+    expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("classifies a quoted failed EuroEval queue request without assigning it PR ownership", async () => {
+    staged();
+    await kb.writeConcept(euroevalThreadsOwner, { type: "Repository", title: "EuroEval review follow-up" },
+      euroevalFollowup, "seed");
+    const runbook = "/repos/pi-agent/memory-async.md";
+    await kb.writeConcept(runbook, { type: "Repository", title: "Memory queue" },
+      `Queue processing history. ${"This is an async request example and not the authoritative EuroEval review. ".repeat(70)} Example failed memory_update: ${euroevalResolvedThreadsInstruction} It hit the generation cap.`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`PEER ${runbook}:`);
+      expect(prompt).toContain("Example failed memory_update");
+      expect(prompt).not.toContain("PROPOSED NOTE:");
+      return { object: { exampleOnly: true } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("independently classified as queue example");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [euroevalThreadsOwner] } });
+    expect((await kb.readConcept(runbook)).body).toContain("Example failed memory_update");
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a runbook peer that independently asserts EuroEval review-thread status", async () => {
+    staged();
+    await kb.writeConcept(euroevalThreadsOwner, { type: "Repository", title: "EuroEval review follow-up" },
+      euroevalFollowup, "seed");
+    await kb.writeConcept("/repos/pi-agent/memory-async.md", { type: "Repository", title: "Memory queue" },
+      `The runbook currently owns this PR #2234 review record: ${euroevalResolvedThreadsInstruction}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { exampleOnly: false } });
+    expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("queue peer asserts a competing") });
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+    expect((await kb.readConcept(euroevalThreadsOwner)).body).not.toContain("review-thread resolution at checked head");
+  });
+
+  it("defers duplicate or incomplete EuroEval review-thread status", async () => {
+    staged();
+    await kb.writeConcept(euroevalThreadsOwner, { type: "Repository", title: "EuroEval review follow-up" },
+      euroevalFollowup, "seed");
+    await kb.writeConcept("/repos/euroeval-other.md", { type: "Repository", title: "EuroEval" },
+      "PR #2234: six review threads including Copilot were resolved already.", "seed");
+    expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("another owner") });
+    await kb.writeConcept("/repos/euroeval-other.md", { type: "Repository", title: "EuroEval" },
+      "Different PR status.", "seed");
+    await kb.writeConcept(euroevalThreadsOwner, { type: "Repository", title: "EuroEval review follow-up" },
+      `${euroevalFollowup}\n\nPR #2234 six review threads from Dan and Copilot were resolved, but decision remains under review.`, "seed");
+    expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("partial or conflicting") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a capped EuroEval review-thread safety verdict from writing", async () => {
+    staged();
+    await kb.writeConcept(euroevalThreadsOwner, { type: "Repository", title: "EuroEval review follow-up" },
+      euroevalFollowup, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true }, finishReason: "length" });
+    expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("output cap") });
+    expect((await kb.readConcept(euroevalThreadsOwner)).body.trim()).toBe(euroevalFollowup);
+  });
+
+  it("defers the EuroEval review-thread update if independent ownership check declines", async () => {
+    staged();
+    await kb.writeConcept(euroevalThreadsOwner, { type: "Repository", title: "EuroEval review follow-up" },
+      euroevalFollowup, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent EuroEval review-thread check declined") });
+    expect((await kb.readConcept(euroevalThreadsOwner)).body.trim()).toBe(euroevalFollowup);
+  });
+
   const euroevalSubmittedInstruction = "Update EuroEval PR #2234 review status: review ID 5518245608 by saattrupdan, previously PENDING, was submitted on 14 Oct 2026 with state CHANGES_REQUESTED. It contains four inline comments: two substantive findings on multilingual ranking refresh and invalid-marker display, plus Dan's two readability/style comments in task_metadata.py and invalid_results.py. No longer describe it as unsubmitted.";
   const euroevalOldReview = "On 14 Oct 2026 Dan's GitHub account saattrupdan created unsubmitted PENDING review 5518245608 on head 0f255b1278c47a2051d348cd222ed0f2f862bdce with two inline comments: (1) leaderboard_generation.py:252 compares only overall ranked membership, so a per-language rank change for an overall-unranked model leaves multilingual CSVs stale on non-force runs; (2) leaderboard_generation.py:841 appends '(invalid)' to orthogonal percentage scores but LeaderboardTable.vue percent formatter and scatter tooltip drop the suffix (and interval). Comment IDs 4271055779 and 4271055802. Review was intentionally NOT submitted.";
 
