@@ -1149,7 +1149,7 @@ async function runStagedMutation(
         if (peer.body.split(/\n\s*\n/).some((paragraph) =>
           staleReviewClaim(paragraph) ||
           (paragraph.includes("5518245608") && /CHANGES_REQUESTED/i.test(paragraph)))) {
-          throw new Error("Staged mutation deferred: EuroEval review has a competing owner.");
+          throw new Error(`Staged mutation deferred: EuroEval review has a competing owner (${peer.path}).`);
         }
         for (const paragraph of peer.body.split(/\n\s*\n/)) {
           if (paragraph.includes("5518245608") ||
