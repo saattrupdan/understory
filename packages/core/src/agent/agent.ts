@@ -3312,7 +3312,7 @@ async function runStagedMutation(
             });
             state.checkCancellation();
             if (pastCheck.finishReason === "length" || !pastCheck.object.certain ||
-                !pastCheck.object.authenticPastPolicy || !pastCheck.object.noCurrentContradiction) noAnchor("historical-provenance-veto");
+                !pastCheck.object.authenticPastPolicy || !pastCheck.object.noCurrentContradiction) noAnchor(`historical-provenance-veto(certain=${pastCheck.object.certain},authentic=${pastCheck.object.authenticPastPolicy},consistent=${pastCheck.object.noCurrentContradiction},capped=${pastCheck.finishReason === "length"})`);
             historicalProvenanceOwner = selected.path;
           }
           // Every retained search hit gets its own complete-body peer check.
