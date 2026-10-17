@@ -3332,10 +3332,19 @@ async function runStagedMutation(
               // version. Escalate only with independently checkable, different
               // complete artifact paths and at least two unshared measurements.
               const artifacts = (text: string) => text.match(/(?:data\/[\w./-]{20,}|file:\/\/\/tmp\/[\w.-]{20,}\.html)/g) ?? [];
-              const requested = artifacts(raw).find((artifact) => artifact.includes("/") && !peer.body.includes(artifact));
-              const peerArtifact = requested && artifacts(peer.body).find((artifact) =>
-                artifact !== requested && artifact.slice(0, artifact.lastIndexOf("/") + 1) ===
-                  requested.slice(0, requested.lastIndexOf("/") + 1));
+              const relatedArtifacts = (left: string, right: string): boolean => {
+                const a = left.split("/");
+                const b = right.split("/");
+                let shared = 0;
+                while (shared < Math.min(a.length, b.length) && a[shared] === b[shared]) shared++;
+                return left !== right && !left.includes(right) && !right.includes(left) &&
+                  (shared >= 5 || (left.startsWith("file:///tmp/") && right.startsWith("file:///tmp/") && shared >= 4));
+              };
+              const pair = artifacts(raw).filter((artifact) => !peer.body.includes(artifact))
+                .flatMap((requested) => artifacts(peer.body).filter((artifact) => relatedArtifacts(requested, artifact))
+                  .map((peerArtifact) => ({ requested, peerArtifact })))[0];
+              const requested = pair?.requested;
+              const peerArtifact = pair?.peerArtifact;
               const unsharedCounts = [...new Set(raw.match(/\b\d{1,3}(?:,\d{3})+\b/g) ?? [])]
                 .filter((count) => !peer.body.includes(count));
               if (!pastPolicy || !requested || !peerArtifact || unsharedCounts.length < 2) {
