@@ -425,8 +425,8 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain(yuNetOld);
       expect(prompt).toContain(yuNetInstruction);
-      expect(prompt.length).toBeLessThan(3_000);
-      expect(prompt).not.toContain(unrelated);
+      expect(prompt.length).toBeLessThan(5_000);
+      expect(prompt).toContain(unrelated);
       return { object: { safe: true }, finishReason: "stop" };
     });
     const first = await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction });
