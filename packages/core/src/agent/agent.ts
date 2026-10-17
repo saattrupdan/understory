@@ -3820,25 +3820,30 @@ async function runStagedMutation(
       // The obsolete deployment policy spans paragraphs. A follow-up would
       // leave its false current instructions active. Replace only that exact
       // section, while keeping the separate dated CLI observation intact.
-      const deploymentRequest = /^update the saattrupdan\.com deployment workflow knowledge:/i.test(raw.trim()) &&
-        /replace obsolete guidance that `make deploy` is authoritative/i.test(raw) &&
-        /push to main is the intended deployment mechanism/i.test(raw) &&
-        /retain note that vercel cli `vercel --prod` returns not authorized/i.test(raw);
-      // The proposer and ranked hits can both select a related project note
-      // instead of the repo policy. The exact existing repo path is a locator;
-      // its uniquely observed obsolete claim and independent check authorize
-      // the write, not the path or search rank.
-      if (deploymentRequest && target?.path !== "/repos/saattrupdan-com.md" &&
-          await kb.bundle.exists("/repos/saattrupdan-com.md")) {
-        const repo = await kb.readConcept("/repos/saattrupdan-com.md");
-        recorder.record("read_concept", repo.path, [repo.path]);
-        state.checkCancellation();
-        if (repo.body.length > STAGED_MAX_OWNER_CHARS) {
-          throw new Error("Staged mutation deferred: deployment policy owner exceeds evidence limit.");
+      const deploymentRequest = /^(?:update|correct) the .{1,160} deployment workflow knowledge:/i.test(raw.trim()) &&
+        /replace obsolete guidance that `[^`]+` is authoritative/i.test(raw) &&
+        /push to [\w./-]+ is the intended deployment mechanism/i.test(raw) &&
+        /retain note that .* returns not authorized/i.test(raw);
+      const repositories: typeof candidates = [];
+      if (deploymentRequest) {
+        const paths = await kb.bundle.listConceptPaths();
+        if (paths.length > 10_000) throw new Error("Staged mutation deferred: deployment policy inventory exceeds evidence limit.");
+        for (const path of paths.filter((candidate) => candidate.startsWith("/repos/"))) {
+          const repo = await kb.readConcept(path);
+          recorder.record("read_concept", repo.path, [repo.path]);
+          state.checkCancellation();
+          if (repo.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: deployment policy peer exceeds evidence limit.");
+          repositories.push({ path: repo.path, frontmatter: repo.frontmatter, body: repo.body });
         }
-        target = { path: repo.path, frontmatter: repo.frontmatter, body: repo.body };
+        const eligible = repositories.filter((repo) => /^#{1,6}\s+Deployment Policy\s*$/im.test(repo.body) &&
+          /is the authoritative deployment command/i.test(repo.body) && /Run `[^`]+` to publish/i.test(repo.body));
+        if (eligible.length === 1) target = eligible[0];
+        else if (eligible.length > 1) throw new Error("Staged mutation deferred: deployment policy has a competing owner.");
+        if (!target || !repositories.some((repo) => repo.path === target?.path)) {
+          throw new Error("Staged mutation deferred: deployment policy owner is not a repository.");
+        }
       }
-      if (deploymentRequest && target?.path === "/repos/saattrupdan-com.md") {
+      if (deploymentRequest && target?.path.startsWith("/repos/")) {
         const headings = [...target.body.matchAll(/^#{1,6}\s+Deployment Policy\s*$/gim)];
         if (headings.length !== 1) throw new Error("Staged mutation deferred: deployment policy section is not unique.");
         const start = headings[0].index;
@@ -3846,28 +3851,23 @@ async function runStagedMutation(
         followingHeading.lastIndex = start + headings[0][0].length;
         const end = followingHeading.exec(target.body)?.index ?? target.body.length;
         const section = target.body.slice(start, end);
-        if (section.length > 4_000 ||
-            !/\*\*`make deploy`\*\* is the authoritative deployment command for saattrupdan\.com\./i.test(section) ||
-            !/Run `make deploy` to publish\./i.test(section) ||
+        const command = raw.match(/replace obsolete guidance that `([^`]+)` is authoritative/i)?.[1];
+        if (section.length > 4_000 || !command ||
+            !section.includes(`**\`${command}\`** is the authoritative deployment command`) ||
+            !section.includes(`Run \`${command}\` to publish.`) ||
             !/Only after deployment succeeds, clean up \(delete\) the feature branch\./i.test(section) ||
             !/Never delete the feature branch before confirming deployment has succeeded/i.test(section)) {
           throw new Error("Staged mutation deferred: obsolete deployment policy is not uniquely grounded.");
         }
-        const required = ["dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L", "3dd02f09300a208f9addf936cc273a216ea449f9",
-          "2026-10-14", "dist/atom.xml", "dist/sitemap.xml", "src/build/feeds.ts", "my-website", "www.saattrupdan.com"];
-        if (!required.every((identifier) => raw.includes(identifier))) {
-          throw new Error("Staged mutation deferred: deployment correction lacks required evidence.");
+        const peers = repositories.filter((repo) => repo.path !== target?.path);
+        if (peers.some((peer) => peer.body.includes(section.trim()))) {
+          throw new Error("Staged mutation deferred: deployment policy has a competing owner.");
         }
-        for (const hit of hits) {
-          if (hit.path === target.path) continue;
-          const peer = await kb.readConcept(hit.path);
-          recorder.record("read_concept", peer.path, [peer.path]);
-          state.checkCancellation();
-          if (peer.body.length > STAGED_MAX_OWNER_CHARS || peer.body.includes(section.trim())) {
-            throw new Error("Staged mutation deferred: deployment policy has a competing owner.");
-          }
-        }
-        const revisedSection = `${headings[0][0]}\n\nVercel project \`my-website\` is Git-connected to \`saattrupdan/saattrupdan.com\` with \`main\` as the production branch. Complete work on the feature branch and merge it into \`main\`. Push to \`main\` is the intended deployment mechanism; verify the Production deployment and live domain before deleting the feature branch, so a failed deployment can still be corrected before cleanup. \`make deploy\` is not authoritative and does not need to run before branch cleanup.\n\nThe 2026-10-14 Production deployment \`dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L\` was Git-triggered from commit \`3dd02f09300a208f9addf936cc273a216ea449f9\`, Ready and aliased to \`www.saattrupdan.com\`; the GitHub Vercel status was success.\n\nThe Vite build generates \`dist/atom.xml\` and \`dist/sitemap.xml\` via \`src/build/feeds.ts\`, independent of the legacy local Python feed target. On 2026-10-14, the \`deploy\` target was removed from \`makefile\` and \`AGENTS.md\` was updated locally; those changes were not yet committed or pushed in that session.\n\n`;
+        const requestedFacts = raw.split(/(?<=[.!?])\s+/).filter((sentence) =>
+          /(?:Vercel project|production deployment|Git-triggered|GitHub .*status|Vite build|deploy target was removed|push to [\w./-]+ is the intended deployment mechanism)/i.test(sentence) &&
+          !/replace obsolete guidance|retain note/i.test(sentence));
+        if (!requestedFacts.length) throw new Error("Staged mutation deferred: deployment correction lacks caller-supported facts.");
+        const revisedSection = `${headings[0][0]}\n\n${requestedFacts.join("\n\n")}\n\n`;
         const replacement = target.body.slice(0, start) + revisedSection + target.body.slice(end);
         if (!replacement.includes("vercel --prod") || !replacement.includes("Not authorized") ||
             replacement.length > STAGED_MAX_OWNER_CHARS) {

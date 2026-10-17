@@ -5711,10 +5711,34 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
+  it("rewrites a renamed synthetic deployment policy from observed caller facts", async () => {
+    staged();
+    const owner = "/repos/bluebird-site.md";
+    const policy = "## Deployment Policy\n\n**`ship-it`** is the authoritative deployment command for bluebird.test.\n\n" +
+      "The required workflow:\n1. Complete work on a feature branch.\n2. Merge into `trunk`.\n" +
+      "3. Run `ship-it` to publish.\n4. Only after deployment succeeds, clean up (delete) the feature branch.\n\n" +
+      "Never delete the feature branch before confirming deployment has succeeded.\n\n";
+    const instruction = "Update the bluebird.test deployment workflow knowledge: Vercel project bluebird-prod is Git-connected to team/bluebird-site with trunk as production branch. " +
+      "The 2026-11-03 production deployment dpl_Bluebird123 was Git-triggered from commit abcdef0123456789abcdef0123456789abcdef01, Ready, aliased to bluebird.test; GitHub deployment status success. " +
+      "Replace obsolete guidance that `ship-it` is authoritative. Push to trunk is the intended deployment mechanism. " +
+      "On 2026-11-03, the ship-it target was removed from project config. Retain note that Vercel CLI `vercel --prod` returns Not authorized.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Bluebird site" }, `${policy}## CLI observation\n\nvercel --prod returned Not authorized.`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: "`ship-it` is authoritative", new_text: "Push to trunk is the intended deployment mechanism." } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain("dpl_Bluebird123");
+    expect(body).toContain("bluebird-prod");
+    expect(body).toContain("vercel --prod returned Not authorized.");
+    expect(body).not.toContain("ship-it` is the authoritative deployment command");
+  });
+
   it("blocks a deployment policy correction when another owner contains the same policy", async () => {
     staged();
     const owner = "/repos/saattrupdan-com.md";
-    const peer = "/projects/saattrupdan-com.md";
+    const peer = "/repos/saattrupdan-com-deploy.md";
     const policy = "## Deployment Policy\n\n**`make deploy`** is the authoritative deployment command for saattrupdan.com.\n\n" +
       "The required workflow:\n3. Run `make deploy` to publish.\n4. Only after deployment succeeds, clean up (delete) the feature branch.\n\n" +
       "Never delete the feature branch before confirming deployment has succeeded.\n\n";
