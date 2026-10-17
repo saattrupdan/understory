@@ -1141,7 +1141,8 @@ async function runStagedMutation(
         }
         const confirmedLaterCorrection = peer.body.includes(manifestSha) &&
           peer.body.includes(laterManifestSha) && peer.body.includes("owner-blur") &&
-          peer.body.includes("257-photo") && peer.body.includes("Godkendt!C4=x");
+          peer.body.includes("257-photo") && peer.body.includes("Godkendt!A4") &&
+          peer.body.includes("C4=x");
         if (confirmedLaterCorrection) supersedingPeers.push(peer.path);
         const peerConflict = peer.body.includes(manifestSha) && !confirmedLaterCorrection ? "unexplained prior manifest" :
           peer.body.includes(reportSha) ? "evaluation report" :
