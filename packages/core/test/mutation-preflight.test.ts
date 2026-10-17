@@ -132,6 +132,81 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(claesSeedlessOwner)).body).toContain(claesSeedlessHistory);
   });
 
+  const fsBaselineOwner = "/projects/fs-fotovalidering-continuation-d2fd99e3dfc67efb.md";
+  const fsBaselineOld = "FS Fotovalidering 2026-10-14 baseline deletion warning — Do NOT delete everything except the PPTX and source XLSX. The current private baselines/2026-10-14/regenerate_parsed.py is NOT a clean PPTX+XLSX-only parser: it reads parsed/manifest.jsonl, parsed/labels.xlsx, parsed/images/ and parsed/exclusions.json as prior metadata/images, plus generation-provenance.json for six PPTX SHA pins. The repository parse_test_set.py cannot currently regenerate the corrected 258-photo baseline from those PPTX and XLSX alone. Preserve review exports.";
+  const fsBaselineInstruction = "Update the FS Fotovalidering 2026-10-14 baseline deletion/regeneration warning: it was correct for the old generator but is now superseded. A durable project script at src/scripts/rebuild_test_baseline.py regenerates the complete 258-photo current test dataset using ONLY six PPTX and the authoritative XLSX as data inputs; it never reads parsed/, generation-provenance.json or owner-24-review. The baseline-local regenerate_parsed.py was replaced by a wrapper invoking uv run --project <repo> on that script, tested successfully from the baseline directory outside the repo. A clean /tmp input directory containing exactly those seven source files produced all 258 image hashes, 24-category labels (including unknowns), roles, paths, both sheets of labels.xlsx and exclusions matching current published parsed/ exactly; only godkendt_id20 byte_size JSON type is normalised from string to int (numeric value unchanged), so regenerated manifest SHA-256 is ea58999a498cffdc9d311600a3e168991c3e3f743d7ab2cee82e2e75869d77c5 versus currently published 3d27505b085a9506a11a87855fa782031500248ea288d48700da44619976ccb6. Private baseline generation-provenance.json records this check; prior parsed/ was deliberately left intact so the active review page/autosave hash remains unchanged. 33 parser/synthetic tests passed; source-only /tmp copies of private photos and decks were removed after validation. It is now safe to delete/rebuild parsed/ from only the PPTX+XLSX via the repository script, but owner-24-review historical exports, old workbook copies, and audit provenance cannot be recreated from those sources and should be retained if the user wants audit history.";
+
+  it("supersedes only the old FS baseline deletion warning and preserves the audit caveat", async () => {
+    staged();
+    await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" },
+      `Earlier independent review finding.\n\n${fsBaselineOld}\n\nLater independent note.`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(fsBaselineOld);
+      expect(prompt).toContain("both sheets of labels.xlsx");
+      expect(prompt).toContain("owner-24-review historical exports");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsBaselineOwner] } });
+    const body = (await kb.readConcept(fsBaselineOwner)).body;
+    expect(body).toContain(`Historical FS Fotovalidering 2026-10-14 baseline deletion warning (superseded by source-only rebuild; old generator only): ${fsBaselineOld}`);
+    expect(body).not.toMatch(/^FS Fotovalidering 2026-10-14 baseline deletion warning/m);
+    expect(body).toContain("Earlier independent review finding.\n\n");
+    expect(body).toContain("\n\nLater independent note.");
+    expect(body).toContain("ea58999a498cffdc9d311600a3e168991c3e3f743d7ab2cee82e2e75869d77c5 versus currently published 3d27505b085a9506a11a87855fa782031500248ea288d48700da44619976ccb6");
+    expect(body).toContain("audit provenance cannot be recreated");
+    expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept(fsBaselineOwner)).body).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("defers a source-only FS baseline update if the old warning or rebuild is duplicated", async () => {
+    staged();
+    await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" }, fsBaselineOld, "seed");
+    const peer = "/projects/fs-fotovalidering/other-baseline.md";
+    await kb.writeConcept(peer, { type: "Project", title: "FS other baseline" }, fsBaselineOld, "seed");
+    expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("duplicated") });
+    await kb.writeConcept(peer, { type: "Project", title: "FS other baseline" },
+      "rebuild_test_baseline.py regenerated ea58999a498cffdc9d311600a3e168991c3e3f743d7ab2cee82e2e75869d77c5.", "replace");
+    expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing owner") });
+    expect((await kb.readConcept(fsBaselineOwner)).body).toBe(`${fsBaselineOld}\n`);
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("checks an older source-only script warning from a different FS owner before accepting", async () => {
+    staged();
+    await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" }, fsBaselineOld, "seed");
+    const peer = "/projects/fs-fotovalidering-continuation-faa257ccc4eab983.md";
+    const peerWarning = "Important gotcha: src/scripts/rebuild_test_baseline.py and baseline-local regenerate_parsed.py still assume the old Godkendt layout and cannot regenerate the reorganized parsed/ baseline.";
+    await kb.writeConcept(peer, { type: "Project", title: "FS earlier script status" }, peerWarning, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`${peer}: ${peerWarning}`);
+      return { object: { safe: false } };
+    });
+    expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS baseline") });
+    expect((await kb.readConcept(fsBaselineOwner)).body).toBe(`${fsBaselineOld}\n`);
+  });
+
+  it("defers an FS baseline update when the independent check declines or the owner changes", async () => {
+    staged();
+    await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" }, fsBaselineOld, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS baseline") });
+    generateObjectMock.mockImplementationOnce(async () => {
+      await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" },
+        `${fsBaselineOld}\n\nNew concurrent finding.`, "external");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("Concept changed") });
+    expect((await kb.readConcept(fsBaselineOwner)).body).toContain("New concurrent finding.");
+  });
+
   const yuNetOwner = "/projects/fs-fotovalidering/auto-crop-investigation.md";
   const yuNetOld = "FS Fotovalidering YuNet face gate (feat/yunet-face-gate, Oct 2026): /preprocess screens NSFW. /validate checks 0.90. The old cache uses rendered crop JPEG digest.";
   const yuNetInstruction = "Update FS Fotovalidering YuNet face gate architecture (feat/yunet-face-gate, Oct 2026): Upload selection calls /content-screen at 0.90. Cache by original exact bytes and model revision/SHA. Camera /preprocess must NOT fall back to local crop. Tests: 2 backend passed, 3 frontend passed.";
