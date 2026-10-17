@@ -280,6 +280,32 @@ describe("runRecall", () => {
     expect(generate.mock.calls[0][1]).toContain(fact);
   });
 
+  it("keeps original UTF-16 offsets when a matching fact follows Turkish capital İ", async () => {
+    const fact = "PR #2229: Never mention personal names in PR titles.";
+    await kb.writeConcept("/users/dan-smart.md", { type: "Note", title: "Dan Smart preferences" },
+      `${"İ".repeat(5_500)}\n${fact}\n${"unrelated background ".repeat(400)}`, "add");
+    const generate = vi.fn(async (_system: string, prompt: string) => ({
+      text: prompt.includes(fact) ? "SUFFICIENT\nAvoid names. Sources: /users/dan-smart.md" : "UNKNOWN",
+      finishReason: "stop" as const,
+    }));
+    const result = await runRecall(kb, "What does PR #2229 say about personal names in PR titles?", {}, generate);
+    expect(result.answer).toContain("Avoid names");
+    expect(generate.mock.calls[0][1]).toContain(fact);
+  });
+
+  it("finds a rare late fact despite many repeated question terms", async () => {
+    const fact = "PR #2229: Never mention personal names in PR titles.";
+    await kb.writeConcept("/users/dan-smart.md", { type: "Note", title: "Dan Smart preferences" },
+      `${"PR titles and personal names are discussed elsewhere. ".repeat(1_200)}\n${fact}`, "add");
+    const generate = vi.fn(async (_system: string, prompt: string) => ({
+      text: prompt.includes(fact) ? "SUFFICIENT\nAvoid names. Sources: /users/dan-smart.md" : "UNKNOWN",
+      finishReason: "stop" as const,
+    }));
+    const result = await runRecall(kb, "What does PR #2229 say about personal names in PR titles?", {}, generate);
+    expect(result.answer).toContain("Avoid names");
+    expect(generate.mock.calls[0][1]).toContain(fact);
+  });
+
   it("declines when a requested fact is absent instead of inventing it", async () => {
     await kb.writeConcept(
       "/users/dan-smart.md",

@@ -111,31 +111,44 @@ function relevantExcerpt(body: string, question: string, limit: number): string 
   if (body.length <= limit) return body;
   if (limit <= 0) return "";
 
-  const terms = [...new Set(question.match(EXPANSION_TOKEN_PATTERN) ?? [])]
-    .map((term) => term.toLocaleLowerCase())
-    .filter((term) => term.length >= 2);
+  // Use regex match indices on the ORIGINAL body: case-folding the entire
+  // string changes UTF-16 offsets for characters such as Turkish capital İ.
+  // Bound both query terms and windows so repetitive long concepts cannot
+  // turn recall into a quadratic scan before the model even starts.
+  const terms = [...new Set((question.slice(0, 4096).match(EXPANSION_TOKEN_PATTERN) ?? [])
+    .filter((term) => term.length >= 2))]
+    .sort((a, b) => Number(/\d/u.test(b)) - Number(/\d/u.test(a)) || b.length - a.length)
+    .slice(0, 32);
   if (terms.length === 0) return body.slice(0, limit);
 
-  const normalizedBody = body.toLocaleLowerCase();
-  const termWeights = new Map(terms.map((term) => [term, 1 / Math.sqrt(Math.max(1, normalizedBody.split(term).length - 1))]));
   const candidates = new Set<number>([0, body.length - limit]);
+  const matches: Array<{ regex: RegExp; weight: number }> = [];
   for (const term of terms) {
-    let from = 0;
-    while (from < normalizedBody.length) {
-      const index = normalizedBody.indexOf(term, from);
-      if (index < 0) break;
-      candidates.add(Math.max(0, Math.min(body.length - limit, index - Math.floor(limit / 2))));
-      from = index + term.length;
+    const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+    const first: number[] = [];
+    const last: number[] = [];
+    let count = 0;
+    for (const match of body.matchAll(regex)) {
+      count++;
+      if (first.length < 2) first.push(match.index);
+      last.push(match.index);
+      if (last.length > 2) last.shift();
+      if (count >= 4096) break;
     }
+    if (!count) continue;
+    for (const index of [...first, ...last]) {
+      candidates.add(Math.max(0, Math.min(body.length - limit, index - Math.floor(limit / 2))));
+    }
+    matches.push({ regex: new RegExp(regex.source, "iu"), weight: 1 / Math.sqrt(count) });
   }
 
   let bestStart = 0;
   let bestScore = -1;
   for (const start of candidates) {
-    const excerpt = normalizedBody.slice(start, start + limit);
+    const excerpt = body.slice(start, start + limit);
     let score = 0;
-    for (const [term, weight] of termWeights) {
-      if (excerpt.includes(term)) score += weight;
+    for (const { regex, weight } of matches) {
+      if (regex.test(excerpt)) score += weight;
     }
     if (score > bestScore) {
       bestScore = score;
