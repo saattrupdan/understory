@@ -5149,6 +5149,25 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(fsChangesOwner)).body).toContain(fsChangesOld);
   });
 
+  it("records a synthetic repository review-thread checkpoint and rejects an authoritative peer collision", async () => {
+    staged();
+    const instruction = "Acme PR #731: after verifying head a1b2c3d4e5f60718293a4b5c6d7e8f9012345678, all three review threads were resolved. The existing CHANGES_REQUESTED review remains unchanged; no approval or merge occurred.";
+    const ownerPath = "/repos/acme/widget-review.md";
+    const followup = "Acme PR #731 follow-up: head a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 addresses requested changes; prior review remains CHANGES_REQUESTED until independent approval.";
+    await kb.writeConcept(ownerPath, { type: "Repository", title: "Widget review" }, followup, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [ownerPath] } });
+    expect((await kb.readConcept(ownerPath)).body).toContain("PR #731 review-thread resolution");
+
+    const peerPath = "/repos/acme/duplicate-review.md";
+    await kb.writeConcept(peerPath, { type: "Repository", title: "Duplicate review" },
+      "PR #731: three review threads were resolved at head a1b2c3d4e5f60718293a4b5c6d7e8f9012345678.", "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { exampleOnly: false } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("another owner") });
+  });
+
   const euroevalResolvedThreadsInstruction = "EuroEval PR #2234: after verifying head 67fe25b4a06099b423916f9de6285ad340ab7e1e, all six review threads (Dan's four plus Copilot's two) were resolved on GitHub. The CHANGES_REQUESTED review has not been replaced with an approval; resolving threads alone does not change review decision.";
   const euroevalFollowup = "EuroEval PR #2234 follow-up: new head 67fe25b4a06099b423916f9de6285ad340ab7e1e fixes the two substantive requested changes and Dan's two readability notes. Recheck LGTM; prior review still CHANGES_REQUESTED until an explicit approval.";
   const euroevalThreadsOwner = "/repos/euroeval/orthogonal-leaderboard-confidence-intervals.md";
