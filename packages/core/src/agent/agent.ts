@@ -3283,7 +3283,8 @@ async function runStagedMutation(
           const requestWords = stagedWords(clause).filter((word) => word.length >= 4);
           const passageWords = new Set(stagedWords(passage));
           const sharedWords = requestWords.filter((word) => passageWords.has(word));
-          const oldIdentifiers = [...clause.matchAll(/(?:^|[^\w])(-?\d+(?:[.,]\d+)*|[a-f0-9]{12,}|[\w-]+_\d+)(?=$|[^\w])/gi)]
+          const oldContext = raw.match(/\bsupersed(?:es|ed|ing)?\s+(?:the\s+)?(?:earlier|prior|old)\s+([^.!?;]{12,350})/i)?.[1] ?? "";
+          const oldIdentifiers = [...`${clause} ${oldContext}`.matchAll(/(?:^|[^\w])(-?\d+(?:[.,]\d+)*|[a-f0-9]{12,}|[\w-]+_\d+)(?=$|[^\w])/gi)]
             .map((match) => match[1]);
           const hasOldValue = oldIdentifiers.some((value) => passage.includes(value));
           const hasSubject = stagedWords(raw).some((word) => word.length >= 5 && passageWords.has(word) &&

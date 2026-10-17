@@ -2999,6 +2999,40 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body).toContain(old);
   });
 
+  it("grounds an old numeric value from the superseded advice even when its paraphrase omits it", async () => {
+    staged();
+    const owner = "/notes/continuation.md";
+    const peer = "/notes/other-history.md";
+    const old = "Unknown -1 labels must remain unknown until a reviewer manually annotates them.";
+    const instruction = "Correct the current unknown-label guidance: supersedes earlier advice to keep -1 or require manual annotation; owner policy now converts -1 to false 0.";
+    await kb.writeConcept(owner, { type: "Note", title: "Policy Continuation" },
+      `${old} ${"Additional neutral guidance. ".repeat(1_900)}`, "seed");
+    await kb.writeConcept(peer, { type: "Note", title: "Other History" },
+      `Unrelated archive. ${"Additional unrelated notes. ".repeat(1_900)}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((path) => ({
+      path, type: "Note", title: path === owner ? "Policy Continuation" : "Other History",
+      score: 10, confidenceQualified: false,
+    })));
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("CANDIDATE METADATA:")) return { object: { path: owner } };
+      if (prompt.includes("Read-only old-claim locator")) return { object: {
+        observedOldPassage: old, requestOldClause: "require manual annotation",
+        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false, negated: false,
+      } };
+      if (prompt.includes("Independent read-only competing-owner check")) return { object: { competingCurrentOrAmbiguous: false, certain: true } };
+      if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
+        ...baseProposal, action: "replace", path: owner, old_text: old,
+        new_text: "Owner policy now converts -1 to false 0.",
+      } };
+      if (prompt.includes("Independent safety check.")) return { object: { safe: false, reason: "Independent veto." } };
+      throw new Error(`Unexpected mutation check: ${prompt.slice(0, 100)}`);
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent consistency check") });
+    expect(generateObjectMock.mock.calls.some(([request]) => request.prompt.includes("Independent safety check."))).toBe(true);
+    expect((await kb.readConcept(owner)).body).toContain(old);
+  });
+
   it("corrects an unquoted old claim when a peer only preserves a historical copy", async () => {
     staged();
     const owner = "/notes/continuation.md";
