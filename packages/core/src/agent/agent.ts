@@ -2248,8 +2248,7 @@ async function runStagedMutation(
     const baselineMilestone = !options.directAdd && options.preflightInput
       ? raw.trim().match(/^Record the (.+?) baseline milestone (\d{4}-\d{2}-\d{2}):\s*([\s\S]+)$/i)
       : null;
-    if (baselineMilestone && /source-only/i.test(baselineMilestone[3]) &&
-        /(?:script|builder|generator)/i.test(baselineMilestone[3]) &&
+    if (baselineMilestone && /source-only/i.test(baselineMilestone[3]) &&         /(?:script|builder|generator|[\w/-]+\.(?:py|ts|js))/i.test(baselineMilestone[3]) &&
         /(?:commit|HEAD)\s+[a-f0-9]{7,40}/i.test(baselineMilestone[3]) &&
         /(?:passed|accept|reject|photo|hash|record)/i.test(baselineMilestone[3])) {
       const [, project, date, facts] = baselineMilestone;
@@ -2282,10 +2281,15 @@ async function runStagedMutation(
           }
           if (paragraph.startsWith(heading)) updates.push({ path: peerPath, paragraph });
           if (/(?:source-only|baseline)/i.test(paragraph) && /(?:script|builder|generator|commit|HEAD)/i.test(paragraph)) {
-            if (paragraph.length > 4_000) {
-              throw new Error("Staged mutation deferred: baseline milestone peer passage exceeds evidence limit.");
+            let excerpt = paragraph;
+            if (excerpt.length > 4_000) {
+              const mentions = [...paragraph.matchAll(/(?:source-only|baseline|script|builder|generator|commit|HEAD)/gi)];
+              if (mentions.length > 8) throw new Error("Staged mutation deferred: baseline milestone peer passage exceeds evidence limit.");
+              excerpt = `${paragraph.slice(0, 250)}\n[... omitted peer context ...]\n${mentions.map((mention) =>
+                paragraph.slice(Math.max(0, mention.index - 160), Math.min(paragraph.length, mention.index + 240))).join("\n[... omitted peer context ...]\n")}`;
+              if (excerpt.length > 4_000) throw new Error("Staged mutation deferred: baseline milestone peer passage exceeds evidence limit.");
             }
-            peerEvidence.push(`${peerPath}: ${paragraph}`);
+            peerEvidence.push(`${peerPath}: ${excerpt}`);
           }
         }
         if (oldOwners.some((claim) => claim.path === peerPath) || updates.some((claim) => claim.path === peerPath)) owner = peer;

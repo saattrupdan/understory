@@ -168,7 +168,7 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(later, { type: "Project Continuation", title: "Later FS correction" }, laterStatus, "seed");
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain(`${later}: ${laterStatus}`);
-      expect(prompt).toContain("dated milestone");
+      expect(prompt).toContain("dated source-only baseline milestone");
       expect(prompt).toContain(fs577Old);
       return { object: { safe: true } };
     });
