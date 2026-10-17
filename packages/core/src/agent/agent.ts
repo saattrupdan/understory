@@ -2349,101 +2349,97 @@ async function runStagedMutation(
       await traceStore(kb).save(trace);
       return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
     }
-    // The baseline annotation handoff preceded Dan's completed decisions on
-    // the same day. Record it beside that completed state as history rather
-    // than reviving the old "workbook unchanged / HTML open" instructions.
-    if (options.directAdd && options.preflightInput &&
-        /^FS Fotovalidering baseline annotation handoff \(14 Oct 2026\):/i.test(raw.trim()) &&
-        ["43 '?' cells", "motiv3_id6", "motiv8_id12", "file:///tmp/fs-baseline-uncertain-labels.html",
-          "fs-baseline-uncertain-labels.json", "when received, map yes to x and no to blank"]
-          .every((anchor) => raw.includes(anchor))) {
-      const ownerPath = "/projects/fs-fotovalidering-continuation-257a96e360815542.md";
-      if (options.ownerHint && options.ownerHint !== ownerPath) {
-        throw new Error("Staged mutation deferred: FS annotation handoff conflicts with owner hint.");
+    // Preserve a source handoff as history when the uniquely identified project
+    // owner already records later completion. All identity and status evidence
+    // comes from the request and complete sibling bodies, never fixture data.
+    if (options.directAdd && options.preflightInput && /\bhandoff\b/i.test(raw) &&
+        /\b(?:pending|awaiting|not yet|has not been)\b/i.test(raw)) {
+      const lead = raw.trim().match(/^(.{3,100}?)\s+(?:baseline\s+)?(?:annotation\s+)?handoff\b/i)?.[1]?.trim();
+      const identityWords = stagedWords(lead ?? raw).filter((word) => !["before", "later", "historical"].includes(word));
+      const requestWords = stagedWords(raw).filter((word) => !["before", "later", "historical"].includes(word));
+      if (!lead || identityWords.length < 1) {
+        throw new Error("Staged mutation deferred: historical handoff identity is incomplete.");
       }
-      const paths = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-        /^\/projects\/fs-fotovalidering(?:[/-]|\.md$)/.test(candidate));
-      if (paths.length > 200 || !paths.includes(ownerPath)) {
-        throw new Error("Staged mutation deferred: FS annotation handoff owner inventory is incomplete.");
-      }
-      const heading = "Historical FS baseline annotation handoff (14 Oct 2026; decisions completed later that day):";
-      const update = `${heading} Before Dan's decisions: ${raw.trim()} Subsequent completion recorded in this owner: the 43 '?' cells were replaced (1 yes as x, 42 no as blank), zero '?' remained in the source workbook, and the photo-bearing HTML was deleted.`;
+      const projectPaths = await kb.bundle.listConceptPaths("/projects");
+      if (projectPaths.length > 200) throw new Error("Staged mutation deferred: handoff sibling inventory exceeds limit.");
+      const projectKey = lead.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const candidates = projectPaths.filter((candidate) => {
+        const pathWords = stagedWords(candidate.replace(/^\/projects\//, "").replace(/\.md$/, ""));
+        return identityWords.filter((word) => pathWords.includes(word)).length >= 1;
+      });
+      const docs = new Map<string, Awaited<ReturnType<KnowledgeBase["readConcept"]>>>();
+      const completed = (text: string): boolean =>
+        /\b(?:completed|finished|done|replaced|updated|processed|deleted|resolved|validated)\b/i.test(text) &&
+        /\b(?:pending|awaiting|not yet|has not been)\b/i.test(raw);
+      const overlap = (text: string): number => {
+        const terms = requestWords.filter((word) => word.length >= 4);
+        return terms.length ? terms.filter((word) => stagedWords(text).includes(word)).length / terms.length : 0;
+      };
+      const owners: Array<{ path: string; body: string; completion: string }> = [];
       const peerEvidence: string[] = [];
-      let owner: Awaited<ReturnType<KnowledgeBase["readConcept"]>> | undefined;
-      for (const peerPath of paths) {
+      for (const candidate of projectPaths) {
         state.checkCancellation();
-        const peer = await kb.readConcept(peerPath);
+        const peer = await kb.readConcept(candidate);
         recorder.record("read_concept", peer.path, [peer.path]);
-        if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
-          throw new Error("Staged mutation deferred: FS annotation handoff peer exceeds evidence limit.");
-        }
-        if (peerPath === ownerPath) owner = peer;
-        else {
-          if (peer.body.includes("fs-baseline-uncertain-labels.html") &&
-              peer.body.includes("43") && peer.body.includes("motiv3_id6") && peer.body.includes("motiv8_id12")) {
-            throw new Error("Staged mutation deferred: FS annotation handoff has a competing detailed owner.");
-          }
+        if (peer.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: handoff peer exceeds evidence limit.");
+        docs.set(peer.path, peer);
+        const completion = peer.body.split(/\n\s*\n/).filter((part) => completed(part) && overlap(part) >= 0.12);
+        if (completion.length && candidates.includes(peer.path)) {
+          for (const part of completion) owners.push({ path: peer.path, body: peer.body, completion: part });
+        } else if (peer.path !== candidates[0]) {
           for (const part of peer.body.split(/\n\s*\n/)) {
-            if (/\b43\b/.test(part) &&
-                /(?:motiv3_id6|motiv8_id12|uncertain-labels|uncertain categor|question-mark|annotation handoff)/i.test(part)) {
-              if (part.length > 4_000) {
-                throw new Error("Staged mutation deferred: FS annotation handoff peer passage exceeds evidence limit.");
-              }
-              peerEvidence.push(`${peerPath}: ${part}`);
+            if (overlap(part) >= 0.12 && /\b(?:handoff|pending|awaiting|not yet)\b/i.test(part)) {
+              if (part.length > 4_000) throw new Error("Staged mutation deferred: handoff peer passage exceeds evidence limit.");
+              peerEvidence.push(`${peer.path}: ${part}`);
             }
           }
         }
       }
+      if (owners.length !== 1) throw new Error("Staged mutation deferred: handoff completion owner lacks unique observed completion or is ambiguous.");
+      const owner = docs.get(owners[0].path)!;
+      const stalePending = owner.body.split(/\n\s*\n/).filter((part) =>
+        !/^Historical\b/i.test(part) && overlap(part) >= 0.12 &&
+        /\b(?:currently|still|awaiting|pending|not yet|has not been)\b/i.test(part));
+      if (stalePending.length) throw new Error("Staged mutation deferred: owner still has unqualified pending guidance.");
+      if (options.ownerHint && options.ownerHint !== owner.path) throw new Error("Staged mutation deferred: handoff owner conflicts with owner hint.");
       if (peerEvidence.length > 20 || peerEvidence.join("\n\n").length > 24_000) {
-        throw new Error("Staged mutation deferred: FS annotation handoff peer evidence exceeds limit.");
+        throw new Error("Staged mutation deferred: handoff peer evidence exceeds limit.");
       }
-      if (!owner || !owner.body.includes("/tmp/fs-baseline-uncertain-labels.html") ||
-          !owner.body.includes("motiv3_id6") || !owner.body.includes("motiv8_id12") ||
-          !/43 binary decisions: 1 yes, 42 no/i.test(owner.body) ||
-          !/zero remaining '\?'/i.test(owner.body) ||
-          !/photo-bearing .*html was deleted after use/i.test(owner.body)) {
-        throw new Error("Staged mutation deferred: FS annotation handoff completion owner lacks observed anchors.");
-      }
-      const stale = owner.body.split(/\n\s*\n/).filter((part) =>
-        !/^(?:Historical|Before Dan's decisions:)/i.test(part) &&
-        /(?:\b(?:currently|still|now)\b.{0,120}\b43\b.{0,20}'\?'|(?:workbook|XLSX).{0,100}\bhas 43 '\?' cells|(?:HTML|html).{0,100}\b(?:remains open|is still open))/i.test(part));
-      if (stale.length) throw new Error("Staged mutation deferred: FS annotation handoff owner still has unqualified pending guidance.");
+      if (peerEvidence.length) throw new Error("Staged mutation deferred: handoff has a competing detailed owner.");
+      const heading = `Historical ${lead} handoff (pending at request time; completed later):`;
+      const update = `${heading} Before later completion: ${raw.trim()} Later completion recorded in this owner: ${owners[0].completion}`;
       const prior = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
       if (prior.length > 1 || (prior.length === 1 && prior[0].trimEnd() !== update)) {
-        throw new Error("Staged mutation deferred: FS annotation handoff is partially or ambiguously recorded.");
+        throw new Error("Staged mutation deferred: handoff is partially or ambiguously recorded.");
       }
       if (prior.length === 1) {
-        const current = await kb.readConcept(ownerPath);
-        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
-        const summary = "No change needed; exact historical FS annotation handoff verified.";
+        const current = await kb.readConcept(owner.path);
+        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${owner.path}`);
+        const summary = "No change needed; exact historical handoff verified.";
         const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
           { providerCalls, generationMs: Date.now() - started });
         await traceStore(kb).save(trace);
         return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
       }
       const replacement = `${owner.body.trimEnd()}\n\n${update}\n`;
-      if (replacement.length > STAGED_MAX_OWNER_CHARS || update.length > 4_000) {
-        throw new Error("Staged mutation deferred: FS annotation handoff exceeds evidence limit.");
-      }
+      if (replacement.length > STAGED_MAX_OWNER_CHARS || update.length > 8_000) throw new Error("Staged mutation deferred: historical handoff exceeds evidence limit.");
       const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
       const judgement = await generateObject({
-        model: resolved.model,
-        schema: z.object({ safe: z.boolean() }).strict(),
-        temperature: 0,
+        model: resolved.model, schema: z.object({ safe: z.boolean() }).strict(), temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent historical FS annotation handoff check. Does this exact prior handoff belong in the owner documenting Dan's later completed 43 decisions? Does the proposed historical paragraph preserve the fact that the workbook was subsequently updated and the private HTML subsequently deleted, without representing the old pending state as current or inventing a decision? Check every relevant peer passage for equivalent ownership, duplicates or contradictions; shared project and partial label counts alone do not make a complete duplicate. Does the owner contain any equivalent full handoff already? Decline on uncertainty, conflicting owner, or unsupported fact. JSON only.\nORIGINAL FACT:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT FS PEER PASSAGES:\n${peerEvidence.join("\n\n")}\nPROPOSED HISTORICAL PARAGRAPH:\n${update}`,
+        prompt: `Independent historical handoff check. Does the request explicitly describe a pending handoff, while the exact owner passage independently records its later completion? Does the proposed paragraph preserve the pending request only as history and preserve current completion without claiming the work remains pending? Review all bounded relevant sibling passages for duplicate, conflicting, or ambiguous ownership. Do not infer missing identity or completion facts. Decline on uncertainty. JSON only.\nREQUEST:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT SIBLINGS:\n${peerEvidence.join("\n\n")}\nPROPOSED HISTORICAL PARAGRAPH:\n${update}`,
       });
       state.checkCancellation();
-      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent FS annotation handoff check declined.");
-      const current = await kb.readConcept(ownerPath);
-      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent historical handoff check declined.");
+      const current = await kb.readConcept(owner.path);
+      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${owner.path}`);
       state.checkCancellation();
-      await kb.patchConcept(ownerPath, { replaceBody: replacement }, "Staged mutation: retain historical FS annotation handoff", sha256(owner.body), options.signal,
+      await kb.patchConcept(owner.path, { replaceBody: replacement }, "Staged mutation: retain historical handoff", sha256(owner.body), options.signal,
         (writtenPath) => { changed = [writtenPath]; });
-      const readBack = await kb.readConcept(ownerPath);
-      if (readBack.body !== replacement) throw new Error("FS annotation handoff failed CAS read-back verification.");
-      const summary = `Staged mutation changed ${ownerPath}.`;
+      const readBack = await kb.readConcept(owner.path);
+      if (readBack.body !== replacement) throw new Error("Historical handoff failed CAS read-back verification.");
+      const summary = `Staged mutation changed ${owner.path}.`;
       const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
         { providerCalls, generationMs: Date.now() - started });
       await traceStore(kb).save(trace);
