@@ -3590,6 +3590,41 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(ordering)).body).toContain(oldOrdering);
   });
 
+  it.each([false, true])("locates the dated zero-row workbook owner beyond ranked retirement hits (duplicate=%s)", async (duplicate) => {
+    staged();
+    const workbook = "/projects/fs-fotovalidering-continuation-21b944fc45cea087.md";
+    const retirement = "/projects/fs-fotovalidering-continuation-2443b1fe8100f1af.md";
+    const hiddenPeer = "/projects/fs-fotovalidering-continuation-other.md";
+    const oldList = "FS Fotovalidering 2026-10-12 Jottacloud source workbook: across the workbook sheets, " +
+      "exactly six rejection-reason rows have zero `x` marks: Motiv 5, Briller 3, " +
+      "Hovedbeklædning 2, Hovedbeklædning 3, Hovedbeklædning 4, and Anstødeligt indhold. " +
+      "Separate approval-status row 'Godkendt med beskæring' also has zero marks but is not a rejection category.";
+    const later = "FS Fotovalidering category retirement: Hovedbeklædning 4 / headwear_face_shadow " +
+      "was removed from the active workbook; canonical-24 is active and experiment-88 remains 25-head.";
+    const instruction = "Update FS Fotovalidering facts after the 2026-10-12 Hovedbeklædning 4 retirement: " +
+      "active registry is canonical-24 and experiment-88 stays 25-head. " +
+      "Correct the earlier point-in-time 2026-10-12 workbook zero-annotation list: Hovedbeklædning 4 was removed " +
+      "from active source, not merely left unannotated. Keep 'Godkendt med beskæring' untouched.";
+    await kb.writeConcept(workbook, { type: "Project Continuation", title: "FS Fotovalidering — Workbook Notes" }, oldList, "seed");
+    await kb.writeConcept(retirement, { type: "Project Continuation", title: "FS Fotovalidering — Retirement" }, later, "seed");
+    await kb.writeConcept(hiddenPeer, { type: "Project Continuation", title: "FS Fotovalidering — Other" },
+      duplicate ? oldList : "An unrelated annotation experiment on a different workbook.", "seed");
+    // A later retirement owner can outrank the actual historical paragraph;
+    // a duplicate historical paragraph hidden from search must still veto.
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: retirement, type: "Project Continuation",
+      title: "FS Fotovalidering — Retirement", score: 10, confidenceQualified: false }]);
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(oldList);
+      expect(prompt).not.toContain(later);
+      return { object: { ...baseProposal, action: "defer", reason: "dated workbook owner found" } };
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining(duplicate
+      ? "dated zero-row workbook owner is missing or duplicated" : "dated workbook owner found") });
+    expect(generateObjectMock).toHaveBeenCalledTimes(duplicate ? 0 : 1);
+    expect((await kb.readConcept(workbook)).body).toContain(oldList);
+  });
+
   it("does not use description-only incidental mentions as metadata owner anchors", async () => {
     staged();
     const first = "/projects/project-alpha.md";

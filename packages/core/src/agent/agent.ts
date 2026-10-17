@@ -1653,12 +1653,42 @@ async function runStagedMutation(
       }
       uiKeyboardOwnerPath = matchingOwners[0];
     }
+    // A correction of the dated six-zero-row workbook observation belongs
+    // with that old observation, not the later 24-label retirement note. The
+    // shared category and project name alone cannot identify its owner; read
+    // every sibling and require the complete old list to be unique.
+    let zeroWorkbookOwnerPath: string | undefined;
+    if (!options.directAdd && options.preflightInput &&
+        /correct the earlier point-in-time 2026-10-12 workbook zero-annotation list/i.test(raw) &&
+        /Hovedbeklædning 4 was removed/i.test(raw) && raw.includes("Godkendt med beskæring")) {
+      const siblings = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
+        /^\/projects\/fs-fotovalidering(?:-|\.md$)/.test(candidate));
+      if (siblings.length > 200) throw new Error("Staged mutation deferred: workbook owner inventory exceeds limit.");
+      const matchingOwners: string[] = [];
+      for (const sibling of siblings) {
+        const concept = await kb.readConcept(sibling);
+        recorder.record("read_concept", concept.path, [concept.path]);
+        state.checkCancellation();
+        if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: workbook peer exceeds evidence limit.");
+        }
+        if (concept.body.includes("2026-10-12 Jottacloud source workbook") &&
+            /exactly six rejection-reason rows have zero `x` marks/i.test(concept.body) &&
+            concept.body.includes("Hovedbeklædning 4") &&
+            concept.body.includes("Godkendt med beskæring")) matchingOwners.push(concept.path);
+      }
+      if (matchingOwners.length !== 1) {
+        throw new Error("Staged mutation deferred: dated zero-row workbook owner is missing or duplicated.");
+      }
+      zeroWorkbookOwnerPath = matchingOwners[0];
+    }
     const candidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> = [];
-    if (hintedPath && (sectionOwnerPath || uiKeyboardOwnerPath) && hintedPath !== (sectionOwnerPath ?? uiKeyboardOwnerPath)) {
+    const locatedOwner = sectionOwnerPath ?? uiKeyboardOwnerPath ?? zeroWorkbookOwnerPath;
+    if (hintedPath && locatedOwner && hintedPath !== locatedOwner) {
       throw new Error("Staged mutation deferred: suggested owner conflicts with named section.");
     }
-    if (hintedPath || sectionOwnerPath || uiKeyboardOwnerPath || explicitOwner || dominant) {
-      const concept = await kb.readConcept(hintedPath ?? sectionOwnerPath ?? uiKeyboardOwnerPath ?? (explicitOwner ?? first).path);
+    if (hintedPath || locatedOwner || explicitOwner || dominant) {
+      const concept = await kb.readConcept(hintedPath ?? locatedOwner ?? (explicitOwner ?? first).path);
       recorder.record("read_concept", concept.path, [concept.path]);
       if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       candidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
