@@ -5004,6 +5004,31 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
+  it("derives a renamed project's dated baseline and evaluation from the request", async () => {
+    staged();
+    const project = "Cedar Inspection";
+    const owner = "/projects/cedar-inspection-baseline.md";
+    const manifest = "a".repeat(64);
+    const published = "b".repeat(64);
+    const checkpoint = "c".repeat(64);
+    const report = "d".repeat(64);
+    const corrected = "e".repeat(64);
+    const instruction = `Update ${project} 2027-02-03 dated test baseline and new 12-head retrain evaluation. As of 4 Feb 2027 the current on-disk \`~/archive/cedar/baselines/2027-02-03/parsed/manifest.jsonl\` contains **9** test images (not the earlier reported 10); SHA-256 \`${manifest}\`. The dated baseline already has binary labels and this is the currently parsed on-disk version. Checkpoint SHA \`${checkpoint}\`; evaluation report SHA \`${report}\`; confusion TP8 TN1 FP0 FN0. No independent held-out evidence is implied.`;
+    const groundedInstruction = instruction.replace("No independent held-out evidence is implied.", "These results are not independent held-out evidence.");
+    await kb.writeConcept(owner, { type: "Project Continuation", title: `${project} baseline` },
+      `Cedar baseline source baselines/2027-02-03/parsed/manifest.jsonl: 10 sample IDs and 9 unique photos; prior published SHA-256: ${published}.`, "seed");
+    await kb.writeConcept("/projects/cedar-inspection-correction.md", { type: "Project Continuation", title: `${project} correction` },
+      `On 5 Feb 2027, the owner-label correction superseded ${manifest} with ${corrected}; corrected 9-photo baseline.`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, groundedInstruction, { preflightInput: groundedInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(`Historical Cedar Inspection on-disk dated test baseline and retrain evaluation (before the 5 Feb 2027 owner-label correction):`);
+    expect(body).toContain(manifest);
+    expect(body).toContain(corrected);
+    expect(body).toContain(report);
+  });
+
   it("allows a peer's historical 258-image manifest reference without assigning it ownership", async () => {
     staged();
     await kb.writeConcept(fsDatedBaselineOwner, { type: "Project Continuation", title: "FS baseline" },

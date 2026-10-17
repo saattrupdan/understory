@@ -1094,44 +1094,54 @@ async function runStagedMutation(
     // The dated published test manifest and the currently parsed on-disk
     // manifest are different snapshots. Append the evaluation to the detailed
     // baseline owner without rewriting its mixed historical/source paragraphs.
-    if (!options.directAdd && options.preflightInput &&
-        /^Update FS Fotovalidering 2026-10-14 dated test baseline and new 24-head retrain evaluation\./i.test(raw.trim()) &&
-        ["257", "258", "225de8e9d265ea284fd3a5b8de7e6bf56eda9c2dcedb24b5544a84ff26c348b0",
-          "f17cdc68e95d7afea6aa2f53e456d2bab34afaeb1fdd7bc1a91307c4a0114c86",
-          "48590b5a949f9cd65c5707f41c183341d54014d78c3b988e70530623330df776",
-          "TP232 TN7 FP3 FN15", "1000 row-bootstrap", "24,285", "independent held-out evidence",
-          "As of 15 Oct 2026 the current on-disk", "this is the currently parsed on-disk version"]
-          .every((anchor) => raw.includes(anchor))) {
-      const ownerPath = "/projects/fs-fotovalidering-continuation-257a96e360815542.md";
-      const oldPublishedSha = "3d27505b085a9506a11a87855fa782031500248ea288d48700da44619976ccb6";
-      const manifestSha = "225de8e9d265ea284fd3a5b8de7e6bf56eda9c2dcedb24b5544a84ff26c348b0";
-      const reportSha = "48590b5a949f9cd65c5707f41c183341d54014d78c3b988e70530623330df776";
-      const checkpointSha = "f17cdc68e95d7afea6aa2f53e456d2bab34afaeb1fdd7bc1a91307c4a0114c86";
-      const laterManifestSha = "d0e41600805f1652c86f84974030192a17db1eed20779a15c20f8af948110ec0";
-      const heading = "Historical FS on-disk dated test baseline and retrain evaluation (before the 15 Oct 2026 owner-blur correction): ";
-      const update = `${heading}${raw.trim()
-        .replace(/^Update FS Fotovalidering 2026-10-14 dated test baseline and new 24-head retrain evaluation\.\s*/i, "")
-        .replace("As of 15 Oct 2026 the current on-disk", "Before the later 15 Oct owner-blur correction, the then-current on-disk")
-        .replace("this is the currently parsed on-disk version", "this was the parsed on-disk version before the owner-blur correction")
-        .replace("this test baseline already has binary labels and was not modified.", "this test baseline already had binary labels and was not modified in this evaluation.")} Later on 15 Oct, the separate owner-blur correction changed one label and superseded this manifest with SHA ${laterManifestSha} (still 257 photos); this evaluation describes the earlier snapshot.`;
-      if (options.ownerHint && options.ownerHint !== ownerPath) {
-        throw new Error("Staged mutation deferred: FS dated test baseline conflicts with owner hint.");
+    const datedBaselineRequest = raw.trim().match(/^Update (.+?) (\d{4}-\d{2}-\d{2}) dated test baseline and new (\d+)-head retrain evaluation\.\s*/i);
+    if (!options.directAdd && options.preflightInput && datedBaselineRequest) {
+      const project = datedBaselineRequest[1];
+      const baselineDate = datedBaselineRequest[2];
+      const requestBody = raw.trim().slice(datedBaselineRequest[0].length);
+      const manifestSha = requestBody.match(/manifest\.jsonl[\s\S]{0,180}?SHA-256 `([a-f0-9]{64})`/i)?.[1];
+      const reportSha = requestBody.match(/report SHA `([a-f0-9]{64})`/i)?.[1];
+      const checkpointSha = requestBody.match(/checkpoint SHA `([a-f0-9]{64})`/i)?.[1];
+      const confusion = requestBody.match(/\bTP\d+ TN\d+ FP\d+ FN\d+\b/)?.[0];
+      const baselinePath = requestBody.match(/`([^`]*baselines\/\d{4}-\d{2}-\d{2}\/parsed\/manifest\.jsonl)`/i)?.[1];
+      const baselineLocator = baselinePath?.split("/").slice(-4).join("/");
+      const testCount = requestBody.match(/contains \*\*(\d+)\*\* test images/i)?.[1];
+      const priorCount = requestBody.match(/earlier reported (\d+)/i)?.[1];
+      const evidenceAnchors = [manifestSha, reportSha, checkpointSha, confusion, baselinePath, testCount, priorCount];
+      if (evidenceAnchors.some((anchor) => !anchor) || !requestBody.includes("independent held-out evidence")) {
+        throw new Error("Staged mutation deferred: dated test baseline request lacks exact evaluation evidence.");
       }
       const paths = await kb.bundle.listConceptPaths();
-      if (paths.length > 10_000 || !paths.includes(ownerPath)) {
-        throw new Error("Staged mutation deferred: FS dated test baseline concept inventory is incomplete.");
+      if (paths.length > 10_000) throw new Error("Staged mutation deferred: dated test baseline concept inventory is incomplete.");
+      const headingProject = project.replace(/\s+Fotovalidering$/i, "");
+      const updateBody = requestBody
+        .replace(/As of [^,.;]+ the current on-disk/i, "Before the later correction, the then-current on-disk")
+        .replace(/this is the currently parsed on-disk version/ig, "this was the parsed on-disk version before the later correction")
+        .replace(/this test baseline already has binary labels and was not modified\./ig, "this test baseline already had binary labels and was not modified in this evaluation.");
+      const ownerCandidates: string[] = [];
+      for (const peerPath of paths) {
+        state.checkCancellation();
+        const peer = await kb.readConcept(peerPath);
+        if (peer.body.includes(baselineLocator ?? baselinePath!) && peer.body.includes(`${priorCount} sample IDs`) &&
+            peer.body.includes(`${testCount} unique photos`) && /SHA-256: [a-f0-9]{64}/i.test(peer.body)) ownerCandidates.push(peerPath);
       }
+      if (ownerCandidates.length !== 1) throw new Error("Staged mutation deferred: dated test baseline owner is absent or ambiguous.");
+      const ownerPath = ownerCandidates[0];
+      const oldPublishedShaMatch = (await kb.readConcept(ownerPath)).body.match(/SHA-256: ([a-f0-9]{64})/i);
+      const oldPublishedSha = oldPublishedShaMatch?.[1];
+      if (!oldPublishedSha || oldPublishedSha === manifestSha) throw new Error("Staged mutation deferred: historical published manifest is not uniquely grounded.");
+      if (options.ownerHint && options.ownerHint !== ownerPath) throw new Error("Staged mutation deferred: dated test baseline conflicts with owner hint.");
       const peerEvidence: string[] = [];
       const supersedingPeers: string[] = [];
+      let laterManifestSha: string | undefined;
       let owner: Awaited<ReturnType<KnowledgeBase["readConcept"]>> | undefined;
       for (const peerPath of paths) {
         state.checkCancellation();
         const peer = await kb.readConcept(peerPath);
-        if (peerPath !== ownerPath && !peer.body.includes("baselines/2026-10-14") &&
+        if (peerPath !== ownerPath && !peer.body.includes(baselineLocator ?? baselinePath!) &&
             !peer.body.includes(manifestSha) && !peer.body.includes(reportSha) &&
             !peer.body.includes(oldPublishedSha) && !peer.body.includes(checkpointSha) &&
-            !peer.body.includes("test-evaluation-baseline-2026-10-14") &&
-            !peer.body.includes("TP232 TN7 FP3 FN15")) continue;
+            !peer.body.includes(confusion)) continue;
         recorder.record("read_concept", peer.path, [peer.path]);
         if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
           throw new Error("Staged mutation deferred: FS dated test baseline owner or peer exceeds evidence limit.");
@@ -1140,23 +1150,25 @@ async function runStagedMutation(
           owner = peer;
           continue;
         }
-        const confirmedLaterCorrection = peer.body.includes(manifestSha) &&
-          peer.body.includes(laterManifestSha) && peer.body.includes("owner-blur") &&
-          peer.body.includes("257-photo") && peer.body.includes("Godkendt!A4") &&
-          peer.body.includes("C4=x");
+        const hashes = [...peer.body.matchAll(/\b[a-f0-9]{64}\b/gi)].map((match) => match[0]);
+        const laterHash = hashes.find((hash) => hash !== manifestSha && hash !== oldPublishedSha &&
+          hash !== reportSha && hash !== checkpointSha);
+        const confirmedLaterCorrection = peer.body.includes(manifestSha) && !!laterHash &&
+          /\b(?:correction|corrected|superseded)\b/i.test(peer.body) &&
+          new RegExp(`(?:${testCount}[- ]photo|${testCount} unique photos)`, "i").test(peer.body);
+        if (confirmedLaterCorrection) laterManifestSha = laterHash;
         if (confirmedLaterCorrection) supersedingPeers.push(peer.path);
-        const peerConflict = peer.body.includes(manifestSha) && !confirmedLaterCorrection ? "unexplained prior manifest" :
-          peer.body.includes(reportSha) ? "evaluation report" :
-          peer.body.includes("TP232 TN7 FP3 FN15") ? "evaluation confusion" :
-          peer.body.includes(oldPublishedSha) && peer.body.includes("258 sample IDs") &&
-            peer.body.includes("257 unique photos") ? "full historical owner" : undefined;
+        const peerConflict = peer.body.includes(reportSha) ? "evaluation report" :
+          peer.body.includes(confusion) && !confirmedLaterCorrection ? "evaluation confusion" :
+          peer.body.includes(manifestSha) && !confirmedLaterCorrection ? "conflicting current manifest" :
+          peer.body.includes(oldPublishedSha) && peer.body.includes(`${priorCount} sample IDs`) &&
+            peer.body.includes(`${testCount} unique photos`) ? "full historical owner" : undefined;
         if (peerConflict) {
           throw new Error(`Staged mutation deferred: FS dated test baseline has a competing or already updated peer (${peer.path}: ${peerConflict}).`);
         }
         for (const part of peer.body.split(/\n\s*\n/)) {
-          if ((part.includes("baselines/2026-10-14") && /\b(?:257|258)\b/.test(part)) ||
+          if ((part.includes(baselinePath) && /\b\d+\b/.test(part)) ||
               part.includes(oldPublishedSha) || part.includes(checkpointSha) ||
-              part.includes("test-evaluation-baseline-2026-10-14") ||
               (confirmedLaterCorrection && part.includes(manifestSha))) {
             if (part.length > 4_000) {
               throw new Error("Staged mutation deferred: FS dated test baseline peer passage exceeds evidence limit.");
@@ -1166,21 +1178,26 @@ async function runStagedMutation(
         }
       }
       if (peerEvidence.length > 28 || peerEvidence.join("\n\n").length > 32_000 ||
-          supersedingPeers.length !== 1) {
+          supersedingPeers.length !== 1 || !laterManifestSha) {
         throw new Error("Staged mutation deferred: FS dated test baseline peer evidence or later correction is incomplete.");
       }
       if (!owner || !owner.body.includes(oldPublishedSha) ||
-          !owner.body.includes("258 sample IDs") ||
-          !owner.body.includes("257 unique photos") ||
-          !owner.body.includes("baselines/2026-10-14")) {
-        throw new Error("Staged mutation deferred: FS dated test baseline owner lacks full dated source and parsed anchors.");
+          !owner.body.includes(`${priorCount} sample IDs`) ||
+          !owner.body.includes(`${testCount} unique photos`) ||
+          !owner.body.includes(baselineLocator ?? baselinePath!)) {
+        throw new Error("Staged mutation deferred: dated test baseline owner lacks full dated source and parsed anchors.");
       }
+      const correctionPeer = await kb.readConcept(supersedingPeers[0]);
+      const correctionDate = correctionPeer.body.match(/\b(\d{1,2}\s+[A-Z][a-z]{2,8}\s+\d{4})\b/)?.[1] ?? "later dated";
+      const correctionLabel = correctionPeer.body.match(/\b([\w-]*blur[\w-]*\s+correction)\b/i)?.[1] ?? "source-label correction";
+      const heading = `Historical ${headingProject} on-disk dated test baseline and retrain evaluation (before the ${correctionDate} ${correctionLabel}): `;
+      const update = `${heading}${updateBody}. Later on ${correctionDate}, the separate ${correctionLabel} superseded this manifest with SHA ${laterManifestSha}; this evaluation describes the earlier snapshot.`;
       const current = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
       if (current.length === 1 && current[0].trimEnd() === update &&
           owner.body.split(manifestSha).length === 2 && owner.body.split(reportSha).length === 2) {
         const fresh = await kb.readConcept(ownerPath);
         if (fresh.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
-        const summary = "No change needed; current FS on-disk baseline and retrain evaluation verified.";
+        const summary = "No change needed; dated test baseline and retrain evaluation verified.";
         const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
           { providerCalls, generationMs: Date.now() - started });
         await traceStore(kb).save(trace);
@@ -1200,7 +1217,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent FS dated test-baseline ownership and temporal check. Is this the detailed owner of the 14 Oct source XLSX/PPTX baseline and its earlier published 258-photo manifest, rather than a generic project mention or synthetic training set? Does the proposed historical note correctly identify the 257-image SHA 225de8e9 as the on-disk snapshot BEFORE the separately recorded 15 Oct owner-blur label correction (new manifest SHA d0e416...), NOT the current manifest, and preserve historical 258-photo/published snapshots without retracting source corrections or claiming source edits? Are the checkpoint, evaluation, confusion, F1 support caveat, privacy, no-overlap and repeatedly used test-set caveat exactly as instructed? Check all relevant peers for an equivalent evaluation or better owner. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nPROPOSED APPENDED NOTE:\n${update}`,
+        prompt: `Independent dated test-baseline ownership and chronology check. Verify exact request-derived old/new manifest and evaluation evidence, full bounded peer inventory, that later correction facts are not contradictions to this earlier dated snapshot, and that obsolete current wording is archived without overwriting later published policy. Confirm exact content, chronology, and owner; fail closed on conflicting CURRENT peers or uncertainty. Check historical sample-count distinction, checkpoint, metrics, support caveat, privacy, overlap and repeatedly-used-test-set caveats. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nPROPOSED APPENDED NOTE:\n${update}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent FS dated test baseline check declined.");
@@ -1208,7 +1225,7 @@ async function runStagedMutation(
       if (fresh.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
       state.checkCancellation();
       await kb.patchConcept(ownerPath, { replaceBody: proposed },
-        "Staged mutation: record current FS dated test baseline", sha256(owner.body), options.signal,
+        "Staged mutation: record dated test baseline evaluation", sha256(owner.body), options.signal,
         (writtenPath) => { changed = [writtenPath]; });
       const readBack = await kb.readConcept(ownerPath);
       if (readBack.body !== proposed) throw new Error("FS dated test baseline failed CAS read-back verification.");
