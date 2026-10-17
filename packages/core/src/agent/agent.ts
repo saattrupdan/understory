@@ -3339,7 +3339,7 @@ async function runStagedMutation(
               const unsharedCounts = [...new Set(raw.match(/\b\d{1,3}(?:,\d{3})+\b/g) ?? [])]
                 .filter((count) => !peer.body.includes(count));
               if (!pastPolicy || !requested || !peerArtifact || unsharedCounts.length < 2) {
-                noAnchor(`peer(${peer.path},certain=${check.object.certain},conflict=${check.object.competingCurrentOrAmbiguous},distinct=false)`);
+                noAnchor(`peer(${peer.path},certain=${check.object.certain},conflict=${check.object.competingCurrentOrAmbiguous},past=${pastPolicy},requestArtifact=${!!requested},peerArtifact=${!!peerArtifact},unsharedCounts=${unsharedCounts.length})`);
               }
               const versionCheck = await generateObject({
                 model: resolved.model,
