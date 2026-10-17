@@ -433,12 +433,31 @@ describe("mutation owner preflight", () => {
     expect(first).toMatchObject({ ok: true, result: { filesChanged: [yuNetOwner] } });
     const body = (await kb.readConcept(yuNetOwner)).body;
     expect(body).toContain(unrelated);
-    expect(body).toContain("Historical YuNet face gate baseline (superseded 13 Oct 2026; not current guidance):");
+    expect(body).toContain("Historical FS Fotovalidering YuNet face gate architecture (superseded):");
     expect(body).toContain(yuNetOld);
     expect(body).toContain("original exact bytes and model revision/SHA");
     expect(await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction }))
       .toMatchObject({ ok: true, result: { filesChanged: [] } });
     expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("handles a renamed project architecture update using its observed subject and paragraph", async () => {
+    staged();
+    const owner = "/projects/atlas-runtime.md";
+    const old = "Atlas Runtime architecture: Requests used the legacy queue and single-region worker.";
+    const instruction = "Update Atlas Runtime architecture (design refresh): Requests now use a partitioned queue and active-active workers.";
+    await kb.writeConcept(owner, { type: "Project", title: "Atlas Runtime" }, `${old}\n\nIndependent deployment note.`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(old);
+      expect(prompt).toContain(instruction);
+      return { object: { safe: true }, finishReason: "stop" };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(`Historical Atlas Runtime architecture (superseded): ${old}`);
+    expect(body).toContain("Current Atlas Runtime architecture: Requests now use a partitioned queue and active-active workers.");
+    expect(body).toContain("Independent deployment note.");
   });
 
   it("defers YuNet corrections with duplicate owners, missing anchors, or an existing partial update", async () => {
@@ -450,7 +469,7 @@ describe("mutation owner preflight", () => {
       .toMatchObject({ ok: false, status: "failed" });
     await kb.writeConcept(peer, { type: "Project", title: "Other research" }, "Unrelated facts.", "replace");
     await kb.writeConcept(yuNetOwner, { type: "Project", title: "Crop research" },
-      yuNetOld.replace("rendered crop JPEG digest", "some other key"), "replace");
+      "An unrelated paragraph with a changed subject and no architecture claim.", "replace");
     expect(await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction }))
       .toMatchObject({ ok: false, status: "failed" });
     await kb.writeConcept(yuNetOwner, { type: "Project", title: "Crop research" },
