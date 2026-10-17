@@ -2052,64 +2052,58 @@ async function runStagedMutation(
       await traceStore(kb).save(trace);
       return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
     }
-    // A later Claes seedless release changes several independent workflow
-    // claims. Replacing their old paragraphs would erase pilot and benchmark
-    // history; record the complete subsequent status and explicitly supersede
-    // the former runnable-seed guidance instead.
-    if (!options.directAdd && options.preflightInput &&
-        /^Update Claes design\/preference: Dan explicitly does not want reproducibility seeds set anywhere/i.test(raw.trim()) &&
-        /\b942642e\b/.test(raw) && /\b81 tests pass\b/i.test(raw) &&
-        /seed-bearing legacy manifest is rejected/i.test(raw) &&
-        /previous 32-worker ~5\.22 assignments\/s measurement was from seeded implementation/i.test(raw)) {
-      const ownerPath = "/projects/claes-jev-diagnostics.md";
-      if (options.ownerHint && options.ownerHint !== ownerPath) {
-        throw new Error("Staged mutation deferred: Claes seedless owner conflicts with hint.");
+    // Explicit design/preference updates may supersede older workflow guidance.
+    // Resolve the owner from the bounded corpus rather than project-specific anchors.
+    const workflowUpdate = raw.trim().match(/^Update (.+?) design\/preference:\s*/i);
+    if (!options.directAdd && options.preflightInput && workflowUpdate &&
+        /\b(?:supersed(?:e|es|ed|ing)|no longer current|old .* guidance .* outdated)\b/i.test(raw)) {
+      const subject = workflowUpdate[1].trim();
+      const facts = raw.trim().slice(workflowUpdate[0].length).trim();
+      const subjectWords = subject.toLowerCase().match(/[a-z0-9]+/g)?.filter((word) => word.length > 2) ?? [];
+      if (subjectWords.length === 0 || facts.length === 0) {
+        throw new Error("Staged mutation deferred: workflow update lacks a specific subject or new status.");
       }
-      const peers = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-        /^\/projects\/claes(?:[/-]|\.md$)/.test(candidate));
-      if (peers.length > 200 || !peers.includes(ownerPath)) {
-        throw new Error("Staged mutation deferred: Claes seedless owner inventory is incomplete.");
-      }
-      const heading = "Claes Laya seedless workflow (feat/laya-taxonomy-sampler 942642e; supersedes earlier seeded workflow and pilot guidance):";
-      const update = `${heading} ${raw.trim().replace(/^Update Claes design\/preference:\s*/i, "")}`;
-      let owner: Awaited<ReturnType<KnowledgeBase["readConcept"]>> | undefined;
-      for (const peerPath of peers) {
-        const peer = await kb.readConcept(peerPath);
-        recorder.record("read_concept", peer.path, [peer.path]);
+      const paths = await kb.bundle.listConceptPaths();
+      if (paths.length > 10_000) throw new Error("Staged mutation deferred: workflow concept inventory exceeds limit.");
+      const observed = new Map<string, Awaited<ReturnType<KnowledgeBase["readConcept"]>>>();
+      const peers: string[] = [];
+      const oldByOwner = new Map<string, string[]>();
+      const positiveSubjectAnchor = (paragraph: string): boolean => {
+        const lower = paragraph.toLowerCase();
+        return subjectWords.every((word) => new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(lower));
+      };
+      const historicalPrefix = "Historical workflow guidance (superseded): ";
+      for (const path of paths) {
         state.checkCancellation();
-        if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
-          throw new Error("Staged mutation deferred: Claes seedless owner or peer exceeds evidence limit.");
-        }
-        if (peerPath === ownerPath) owner = peer;
-        else if (peer.body.includes("942642e") &&
-            /seedless|seed-bearing legacy manifest|reproducibility seeds/i.test(peer.body)) {
-          throw new Error("Staged mutation deferred: Claes seedless update has a competing owner.");
+        const doc = await kb.readConcept(path);
+        if (!doc.body.toLowerCase().includes(subjectWords[0])) continue;
+        recorder.record("read_concept", doc.path, [doc.path]);
+        if (doc.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: workflow owner or peer exceeds evidence limit.");
+        observed.set(doc.path, doc);
+        const matches = doc.body.split(/\n\s*\n/).filter((paragraph) => positiveSubjectAnchor(paragraph) &&
+          !paragraph.startsWith(historicalPrefix) && /\b(?:workflow|pipeline|sampler|process|guidance|run|benchmark|manifest)\b/i.test(paragraph));
+        if (matches.length) {
+          if (matches.some((paragraph) => paragraph.length > 4_000)) throw new Error("Staged mutation deferred: workflow passage exceeds evidence limit.");
+          oldByOwner.set(doc.path, matches);
+          peers.push(`${doc.path}: ${matches.join("\n\n")}`);
         }
       }
-      if (!owner || !/Claes Laya throughput knowledge|task-first pipeline update/i.test(owner.body) ||
-          !/seed/i.test(owner.body) || !/Laya/i.test(owner.body) || owner.body.length + update.length > STAGED_MAX_OWNER_CHARS) {
-        throw new Error("Staged mutation deferred: Claes seedless historical owner is missing or too large.");
+      if (peers.length > 32 || peers.join("\n\n").length > 28_000) throw new Error("Staged mutation deferred: workflow peer evidence exceeds limit.");
+      if (oldByOwner.size !== 1 || (options.ownerHint && options.ownerHint !== [...oldByOwner.keys()][0])) {
+        throw new Error("Staged mutation deferred: workflow owner is absent, duplicated, or conflicts with owner hint.");
       }
-      const prior = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
+      const ownerPath = [...oldByOwner.keys()][0];
+      const owner = observed.get(ownerPath)!;
+      const heading = `Current ${subject} design/preference:`;
+      const update = `${heading} ${facts}`;
+      const prior = owner.body.split(/\n\s*\n/).filter((paragraph) => paragraph.startsWith(heading));
       if (prior.length > 1 || (prior.length === 1 && prior[0].trimEnd() !== update)) {
-        throw new Error("Staged mutation deferred: Claes seedless status is partially or ambiguously recorded.");
+        throw new Error("Staged mutation deferred: workflow status is partially or ambiguously recorded.");
       }
-      const historical = "Historical Claes workflow snapshot (superseded by seedless 942642e; earlier pilot and seeded benchmark advice is not current guidance): ";
-      const oldGuidance = owner.body.split(/\n\s*\n/).filter((part) =>
-        !part.startsWith(historical) && !part.includes("942642e") &&
-        /\b(?:Claes|Laya)\b/i.test(part) &&
-        /(?:seed-spread|--seed\b|seed[-*]?\d{6,}|\bseed(?:ed)?\b.{0,100}\b(?:sampler|benchmark|manifest)|\b(?:benchmark|sampler).{0,100}\bseed(?:ed)?\b)/i.test(part));
-      if ((prior.length === 0 && (oldGuidance.length === 0 || oldGuidance.length > 12)) ||
-          (prior.length === 1 && oldGuidance.length > 0) ||
-          oldGuidance.some((part) => owner.body.split(part).length !== 2)) {
-        throw new Error("Staged mutation deferred: Claes old seeded guidance cannot be uniquely archived.");
-      }
-      let archived = owner.body;
-      for (const part of oldGuidance) archived = archived.replace(part, `${historical}${part}`);
-      const replacement = `${archived.trimEnd()}\n\n${update}\n`;
-      if (replacement.length > STAGED_MAX_OWNER_CHARS) {
-        throw new Error("Staged mutation deferred: Claes seedless owner exceeds evidence limit.");
-      }
+      const oldGuidance = prior.length ? [] : oldByOwner.get(ownerPath)!;
+      const archived = oldGuidance.reduce((body, paragraph) => body.replace(paragraph, `${historicalPrefix}${paragraph}`), owner.body);
+      const replacement = prior.length ? owner.body : `${archived.trimEnd()}\n\n${update}\n`;
+      if (replacement.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: workflow owner exceeds evidence limit.");
       const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
       const judgement = await generateObject({
@@ -2117,20 +2111,20 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean(), reason: z.string() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent full-owner check of a later, explicitly superseding Claes Laya workflow status. Is this the correct owner for ALL of the caller's new facts, including removal of runnable archived pilot workflows but retention of historical data, seedless resume, and the fact that the prior throughput measurement was seeded? Does the proposed replacement preserve all prior paragraph content verbatim, mark ONLY older superseded pilot/seed guidance as historical, and leave no old current advice unqualified in the owner? ${prior.length ? "Verify that the exact status and historical labels are already present and no additional write is needed." : "Reject if an equivalent update is already present elsewhere in this owner or a newer status conflicts."} If unsure, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nPROPOSED STATUS:\n${update}\nPROPOSED HISTORICAL PARAGRAPHS:\n${JSON.stringify(oldGuidance.map((part) => `${historical}${part}`))}`,
+        prompt: `Independent workflow-status supersession check. Does this complete owner contain the positive subject anchor and uniquely own the old current workflow guidance? Check every peer independently for another owner or conflicting status. Does the caller explicitly supersede old guidance, and does the proposed replacement copy only caller-supported new status while preserving the contradicted old paragraph verbatim as historical? Do not mark unrelated benchmark provenance, data artifacts, or other historical facts obsolete. Reject uncertainty or unsupported changes. ${prior.length ? "Verify the exact current status already exists and no write is needed." : "Verify only contradicted old current advice is marked historical."} JSON only.\nSUBJECT: ${subject}\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peers.filter((peer) => !peer.startsWith(`${ownerPath}:`)).join("\n\n")}\nPROPOSED STATUS:\n${update}\nPROPOSED HISTORICAL PASSAGES:\n${JSON.stringify(oldGuidance.map((paragraph) => `${historicalPrefix}${paragraph}`))}`,
       });
       state.checkCancellation();
-      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent Claes seedless status check declined.");
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent workflow status check declined.");
       const current = await kb.readConcept(ownerPath);
       if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
       if (prior.length === 0) {
         state.checkCancellation();
-        await kb.patchConcept(ownerPath, { replaceBody: replacement }, "Staged mutation: supersede Claes seeded workflow", sha256(owner.body), options.signal,
+        await kb.patchConcept(ownerPath, { replaceBody: replacement }, "Staged mutation: supersede workflow guidance", sha256(owner.body), options.signal,
           (writtenPath) => { changed = [writtenPath]; });
         const readBack = await kb.readConcept(ownerPath);
-        if (readBack.body !== replacement) throw new Error("Claes seedless correction failed CAS read-back verification.");
+        if (readBack.body !== replacement) throw new Error("Workflow status correction failed CAS read-back verification.");
       }
-      const summary = prior.length === 0 ? `Staged mutation changed ${ownerPath}.` : "No change needed; exact Claes seedless status verified.";
+      const summary = prior.length === 0 ? `Staged mutation changed ${ownerPath}.` : "No change needed; exact workflow status verified.";
       const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
         { providerCalls, generationMs: Date.now() - started });
       await traceStore(kb).save(trace);
