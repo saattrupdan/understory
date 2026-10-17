@@ -1107,12 +1107,12 @@ async function runStagedMutation(
       const heading = "Current FS retrained synthetic review-page priority (15 Oct 2026): ";
       const historical = "Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority): ";
       const update = `${heading}${raw.trim().replace(/^Update FS Fotovalidering 15 Oct 2026 retrained 5,441-card synthetic annotation-page order at /i, "The 5,441-card synthetic annotation page at ")}`;
-      const siblings = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-        /^\/projects\/fs-fotovalidering(?:[-/]|\.md$)/.test(candidate));
-      const hits = await kb.search(page, { limit: 200 });
-      recorder.record("search_knowledge", page, hits.map((hit) => hit.path));
-      if (siblings.length > 200 || hits.length >= 200) {
-        throw new Error("Staged mutation deferred: FS review-page peer inventory exceeds limit.");
+      // Search ranks partial filename components and can return 200 generic
+      // hits before the true owner. Inspect the complete bounded concept
+      // inventory for exact page/hash matches instead of trusting that cap.
+      const paths = await kb.bundle.listConceptPaths();
+      if (paths.length > 10_000) {
+        throw new Error("Staged mutation deferred: FS review-page concept inventory exceeds limit.");
       }
       const observed = new Map<string, Awaited<ReturnType<typeof kb.readConcept>>>();
       const completePrior = (part: string): boolean =>
@@ -1120,9 +1120,11 @@ async function runStagedMutation(
         part.includes("127.0.0.1:8782") && /\b[a-f0-9]{64}\b/i.test(part) && !part.includes(currentSha);
       const owners: Array<{ path: string; paragraph: string }> = [];
       const peerEvidence: string[] = [];
-      for (const peerPath of new Set([...siblings, ...hits.map((hit) => hit.path)])) {
+      for (const peerPath of paths) {
         state.checkCancellation();
         const peer = await kb.readConcept(peerPath);
+        if (!peer.body.includes(page) && !peer.body.includes(previousSha) &&
+            !peer.body.includes(currentSha)) continue;
         recorder.record("read_concept", peer.path, [peer.path]);
         if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
           throw new Error("Staged mutation deferred: FS review-page owner or peer exceeds evidence limit.");
