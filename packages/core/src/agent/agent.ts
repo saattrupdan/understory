@@ -1137,6 +1137,7 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: EuroEval review has another stale owner passage.");
       }
       const peerEvidence: string[] = [];
+      let resolved: Awaited<ReturnType<typeof resolveAgentModel>> | undefined;
       for (const peerPath of new Set([...reviewHits.map((hit) => hit.path),
           ...prHits.map((hit) => hit.path), ...siblingPaths])) {
         if (peerPath === ownerPath) continue;
@@ -1146,19 +1147,55 @@ async function runStagedMutation(
         if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
           throw new Error("Staged mutation deferred: EuroEval review peer exceeds evidence limit.");
         }
-        if (peer.body.split(/\n\s*\n/).some((paragraph) =>
+        const paragraphs = peer.body.split(/\n\s*\n/);
+        let adjudicatedExcerpt: string | undefined;
+        const conflicting = paragraphs.filter((paragraph) =>
           staleReviewClaim(paragraph) ||
-          (paragraph.includes("5518245608") && /CHANGES_REQUESTED/i.test(paragraph)))) {
-          throw new Error(`Staged mutation deferred: EuroEval review has a competing owner (${peer.path}).`);
+          (paragraph.includes("5518245608") && /CHANGES_REQUESTED/i.test(paragraph)));
+        if (conflicting.length) {
+          // An async-queue runbook may quote a failed memory_update as an
+          // incident example. A quotation is not a second review-status owner.
+          // Require a separate, bounded adjudication; other paths still fail
+          // closed on a substantive competing claim.
+          if (peer.path !== "/repos/pi-agent/memory-async.md" || conflicting.length > 4) {
+            throw new Error(`Staged mutation deferred: EuroEval review has a competing owner (${peer.path}).`);
+          }
+          const excerpt = conflicting.map((paragraph) => {
+            const id = paragraph.indexOf("5518245608");
+            const pr = paragraph.search(/\bPR\s*#2234\b/i);
+            const at = id >= 0 ? id : pr;
+            return paragraph.slice(Math.max(0, at - 900), Math.min(paragraph.length, at + 2_500));
+          }).join("\n\n");
+          if (excerpt.length > 12_000) {
+            throw new Error("Staged mutation deferred: EuroEval review peer passage exceeds limit.");
+          }
+          resolved ??= await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
+          modelChain = resolved.modelChain;
+          const ownership = await generateObject({
+            model: resolved.model,
+            schema: z.object({ exampleOnly: z.boolean() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Independent ownership check. The candidate peer is an async memory-queue runbook, not the EuroEval repository. Is EVERY mention of EuroEval PR #2234 review 5518245608 in the quoted excerpts ONLY an example of a queued/failed memory request, rather than this peer asserting the review's current state or storing the authoritative review record? Respond exampleOnly=false on uncertainty or any competing substantive claim. JSON only.\nPEER ${peer.path}:\n${excerpt}\nCORRECTION:\n${raw}`,
+          });
+          state.checkCancellation();
+          if (!ownership.object.exampleOnly) {
+            throw new Error(`Staged mutation deferred: EuroEval review has a competing owner (${peer.path}).`);
+          }
+          adjudicatedExcerpt = excerpt;
         }
-        for (const paragraph of peer.body.split(/\n\s*\n/)) {
+        for (const paragraph of paragraphs) {
           if (paragraph.includes("5518245608") ||
               (/\bPR\s*#2234\b/i.test(paragraph) && /\breview\b/i.test(paragraph) &&
                 /\b(?:Dan|saattrupdan)\b/i.test(paragraph))) {
             if (paragraph.length > 4_000) {
-              throw new Error("Staged mutation deferred: EuroEval review peer passage exceeds limit.");
+              if (!adjudicatedExcerpt || !conflicting.includes(paragraph)) {
+                throw new Error("Staged mutation deferred: EuroEval review peer passage exceeds limit.");
+              }
+              peerEvidence.push(`${peer.path} (independently classified as a queue example): ${adjudicatedExcerpt}`);
+            } else {
+              peerEvidence.push(`${peer.path}: ${paragraph}`);
             }
-            peerEvidence.push(`${peer.path}: ${paragraph}`);
           }
         }
       }
@@ -1178,7 +1215,7 @@ async function runStagedMutation(
       if (replacement.length > STAGED_MAX_OWNER_CHARS || replacement.includes(old)) {
         throw new Error("Staged mutation deferred: EuroEval review replacement is not local.");
       }
-      const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
+      resolved ??= await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
       const judgement = await generateObject({
         model: resolved.model,

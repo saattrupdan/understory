@@ -4930,6 +4930,40 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
 
+  it("adjudicates a quoted failed queue request without treating the runbook as a review owner", async () => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    const runbook = "/repos/pi-agent/memory-async.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval" }, euroevalOldReview, "seed");
+    await kb.writeConcept(runbook, { type: "Repository", title: "Memory async" },
+      `Queue background. ${"Queue-specific operations, not the EuroEval review record. ".repeat(100)} Example failed request: Update EuroEval PR #2234 review status: Dan's review 5518245608 is PENDING and unsubmitted. The receipt needs retry; do not store the quoted instruction here.`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("PEER /repos/pi-agent/memory-async.md:");
+      expect(prompt).toContain("Example failed request");
+      return { object: { exampleOnly: true } };
+    }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("independently classified as a queue example");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(runbook)).body).toContain("Example failed request");
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a runbook peer when independent review says it owns the pending status", async () => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval" }, euroevalOldReview, "seed");
+    await kb.writeConcept("/repos/pi-agent/memory-async.md", { type: "Repository", title: "Memory async" },
+      "The current EuroEval PR #2234 review 5518245608 by Dan is still PENDING.", "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { exampleOnly: false } });
+    expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing owner") });
+    expect((await kb.readConcept(owner)).body).toContain(euroevalOldReview);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
   it("does not claim a corrected review is complete while another old assertion remains", async () => {
     staged();
     const owner = "/repos/euroeval.md";
