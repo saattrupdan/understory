@@ -3323,7 +3323,7 @@ async function runStagedMutation(
               model: resolved.model,
               schema: z.object({ competingCurrentOrAmbiguous: z.boolean(), certain: z.boolean() }).strict(),
               temperature: 0, abortSignal: options.signal,
-              prompt: `Independent read-only competing-owner check. Does this FULL peer body contain the same old policy/status as an active claim, ALREADY own the requested new fact, contradict that new fact, or present ambiguous chronology/ownership? A clearly dated historical mention alone is not current ownership. Return competingCurrentOrAmbiguous=true on uncertainty. JSON only.\nREQUEST:\n${raw}\nOBSERVED OLD CLAIM FROM SELECTED OWNER:\n${passage}\nFULL PEER ${peer.path}:\n${peer.body}`,
+              prompt: `Independent read-only competing-owner check. Does this FULL peer body own the SAME requested version/artifact and its substantive new facts, contradict them at that time, or leave the version chronology/ownership ambiguous? Compare full version identifiers and dates, not just a shared corpus size, old label, or one card count. A clearly earlier note or a DIFFERENT later successor version is not a competing owner of a distinct dated intermediate milestone; the latter must not make that older milestone sound current today. Return competingCurrentOrAmbiguous=true on uncertainty. JSON only.\nREQUEST:\n${raw}\nOBSERVED OLD CLAIM FROM SELECTED OWNER:\n${passage}\nFULL PEER ${peer.path}:\n${peer.body}`,
             });
             state.checkCancellation();
             if (check.finishReason === "length" || !check.object.certain || check.object.competingCurrentOrAmbiguous) noAnchor(`peer(${peer.path},certain=${check.object.certain},conflict=${check.object.competingCurrentOrAmbiguous},capped=${check.finishReason === "length"})`);
@@ -3881,7 +3881,7 @@ async function runStagedMutation(
       schema: proposalSchema,
       temperature: 0,
       abortSignal: options.signal,
-      prompt: `Propose exactly one safe knowledge-base mutation from this instruction and complete observed candidate evidence. Fill EVERY JSON field: unused strings must be empty and unused frontmatter must have empty type/title/description. For replace, supply candidate path, an exact old_text substring, and new_text that removes the old claim. For append, supply candidate path and the complete new fact in new_text only if genuinely non-conflicting. For create, supply a new path, nonempty body and frontmatter type/title/description; never create a duplicate owner or an unrelated backlink. For noop, quote a nonempty exact substring of an observed body in claim that establishes the requested knowledge. Otherwise defer and explain why. Never invent evidence. A suggested path is not proof of ownership; defer if it does not fit. ${historicalProvenanceOwner ? `The old policy in ${historicalProvenanceOwner} is genuine dated history, not an active false claim. Preserve it verbatim; only APPEND a complete, supported later policy to that owner if safe. Never replace or erase the old passage.` : ""}\nINSTRUCTION:\n${raw}\nSUGGESTED EXISTING OWNER:\n${options.ownerHint ?? "none"}\nCANDIDATES:\n${evidence}`,
+      prompt: `Propose exactly one safe knowledge-base mutation from this instruction and complete observed candidate evidence. Fill EVERY JSON field: unused strings must be empty and unused frontmatter must have empty type/title/description. For replace, supply candidate path, an exact old_text substring, and new_text that removes the old claim. For append, supply candidate path and the complete new fact in new_text only if genuinely non-conflicting. For create, supply a new path, nonempty body and frontmatter type/title/description; never create a duplicate owner or an unrelated backlink. For noop, quote a nonempty exact substring of an observed body in claim that establishes the requested knowledge. Otherwise defer and explain why. Never invent evidence. A suggested path is not proof of ownership; defer if it does not fit. ${historicalProvenanceOwner ? `The old policy in ${historicalProvenanceOwner} is genuine dated history, not an active false claim. Preserve it verbatim; only APPEND a complete, supported DATED follow-up to that owner if safe. The instruction describes the status at its stated date, not necessarily current policy today; do not present it as current without a temporal qualifier. Never replace or erase the old passage.` : ""}\nINSTRUCTION:\n${raw}\nSUGGESTED EXISTING OWNER:\n${options.ownerHint ?? "none"}\nCANDIDATES:\n${evidence}`,
     });
     state.checkCancellation();
     const p = proposal.object;
@@ -3931,9 +3931,10 @@ async function runStagedMutation(
       const title = target?.frontmatter.title;
       const titleNegated = !!title && raw.toLowerCase().includes(title.toLowerCase()) && !stagedTitleMention(raw, title);
       if (!target || !title || titleNegated ||           !(stagedTitleMention(raw, title) || hintedPath === target.path || stagedOwnerAnchor(raw, target.path) ||
-             historicalProvenanceOwner === target.path) || (correction && historicalProvenanceOwner !== target.path) ||
-          p.new_text.length < 20 || p.new_text.length > 4_000 ||
-          stagedOverlap(p.new_text, raw) < 0.8 || stagedOverlap(raw, p.new_text) < 0.6 ||
+             historicalProvenanceOwner === target.path) || (correction && historicalProvenanceOwner !== target.path) ||           p.new_text.length < 20 || p.new_text.length > 4_000 ||
+           (historicalProvenanceOwner === target.path &&
+             !p.new_text.includes(raw.match(/\b\d{1,2}\s+[A-Za-z]+\s+20\d{2}\b/)?.[0] ?? "")) ||
+           stagedOverlap(p.new_text, raw) < 0.8 || stagedOverlap(raw, p.new_text) < 0.6 ||
           target.body.toLowerCase().includes(p.new_text.trim().toLowerCase())) {
         throw new Error("Staged mutation deferred: append owner or factual support is uncertain.");
       }
