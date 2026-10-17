@@ -1106,7 +1106,7 @@ async function runStagedMutation(
       }
       // Normalize valid extensionless suggestions before special owner checks so
       // they receive exactly the same existence and evidence vetting as .md paths.
-      if (!hasMarkdownExtension) options.ownerHint = `${hint}.md`;
+      if (!hasMarkdownExtension) options = { ...options, ownerHint: `${hint}.md` };
     }
     const raw = options.preflightInput ?? instruction;
     // The dated published test manifest and the currently parsed on-disk

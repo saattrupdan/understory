@@ -2707,10 +2707,10 @@ describe("mutation owner preflight", () => {
       expect(request.prompt).toContain(`OWNER ${path}`);
       return { object: { safe: false, reason: "This proposed fact is not safe to add." } };
     });
-    const accepted = await runMutation(kb, `Remember that ${fact}`, {
-      ownerHint: "/playbooks/oncall-billing", preflightInput: fact, directAdd: true,
-    });
+    const options = { ownerHint: "/playbooks/oncall-billing", preflightInput: fact, directAdd: true };
+    const accepted = await runMutation(kb, `Remember that ${fact}`, options);
     expect(accepted).toMatchObject({ ok: true, result: { filesChanged: [path] } });
+    expect(options.ownerHint).toBe("/playbooks/oncall-billing");
     const vetoed = await runMutation(kb, "Remember an unrelated billing incident response fact.", {
       ownerHint: "/playbooks/oncall-billing", preflightInput: "Remember an unrelated billing incident response fact.", directAdd: true,
     });
