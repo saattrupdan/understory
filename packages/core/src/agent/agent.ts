@@ -1104,16 +1104,16 @@ async function runStagedMutation(
       const checkpointSha = requestBody.match(/checkpoint SHA `([a-f0-9]{64})`/i)?.[1];
       const confusion = requestBody.match(/\bTP\d+ TN\d+ FP\d+ FN\d+\b/)?.[0];
       const baselinePath = requestBody.match(/`([^`]*baselines\/\d{4}-\d{2}-\d{2}\/parsed\/manifest\.jsonl)`/i)?.[1];
-      const baselineLocator = baselinePath?.split("/").slice(-4).join("/");
+      const baselineLocator = baselinePath?.match(/baselines\/\d{4}-\d{2}-\d{2}/i)?.[0];
       const testCount = requestBody.match(/contains \*\*(\d+)\*\* test images/i)?.[1];
       const priorCount = requestBody.match(/earlier reported (\d+)/i)?.[1];
-      const evidenceAnchors = [manifestSha, reportSha, checkpointSha, confusion, baselinePath, testCount, priorCount];
-      if (evidenceAnchors.some((anchor) => !anchor) || !requestBody.includes("independent held-out evidence")) {
+      if (!manifestSha || !reportSha || !checkpointSha || !confusion || !baselinePath ||
+          !baselineLocator || !testCount || !priorCount || !requestBody.includes("independent held-out evidence")) {
         throw new Error("Staged mutation deferred: dated test baseline request lacks exact evaluation evidence.");
       }
       const paths = await kb.bundle.listConceptPaths();
       if (paths.length > 10_000) throw new Error("Staged mutation deferred: dated test baseline concept inventory is incomplete.");
-      const headingProject = project.replace(/\s+Fotovalidering$/i, "");
+      const headingProject = project;
       const updateBody = requestBody
         .replace(/As of [^,.;]+ the current on-disk/i, "Before the later correction, the then-current on-disk")
         .replace(/this is the currently parsed on-disk version/ig, "this was the parsed on-disk version before the later correction")
@@ -1125,7 +1125,8 @@ async function runStagedMutation(
         if (peer.body.includes(baselineLocator ?? baselinePath!) && peer.body.includes(`${priorCount} sample IDs`) &&
             peer.body.includes(`${testCount} unique photos`) && /SHA-256: [a-f0-9]{64}/i.test(peer.body)) ownerCandidates.push(peerPath);
       }
-      if (ownerCandidates.length !== 1) throw new Error("Staged mutation deferred: dated test baseline owner is absent or ambiguous.");
+      if (ownerCandidates.length > 1) throw new Error("Staged mutation deferred: dated test baseline has a competing or already updated peer.");
+      if (ownerCandidates.length === 0) throw new Error("Staged mutation deferred: dated test baseline owner is absent or ambiguous.");
       const ownerPath = ownerCandidates[0];
       const oldPublishedShaMatch = (await kb.readConcept(ownerPath)).body.match(/SHA-256: ([a-f0-9]{64})/i);
       const oldPublishedSha = oldPublishedShaMatch?.[1];
@@ -1159,6 +1160,7 @@ async function runStagedMutation(
         if (confirmedLaterCorrection) laterManifestSha = laterHash;
         if (confirmedLaterCorrection) supersedingPeers.push(peer.path);
         const peerConflict = peer.body.includes(reportSha) ? "evaluation report" :
+          peer.body.split(/\n\s*\n/).some((part) => part.includes(confusion) && part.includes(checkpointSha)) ? "evaluation confusion" :
           peer.body.includes(confusion) && !confirmedLaterCorrection ? "evaluation confusion" :
           peer.body.includes(manifestSha) && !confirmedLaterCorrection ? "conflicting current manifest" :
           peer.body.includes(oldPublishedSha) && peer.body.includes(`${priorCount} sample IDs`) &&
@@ -1189,9 +1191,9 @@ async function runStagedMutation(
       }
       const correctionPeer = await kb.readConcept(supersedingPeers[0]);
       const correctionDate = correctionPeer.body.match(/\b(\d{1,2}\s+[A-Z][a-z]{2,8}\s+\d{4})\b/)?.[1] ?? "later dated";
-      const correctionLabel = correctionPeer.body.match(/\b([\w-]*blur[\w-]*\s+correction)\b/i)?.[1] ?? "source-label correction";
+      const correctionLabel = correctionPeer.body.match(/\b([\w-]+\s+correction)\b/i)?.[1] ?? "source-label correction";
       const heading = `Historical ${headingProject} on-disk dated test baseline and retrain evaluation (before the ${correctionDate} ${correctionLabel}): `;
-      const update = `${heading}${updateBody}. Later on ${correctionDate}, the separate ${correctionLabel} superseded this manifest with SHA ${laterManifestSha}; this evaluation describes the earlier snapshot.`;
+      const update = `${heading}${updateBody.trim().replace(/\.+$/, "")}. Later on ${correctionDate}, the separate ${correctionLabel} superseded this manifest with SHA ${laterManifestSha}; this evaluation describes the earlier snapshot.`;
       const current = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
       if (current.length === 1 && current[0].trimEnd() === update &&
           owner.body.split(manifestSha).length === 2 && owner.body.split(reportSha).length === 2) {

@@ -4992,7 +4992,7 @@ describe("mutation owner preflight", () => {
     const current = (await kb.readConcept(fsDatedBaselineOwner)).body;
     expect(current).toContain(prior);
     expect(current).not.toContain("As of 15 Oct 2026 the current on-disk");
-    for (const fact of ["Historical FS on-disk dated test baseline and retrain evaluation (before the 15 Oct 2026 owner-blur correction):",
+    for (const fact of ["Historical FS Fotovalidering on-disk dated test baseline and retrain evaluation (before the 15 Oct 2026 owner-blur correction):",
       "225de8e9d265ea284fd3a5b8de7e6bf56eda9c2dcedb24b5544a84ff26c348b0",
       "d0e41600805f1652c86f84974030192a17db1eed20779a15c20f8af948110ec0", "then-current on-disk",
       "48590b5a949f9cd65c5707f41c183341d54014d78c3b988e70530623330df776",
