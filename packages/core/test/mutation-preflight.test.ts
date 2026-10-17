@@ -366,6 +366,30 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
 
+  it("supersedes a renamed dated source warning using its observed subject and project", async () => {
+    staged();
+    const owner = "/projects/cedar-archive-continuation.md";
+    const old = "Cedar Archive 2025-04-03 snapshot deletion warning — The old exporter cannot rebuild the snapshot without cached metadata. Keep the review log.";
+    const instruction = "Update the Cedar Archive 2025-04-03 snapshot deletion warning: this old exporter warning is superseded. The source-only rebuild script now recreates the snapshot from the canonical inputs; retain the review log as audit history.";
+    await kb.writeConcept(owner, { type: "Project", title: "Cedar archive" },
+      `Current audit caveat remains.\n\n${old}\n\nUnrelated project note.`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(old);
+      expect(prompt).toContain("Cedar Archive");
+      expect(prompt).toContain("Current audit caveat remains.");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(`Historical Cedar Archive 2025-04-03 snapshot deletion warning (superseded by the later source-only rebuild; old generator limitation only): ${old}`);
+    expect(body).toContain("Current audit caveat remains.\n\n");
+    expect(body).toContain("Unrelated project note.");
+    expect(body).toContain("Keep the review log.");
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+  });
+
   it("checks an older source-only script warning from a different FS owner before accepting", async () => {
     staged();
     await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" }, fsBaselineOld, "seed");
@@ -377,7 +401,7 @@ describe("mutation owner preflight", () => {
       return { object: { safe: false } };
     });
     expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS baseline") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent dated warning") });
     expect((await kb.readConcept(fsBaselineOwner)).body).toBe(`${fsBaselineOld}\n`);
   });
 
@@ -402,7 +426,7 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" }, fsBaselineOld, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
     expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS baseline") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent dated warning") });
     generateObjectMock.mockImplementationOnce(async () => {
       await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" },
         `${fsBaselineOld}\n\nNew concurrent finding.`, "external");
