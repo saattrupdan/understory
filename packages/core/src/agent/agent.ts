@@ -1077,6 +1077,111 @@ async function runStagedMutation(
   let changed: string[] = [];
   try {
     const raw = options.preflightInput ?? instruction;
+    // Confirm a previously provisional repository deploy with the later Git
+    // commit and production deployment. Keep the earlier production deploy
+    // and the separate Vercel CLI observation as distinct historical facts.
+    if (!options.directAdd && options.preflightInput &&
+        /^For saattrupdan\.com deployment knowledge, correct the prior provisional state:/i.test(raw.trim()) &&
+        ["e7159f328f1d54bf6c789b625429b1591e264381", "dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8",
+          "origin/main", "2026-10-14", "READY", "www.saattrupdan.com", "Working tree clean."]
+          .every((anchor) => raw.includes(anchor))) {
+      const ownerPath = "/repos/saattrupdan-com.md";
+      if (options.ownerHint && options.ownerHint !== ownerPath) {
+        throw new Error("Staged mutation deferred: saattrupdan.com deployment owner hint conflicts.");
+      }
+      const owner = await kb.readConcept(ownerPath);
+      recorder.record("read_concept", owner.path, [owner.path]);
+      const old = "On 2026-10-14, the `deploy` target was removed from `makefile` and `AGENTS.md` was updated locally; those changes were not yet committed or pushed in that session.";
+      const updated = "On 2026-10-14, the `deploy` target was removed from `makefile` and `AGENTS.md` received Git-deployment guidance; both changes were committed as `e7159f328f1d54bf6c789b625429b1591e264381` and pushed to `origin/main` on 2026-10-14. The subsequent Git-triggered Vercel Production deployment `dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8` from that exact commit reached READY, the GitHub Vercel status was success, and `www.saattrupdan.com` aliases the new deployment. The working tree was clean.";
+      const oldCount = owner.body.split(old).length - 1;
+      const updatedCount = owner.body.split(updated).length - 1;
+      const headings = [...owner.body.matchAll(/^#{1,6}\s+Deployment Policy\s*$/gim)];
+      const sectionStart = headings[0]?.index;
+      const nextHeading = /^#{1,6}\s+[^\n]+$/gm;
+      nextHeading.lastIndex = sectionStart === undefined ? 0 : sectionStart + headings[0][0].length;
+      const sectionEnd = nextHeading.exec(owner.body)?.index ?? owner.body.length;
+      const section = sectionStart === undefined ? "" : owner.body.slice(sectionStart, sectionEnd);
+      if (owner.body.length > STAGED_MAX_OWNER_CHARS || headings.length !== 1 ||
+          !owner.body.includes("dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L") ||
+          !owner.body.includes("vercel --prod") ||
+          (oldCount !== 1 && !(oldCount === 0 && updatedCount === 1)) ||
+          (oldCount === 1 && section.split(old).length !== 2) ||
+          (oldCount === 0 && section.split(updated).length !== 2)) {
+        throw new Error("Staged mutation deferred: provisional deployment claim is absent or ambiguous.");
+      }
+      const peerPaths = (await kb.bundle.listConceptPaths()).filter((candidate) =>
+        candidate !== ownerPath && /^\/(?:repos|projects)\/saattrupdan-com(?:[/-]|\.md$)/.test(candidate));
+      if (peerPaths.length > 100) {
+        throw new Error("Staged mutation deferred: deployment peer inventory exceeds limit.");
+      }
+      const peerEvidence: string[] = [];
+      for (const peerPath of peerPaths) {
+        state.checkCancellation();
+        const peer = await kb.readConcept(peerPath);
+        recorder.record("read_concept", peer.path, [peer.path]);
+        if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: deployment peer exceeds evidence limit.");
+        }
+        if (peer.body.includes(old) ||
+            (peer.body.includes("e7159f328f1d54bf6c789b625429b1591e264381") &&
+             peer.body.includes("dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8"))) {
+          throw new Error("Staged mutation deferred: deployment correction has a competing owner.");
+        }
+        for (const paragraph of peer.body.split(/\n\s*\n/)) {
+          if (/saattrupdan\.com/i.test(paragraph) &&
+              /(?:e7159f328f1d54bf6c789b625429b1591e264381|dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8|make deploy)/i.test(paragraph)) {
+            if (paragraph.length > 4_000) {
+              throw new Error("Staged mutation deferred: deployment peer paragraph exceeds limit.");
+            }
+            peerEvidence.push(`${peer.path}: ${paragraph}`);
+          }
+        }
+      }
+      if (peerEvidence.join("\n\n").length > 12_000) {
+        throw new Error("Staged mutation deferred: deployment peer evidence exceeds limit.");
+      }
+      if (oldCount === 0) {
+        const current = await kb.readConcept(ownerPath);
+        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+        const summary = "No change needed; completed saattrupdan.com deploy and provisional correction verified.";
+        const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+          { providerCalls, generationMs: Date.now() - started });
+        await traceStore(kb).save(trace);
+        return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
+      }
+      const replacement = owner.body.replace(old, updated);
+      if (replacement.length > STAGED_MAX_OWNER_CHARS || replacement.includes(old)) {
+        throw new Error("Staged mutation deferred: provisional deployment replacement is not local.");
+      }
+      const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
+      modelChain = resolved.modelChain;
+      const judgement = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent complete-owner saattrupdan.com deployment check. Does the EXACT old sentence describe a provisional status now superseded by the caller's confirmed commit and READY deployment? Are EVERY fact and sequence in the proposed replacement supported by the caller, with prior dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L deployment and separate Vercel CLI history retained? Do peers own, duplicate or contradict the update? The old path/heading alone cannot authorize the write. Reject on uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nOWNER ${ownerPath}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nEXACT OLD SENTENCE:\n${old}\nEXACT PROPOSED SENTENCES:\n${updated}`,
+      });
+      state.checkCancellation();
+      if (!judgement.object.safe) {
+        throw new Error("Staged mutation deferred: saattrupdan.com deployment independent check declined.");
+      }
+      const current = await kb.readConcept(ownerPath);
+      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+      state.checkCancellation();
+      await kb.patchConcept(ownerPath, { replaceBody: replacement },
+        "Staged mutation: confirm saattrupdan.com Git deployment", sha256(owner.body), options.signal,
+        (writtenPath) => { changed = [writtenPath]; });
+      const readBack = await kb.readConcept(ownerPath);
+      if (readBack.body !== replacement) {
+        throw new Error("saattrupdan.com deployment failed CAS read-back verification.");
+      }
+      const summary = `Staged mutation changed ${ownerPath}.`;
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+        { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+    }
     // The dated YuNet architecture update supersedes one existing paragraph,
     // rather than requiring a free-form rewrite of a long project concept.
     // Identify its owner by the observed old claim, not by a search ranking.

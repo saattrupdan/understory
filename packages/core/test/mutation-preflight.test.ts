@@ -4864,6 +4864,74 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body.trim()).toBe(oldText);
   });
 
+  const confirmedDeployInstruction = "For saattrupdan.com deployment knowledge, correct the prior provisional state: makefile deploy target removal and AGENTS.md Git-deployment guidance were committed as e7159f328f1d54bf6c789b625429b1591e264381 and pushed to origin/main on 2026-10-14. Vercel Git-triggered production deployment dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8 from that exact SHA reached READY, GitHub Vercel status success, and www.saattrupdan.com aliases the new deployment. Working tree clean.";
+  const provisionalDeploy = "On 2026-10-14, the `deploy` target was removed from `makefile` and `AGENTS.md` was updated locally; those changes were not yet committed or pushed in that session.";
+  const deploymentBody = `# Deployment Policy\n\nVercel project \`my-website\` deploys on push to main.\n\nThe previous deployment dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L was Ready.\n\n${provisionalDeploy}\n\n# Vercel CLI\n\n\`vercel --prod\` returned Not authorized.`;
+
+  it("keeps permissive non-string YAML titles out of typed search hits", async () => {
+    await kb.writeConcept("/notes/malformed-title.md",
+      { type: "Note", title: { name: "Vercel" } as unknown as string },
+      "Vercel website release history.", "seed");
+    const hit = (await kb.search("Vercel")).find((candidate) => candidate.path === "/notes/malformed-title.md");
+    expect(hit).toBeDefined();
+    expect(hit?.title).toBeUndefined();
+  });
+
+  it("corrects the provisional website deployment without losing earlier deployment or CLI history", async () => {
+    staged();
+    const owner = "/repos/saattrupdan-com.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "saattrupdan.com Website" }, deploymentBody, "seed");
+    await kb.writeConcept("/projects/saattrupdan-com.md", { type: "Project", title: "Site project" },
+      "The website project references make deploy, without claiming the completed Git deployment.", "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(provisionalDeploy);
+      expect(prompt).toContain("dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L");
+      expect(prompt).toContain("e7159f328f1d54bf6c789b625429b1591e264381");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, confirmedDeployInstruction, { preflightInput: confirmedDeployInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).not.toContain(provisionalDeploy);
+    expect(body).toContain("both changes were committed as `e7159f328f1d54bf6c789b625429b1591e264381`");
+    expect(body).toContain("`dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8` from that exact commit reached READY");
+    expect(body).toContain("dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L");
+    expect(body).toContain("`vercel --prod` returned Not authorized.");
+    expect(await runMutation(kb, confirmedDeployInstruction, { preflightInput: confirmedDeployInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept(owner)).body).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("defers the confirmed website deployment when a peer owns it or independent review declines", async () => {
+    staged();
+    const owner = "/repos/saattrupdan-com.md";
+    const peer = "/repos/saattrupdan-com-deploy.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "saattrupdan.com Website" }, deploymentBody, "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "Website release" },
+      "Commit e7159f328f1d54bf6c789b625429b1591e264381 was deployed as dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8.", "seed");
+    expect(await runMutation(kb, confirmedDeployInstruction, { preflightInput: confirmedDeployInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing owner") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+    await kb.writeConcept(peer, { type: "Project", title: "Website release" }, "Other Vercel history.", "replace");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, confirmedDeployInstruction, { preflightInput: confirmedDeployInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent check declined") });
+    expect((await kb.readConcept(owner)).body).toContain(provisionalDeploy);
+  });
+
+  it("does not rewrite a historical provisional sentence outside the deployment section", async () => {
+    staged();
+    const owner = "/repos/saattrupdan-com.md";
+    const outside = deploymentBody.replace(provisionalDeploy, "The Git deployment policy is active.") +
+      `\n\n# Dated observations\n\n${provisionalDeploy}`;
+    await kb.writeConcept(owner, { type: "Repository", title: "saattrupdan.com Website" }, outside, "seed");
+    expect(await runMutation(kb, confirmedDeployInstruction, { preflightInput: confirmedDeployInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("absent or ambiguous") });
+    expect((await kb.readConcept(owner)).body).toBe(`${outside}\n`);
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
   it("replaces only the obsolete site deployment policy and preserves dated CLI history", async () => {
     staged();
     const owner = "/repos/saattrupdan-com.md";

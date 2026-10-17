@@ -477,8 +477,12 @@ export async function searchBundle(
     hits.push({
       path: document.conceptPath,
       type: document.concept.frontmatter.type ?? "unknown",
-      title: document.concept.frontmatter.title as string | undefined,
-      description: document.concept.frontmatter.description as string | undefined,
+      // OKF frontmatter is permissive: YAML metadata can be arrays or objects.
+      // Search hits promise strings, and mutation owner checks lowercase them.
+      title: typeof document.concept.frontmatter.title === "string"
+        ? document.concept.frontmatter.title : undefined,
+      description: typeof document.concept.frontmatter.description === "string"
+        ? document.concept.frontmatter.description : undefined,
       snippet:
         firstBodyMatch >= 0
           ? document.concept.body
