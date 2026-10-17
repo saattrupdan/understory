@@ -1176,7 +1176,7 @@ async function runStagedMutation(
             schema: z.object({ exampleOnly: z.boolean(), reason: z.string().max(300) }).strict(),
             temperature: 0,
             abortSignal: options.signal,
-            prompt: `Independent ownership check. The candidate peer is an async memory-queue runbook, not the EuroEval repository. Is EVERY mention of EuroEval PR #2234 review 5518245608 in the quoted excerpts ONLY an example of a queued/failed memory request, rather than this peer asserting the review's current state or storing the authoritative review record? Respond exampleOnly=false on uncertainty or any competing substantive claim. JSON only.\nPEER ${peer.path}:\n${excerpt}\nCORRECTION:\n${raw}`,
+            prompt: `Independent ownership check. Judge ONLY the peer excerpt below, not a proposed correction. The peer is an async memory-queue runbook, not the EuroEval repository. Is EVERY mention of EuroEval PR #2234 review 5518245608 in this excerpt ONLY an example of a queued/failed memory request, rather than this peer asserting the review's current state or storing the authoritative review record? Respond exampleOnly=false on uncertainty or any competing substantive claim. JSON only.\nPEER ${peer.path}:\n${excerpt}`,
           });
           state.checkCancellation();
           if (!ownership.object.exampleOnly) {

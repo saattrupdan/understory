@@ -4940,6 +4940,7 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain("PEER /repos/pi-agent/memory-async.md:");
       expect(prompt).toContain("Example failed request");
+      expect(prompt).not.toContain("CORRECTION:");
       return { object: { exampleOnly: true, reason: "The review is quoted in a queued-write example." } };
     }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain("independently classified as a queue example");
