@@ -1959,93 +1959,88 @@ async function runStagedMutation(
       await traceStore(kb).save(trace);
       return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
     }
-    // The dated YuNet architecture update supersedes one existing paragraph,
-    // rather than requiring a free-form rewrite of a long project concept.
-    // Identify its owner by the observed old claim, not by a search ranking.
-    const yunetUpdate = !options.directAdd && options.preflightInput &&
-      /^Update FS Fotovalidering YuNet face gate architecture \(feat\/yunet-face-gate, Oct 2026\): /i.test(raw) &&
-      ["/content-screen", "original exact bytes", "model revision/SHA", "camera /preprocess",
-        "must NOT fall back", "0.90"]
-        .every((anchor) => raw.toLowerCase().includes(anchor.toLowerCase())) &&
-      /\b\d+ backend passed\b/i.test(raw) && /\b\d+ frontend passed\b/i.test(raw);
-    if (yunetUpdate) {
-      console.info("[understory] YuNet correction: recognized bounded update");
-      const ownerPath = "/projects/fs-fotovalidering/auto-crop-investigation.md";
-      if (options.ownerHint && options.ownerHint !== ownerPath) {
-        throw new Error("Staged mutation deferred: YuNet owner hint conflicts with the observed owner.");
-      }
-      const peerPaths = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-        /^\/projects\/fs-fotovalidering(?:[/-]|\.md$)/.test(candidate));
-      if (peerPaths.length > 200) throw new Error("Staged mutation deferred: YuNet owner inventory exceeds limit.");
-      console.info("[understory] YuNet correction: peer inventory", peerPaths.length);
-      const oldPrefix = "FS Fotovalidering YuNet face gate (feat/yunet-face-gate, Oct 2026):";
-      const oldOwners: Array<{ path: string; paragraph: string }> = [];
-      let owner: Awaited<ReturnType<KnowledgeBase["readConcept"]>> | undefined;
-      let competingUpdate = false;
-      for (const peerPath of peerPaths) {
+    // Architecture updates replace only a uniquely observed earlier architecture
+    // paragraph. Inventory the complete bounded corpus; never infer ownership from a
+    // path, search rank, or caller-supplied hint alone.
+    const architectureUpdate = raw.trim().match(/^Update (.+?) architecture(?:\s*\([^:\n]*\))?:\s*/i);
+    if (!options.directAdd && options.preflightInput && architectureUpdate) {
+      const subject = architectureUpdate[1].trim();
+      const facts = raw.trim().slice(architectureUpdate[0].length).trim();
+      const subjectWords = subject.toLowerCase().match(/[a-z0-9]+/g)?.filter((word) => word.length > 2) ?? [];
+      if (!facts || subjectWords.length === 0) throw new Error("Staged mutation deferred: architecture update lacks a subject or current facts.");
+      const paths = await kb.bundle.listConceptPaths();
+      if (paths.length > 10_000) throw new Error("Staged mutation deferred: architecture concept inventory exceeds limit.");
+      const observed = new Map<string, Awaited<ReturnType<KnowledgeBase["readConcept"]>>>();
+      const owners = new Map<string, string[]>();
+      const peerClaims: string[] = [];
+      const historicalPrefix = `Historical ${subject} architecture (superseded): `;
+      const currentHeading = `Current ${subject} architecture:`;
+      const anchored = (paragraph: string): boolean => {
+        const lower = paragraph.toLowerCase();
+        return subjectWords.every((word) => new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(lower));
+      };
+      for (const path of paths) {
         state.checkCancellation();
-        const concept = await kb.readConcept(peerPath);
+        const concept = await kb.readConcept(path);
+        if (!concept.body.toLowerCase().includes(subjectWords[0])) continue;
         recorder.record("read_concept", concept.path, [concept.path]);
-        if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
-          throw new Error("Staged mutation deferred: YuNet peer exceeds evidence limit.");
-        }
-        if (peerPath === ownerPath) owner = concept;
-        for (const paragraph of concept.body.split(/\n\s*\n/)) {
-          if (paragraph.startsWith(oldPrefix)) oldOwners.push({ path: peerPath, paragraph });
-          if (peerPath !== ownerPath && paragraph.includes("/content-screen") &&
-              /YuNet/i.test(paragraph) && /original exact bytes/i.test(paragraph)) competingUpdate = true;
+        if (concept.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: architecture owner or peer exceeds evidence limit.");
+        observed.set(concept.path, concept);
+        const claims = concept.body.split(/\n\s*\n/).filter((paragraph) => anchored(paragraph) &&
+          (/\b(?:architecture|architectural|system design)\b/i.test(paragraph) ||
+            paragraph.toLowerCase().startsWith(subject.toLowerCase())) && !paragraph.startsWith(historicalPrefix));
+        if (claims.length) {
+          if (claims.some((paragraph) => paragraph.length > 4_000)) throw new Error("Staged mutation deferred: architecture passage exceeds evidence limit.");
+          owners.set(concept.path, claims);
+          peerClaims.push(`${concept.path}: ${claims.join("\n\n")}`);
         }
       }
-      console.info("[understory] YuNet correction: bounded peer reads complete", oldOwners.length);
-      if (!owner || competingUpdate) throw new Error("Staged mutation deferred: YuNet owner missing or competing update exists.");
-      const updated = `FS Fotovalidering YuNet face gate architecture (feat/yunet-face-gate, Oct 2026): ${raw.replace(/^Update FS Fotovalidering YuNet face gate architecture \(feat\/yunet-face-gate, Oct 2026\): /i, "").trim()}`;
-      const historical = "Historical YuNet face gate baseline (superseded 13 Oct 2026; not current guidance):";
-      const archived = owner.body.split(/\n\s*\n/).filter((paragraph) =>
-        paragraph.startsWith(`${historical} ${oldPrefix}`) &&
-        paragraph.includes("rendered crop JPEG digest") && paragraph.includes("/validate"));
-      if (oldOwners.length === 0 && archived.length === 1 && owner.body.split(updated).length === 2) {
-        const current = await kb.readConcept(ownerPath);
-        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
-        const summary = "No change needed; exact YuNet update and historical baseline verified.";
+      if (peerClaims.length > 32 || peerClaims.join("\n\n").length > 28_000) throw new Error("Staged mutation deferred: architecture peer evidence exceeds limit.");
+      if (owners.size !== 1 || (options.ownerHint && options.ownerHint !== [...owners.keys()][0])) {
+        throw new Error("Staged mutation deferred: architecture owner is absent, duplicated, or conflicts with owner hint.");
+      }
+      const ownerPath = [...owners.keys()][0];
+      const owner = observed.get(ownerPath)!;
+      const current = `${currentHeading} ${facts}`;
+      const ownerClaims = owners.get(ownerPath)!;
+      const oldParagraphs = ownerClaims.filter((paragraph) => !paragraph.startsWith(currentHeading));
+      const existingCurrent = owner.body.split(/\n\s*\n/).filter((paragraph) => paragraph.startsWith(currentHeading));
+      if (existingCurrent.length === 1 && existingCurrent[0].trimEnd() === current && oldParagraphs.length === 0) {
+        const fresh = await kb.readConcept(ownerPath);
+        if (fresh.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+        const summary = "No change needed; exact current architecture and historical record verified.";
         const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
           { providerCalls, generationMs: Date.now() - started });
         await traceStore(kb).save(trace);
         return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
       }
-      if (oldOwners.length !== 1 || oldOwners[0].path !== ownerPath) {
-        throw new Error("Staged mutation deferred: YuNet old paragraph owner is absent or ambiguous.");
+      if (oldParagraphs.length !== 1 || existingCurrent.length || owner.body.includes(current)) {
+        throw new Error("Staged mutation deferred: architecture claim is partial, duplicated, or already conflicting.");
       }
-      const old = oldOwners[0].paragraph;
-      if (old.length > 4_000 || updated.length > 4_000 ||
-          !old.includes("/preprocess") || !old.includes("/validate") ||
-          !old.includes("rendered crop JPEG digest") || owner.body.includes(updated) ||
-          owner.body.split(old).length !== 2) {
-        throw new Error("Staged mutation deferred: YuNet old claim or update state is ambiguous.");
-      }
-      const replacement = `${historical} ${old}\n\n${updated}`;
+      const old = oldParagraphs[0];
+      const replacement = `${historicalPrefix}${old}\n\n${current}`;
       const proposed = owner.body.replace(old, replacement);
-      if (proposed.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: YuNet owner exceeds limit.");
+      if (proposed.length > STAGED_MAX_OWNER_CHARS || owner.body.split(old).length !== 2) {
+        throw new Error("Staged mutation deferred: architecture paragraph is ambiguous or owner exceeds limit.");
+      }
       const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
-      console.info("[understory] YuNet correction: independent check starting");
-      const check = await generateObject({
+      const judgement = await generateObject({
         model: resolved.model,
         schema: z.object({ safe: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent local correction check: does the proposed paragraph copy ONLY the caller's new facts, clearly date the observed old paragraph as superseded, and preserve its historical findings without making them current? Refuse unsupported facts, incomplete corrections, or uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nOBSERVED OLD PARAGRAPH:\n${old}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
+        prompt: `Independent architecture supersession check. Does the caller explicitly provide the new current architecture facts? Is the observed earlier paragraph uniquely about this subject and genuinely superseded by those facts? Preserve that old paragraph verbatim as historical, and do not archive any unrelated or still-current claim. Check the complete owner and every relevant peer for competing, duplicate, or partial architecture claims. Does the current paragraph add only caller-supported facts? Reject ambiguity or uncertainty. JSON only.\nSUBJECT: ${subject}\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerClaims.filter((peer) => !peer.startsWith(`${ownerPath}:`)).join("\n\n")}\nEXACT OLD PARAGRAPH:\n${old}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
       });
       state.checkCancellation();
-      console.info("[understory] YuNet correction: independent check finished");
-      if (!check.object.safe) throw new Error("Staged mutation deferred: independent YuNet correction check declined.");
-      const current = await kb.readConcept(ownerPath);
-      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent architecture check declined.");
+      const fresh = await kb.readConcept(ownerPath);
+      if (fresh.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
       state.checkCancellation();
-      await kb.patchConcept(ownerPath, { replaceBody: proposed }, "Staged mutation: supersede YuNet gate baseline", sha256(owner.body), options.signal,
+      await kb.patchConcept(ownerPath, { replaceBody: proposed }, "Staged mutation: supersede project architecture", sha256(owner.body), options.signal,
         (writtenPath) => { changed = [writtenPath]; });
       const readBack = await kb.readConcept(ownerPath);
-      if (readBack.body !== proposed) throw new Error("YuNet correction failed CAS read-back verification.");
-      console.info("[understory] YuNet correction: CAS read-back complete");
+      if (readBack.body !== proposed) throw new Error("Architecture correction failed CAS read-back verification.");
       const summary = `Staged mutation changed ${ownerPath}.`;
       const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
         { providerCalls, generationMs: Date.now() - started });
