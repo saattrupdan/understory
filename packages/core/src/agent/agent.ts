@@ -3255,16 +3255,16 @@ async function runStagedMutation(
           }
           selectedPath = sectionOwners[0].path;
         } else if (!stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd)) {
-          const noAnchor = () => {
+          const noAnchor = (grounding: string): never => {
             const oldHash = stagedContrastedOldHash(raw);
             const peerCopies = oldHash ? evidenceCandidates.filter((candidate) =>
               candidate.path !== selectedPath && candidate.body.includes(oldHash)).length : 0;
-            throw new Error(`Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor (selected=${selectedPath}, contrasted_hash=${!!oldHash}, selected_has_old=${!!oldHash && selected.body.includes(oldHash)}, peer_copies=${peerCopies}).`);
+            throw new Error(`Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor (selected=${selectedPath}, contrasted_hash=${!!oldHash}, selected_has_old=${!!oldHash && selected.body.includes(oldHash)}, peer_copies=${peerCopies}, grounding=${grounding}).`);
           };
           // Only an explicit correction of earlier guidance may use semantic
           // old-claim matching. Metadata ranking and new facts are not anchors.
-          if (options.directAdd || !/\b(?:supersed(?:ed|es|ing)?|correct(?:ed|ion)?\s+(?:the\s+)?(?:earlier|prior|old))\b/i.test(raw)) noAnchor();
-          if (raw.length + selected.body.length + 3_000 > STAGED_MAX_EVIDENCE_CHARS) noAnchor();
+          if (options.directAdd || !/\b(?:supersed(?:ed|es|ing)?|correct(?:ed|ion)?\s+(?:the\s+)?(?:earlier|prior|old))\b/i.test(raw)) noAnchor("no-explicit-old-claim");
+          if (raw.length + selected.body.length + 3_000 > STAGED_MAX_EVIDENCE_CHARS) noAnchor("owner-budget");
           const selection = await generateObject({
             model: resolved.model,
             schema: z.object({ observedOldPassage: z.string(), requestOldClause: z.string(),
@@ -3274,7 +3274,7 @@ async function runStagedMutation(
             prompt: `Read-only old-claim locator; NEVER authorize a write. Quote one COMPLETE, exact, currently active old sentence or bounded paragraph in the owner that the caller explicitly corrects, and quote the exact corresponding old-claim clause from the instruction. An old claim can be paraphrased; a new fact, common project name, historic/quoted assertion or negative example cannot locate an owner. Return empty strings and false status on uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nFULL SELECTED OWNER ${selected.path}:\n${selected.body}`,
           });
           state.checkCancellation();
-          if (selection.finishReason === "length") noAnchor();
+          if (selection.finishReason === "length") noAnchor("locator-output-cap");
           const located = selection.object;
           const passage = located.observedOldPassage.trim();
           const clause = located.requestOldClause.trim();
@@ -3292,11 +3292,17 @@ async function runStagedMutation(
               passage.length < 35 || passage.length > 4_000 || enclosing.length !== 1 ||
               selected.body.split(passage).length !== 2 || clause.length < 12 || clause.length > 2_000 ||
               raw.split(clause).length !== 2 || /^\s*(?:Historical|Quoted|Previously|Formerly)\b/i.test(enclosing[0]) ||
-              (sharedWords.length < 2 && !(hasOldValue && hasSubject))) noAnchor();
+              (sharedWords.length < 2 && !(hasOldValue && hasSubject))) noAnchor(`locator(${[
+                located.sameOldClaim, located.currentlyActive, !located.quotedOrHistorical, !located.negated,
+                passage.length >= 35 && passage.length <= 4_000, enclosing.length === 1,
+                selected.body.split(passage).length === 2, clause.length >= 12 && clause.length <= 2_000,
+                raw.split(clause).length === 2, !/^\s*(?:Historical|Quoted|Previously|Formerly)\b/i.test(enclosing[0] ?? ""),
+                sharedWords.length >= 2, hasOldValue, hasSubject,
+              ].map(Number).join("")})`);
           // Every retained search hit gets its own complete-body peer check.
           // Never truncate a peer or rely on absence of an exact string alone.
           for (const peer of evidenceCandidates.filter((candidate) => candidate.path !== selectedPath)) {
-            if (raw.length + peer.body.length + passage.length + 3_000 > STAGED_MAX_EVIDENCE_CHARS) noAnchor();
+            if (raw.length + peer.body.length + passage.length + 3_000 > STAGED_MAX_EVIDENCE_CHARS) noAnchor("peer-budget");
             const check = await generateObject({
               model: resolved.model,
               schema: z.object({ competingCurrentOrAmbiguous: z.boolean(), certain: z.boolean() }).strict(),
@@ -3304,7 +3310,7 @@ async function runStagedMutation(
               prompt: `Independent read-only competing-owner check. Does this FULL peer body contain the same old policy/status as an active claim, a conflicting current claim, or an ambiguous chronology? A clearly dated historical mention is not current ownership. Return competingCurrentOrAmbiguous=true on uncertainty. JSON only.\nREQUEST:\n${raw}\nOBSERVED OLD CLAIM FROM SELECTED OWNER:\n${passage}\nFULL PEER ${peer.path}:\n${peer.body}`,
             });
             state.checkCancellation();
-            if (check.finishReason === "length" || !check.object.certain || check.object.competingCurrentOrAmbiguous) noAnchor();
+            if (check.finishReason === "length" || !check.object.certain || check.object.competingCurrentOrAmbiguous) noAnchor(`peer(${peer.path},certain=${check.object.certain},conflict=${check.object.competingCurrentOrAmbiguous},capped=${check.finishReason === "length"})`);
           }
         }
       }
