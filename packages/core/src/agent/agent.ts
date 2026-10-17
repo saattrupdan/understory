@@ -1137,7 +1137,17 @@ async function runStagedMutation(
         : oldOwners.length === 0 && historicalOwners.length === 1 ? historicalOwners[0] : undefined;
       if (!ownerPath || !siblings.includes(ownerPath) ||
           (options.ownerHint && options.ownerHint !== ownerPath)) {
-        throw new Error(`Staged mutation deferred: FS change-report owner is absent, duplicated, or conflicts with hint (old=${oldOwners.length}, historical=${historicalOwners.length}, near=${nearOwners.join(",").slice(0, 300)}, sibling=${!!ownerPath && siblings.includes(ownerPath)}).`);
+        const near = [...new Set(nearOwners)].map((path) => {
+          const paragraphs = observed.get(path)?.body.split(/\n\s*\n/) ?? [];
+          const candidate = paragraphs.find((part) => part.includes("459 photo-ID mentions") &&
+            part.includes("Ændringer i baselinen fra 2026-10-14")) ?? "";
+          const actual = normalizeReport(candidate);
+          const expected = normalizeReport(old);
+          let diff = 0;
+          while (diff < Math.min(actual.length, expected.length) && actual[diff] === expected[diff]) diff++;
+          return `${path}:len=${actual.length},expected=${expected.length},diff=${diff},includes=${candidate.includes(old)},prefix=${candidate.startsWith(old.slice(0, 85))}`;
+        }).join(";").slice(0, 400);
+        throw new Error(`Staged mutation deferred: FS change-report owner is absent, duplicated, or conflicts with hint (old=${oldOwners.length}, historical=${historicalOwners.length}, near=${near}, sibling=${!!ownerPath && siblings.includes(ownerPath)}).`);
       }
       const owner = observed.get(ownerPath)!;
       const peerEvidence: string[] = [];
