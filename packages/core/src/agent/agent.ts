@@ -3169,18 +3169,46 @@ async function runStagedMutation(
           }
           completeCandidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
         }
-        const fullEvidence = JSON.stringify(completeCandidates);
-        if (fullEvidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
-          throw new Error("Staged mutation deferred: complete candidate evidence exceeds prompt budget.");
+        // Retry on complete evidence. If the aggregate is too large, partition
+        // into bounded batches without splitting bodies; every candidate must
+        // be considered and any two positive owners make the result ambiguous.
+        const batches: typeof completeCandidates[] = [];
+        let batch: typeof completeCandidates = [];
+        let batchSize = raw.length;
+        for (const candidate of completeCandidates) {
+          const candidateSize = JSON.stringify(candidate).length;
+          if (candidate.body.length > STAGED_MAX_OWNER_CHARS || candidateSize + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
+            throw new Error("Staged mutation deferred: complete candidate exceeds evidence limit.");
+          }
+          if (batch.length && batchSize + candidateSize > STAGED_MAX_EVIDENCE_CHARS) {
+            batches.push(batch);
+            batch = [];
+            batchSize = raw.length;
+          }
+          batch.push(candidate);
+          batchSize += candidateSize;
         }
-        const fallback = await generateObject({
-          model: selector.model,
-          schema: z.object({ path: z.string() }).strict(),
-          temperature: 0,
-          abortSignal: options.signal,
-          prompt: `Read-only owner selection using complete evidence. Select a path only when one concept positively owns the instruction's primary subject/topic. Treat quoted examples and incidental mentions of other projects/repos as context, not ownership. Compare every candidate; return an empty path if ownership is ambiguous or unsupported. Never use candidate order as a tie-break. This choice does not authorize a write. JSON only.\\nINSTRUCTION:\\n${raw}\\nCOMPLETE CANDIDATES (title, type, and full body):\\n${fullEvidence}`,
-        });
-        selectedHit = hits.find((hit) => hit.path === fallback.object.path);
+        if (batch.length) batches.push(batch);
+        const positivePaths: string[] = [];
+        for (const candidateBatch of batches) {
+          const fullEvidence = JSON.stringify(candidateBatch);
+          const fallback = await generateObject({
+            model: selector.model,
+            schema: z.object({ path: z.string() }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Read-only owner selection using complete evidence. Select a path only when one concept positively owns the instruction's primary subject/topic. Treat quoted examples and incidental mentions of other projects/repos as context, not ownership. Return an empty path when none positively fit or ownership is ambiguous. Never use candidate order as a tie-break. This choice does not authorize a write. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE CANDIDATES (title, type, and full body):\n${fullEvidence}`,
+          });
+          const path = fallback.object.path;
+          if (path && !candidateBatch.some((candidate) => candidate.path === path)) {
+            throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
+          }
+          if (path) positivePaths.push(path);
+          if (positivePaths.length > 1) {
+            throw new Error("Staged mutation deferred: candidate owner selection is ambiguous.");
+          }
+        }
+        selectedHit = hits.find((hit) => hit.path === positivePaths[0]);
         if (!selectedHit) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
         fallbackCandidates = completeCandidates;
       }

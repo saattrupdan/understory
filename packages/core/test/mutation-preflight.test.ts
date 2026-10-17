@@ -2812,7 +2812,7 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(playbook)).body).not.toContain(fact);
   });
 
-  it("chooses a relevant owner when the metadata selector abstains on an equal fit", async () => {
+  it("fails closed when complete-evidence batches identify multiple plausible owners", async () => {
     staged();
     const api = "/apis/billing-api.md";
     const playbook = "/playbooks/oncall-billing.md";
@@ -2824,11 +2824,11 @@ describe("mutation owner preflight", () => {
     })));
     const fact = "Billing logs request IDs for charges created by support tooling.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
-      .mockResolvedValueOnce({ object: { safe: true } });
-    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
-      ok: true, result: { filesChanged: [api] },
-    });
-    expect((await kb.readConcept(api)).body).toContain(fact);
+      .mockResolvedValueOnce({ object: { path: api } })
+      .mockResolvedValueOnce({ object: { path: playbook } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(api)).body).not.toContain(fact);
     expect((await kb.readConcept(playbook)).body).not.toContain(fact);
   });
 
@@ -2837,16 +2837,17 @@ describe("mutation owner preflight", () => {
     const owner = "/notes/queue-recovery-operations.md";
     const incidental = "/projects/failed-queue-demo.md";
     await kb.writeConcept(owner, { type: "Note", title: "Queue Recovery Operations" },
-      "Queue recovery operational procedure. ".repeat(2_300), "seed");
+      "Queue recovery operational procedure. ".repeat(1_500), "seed");
     await kb.writeConcept(incidental, { type: "Project", title: "Failed Queue Demo" },
-      "A demo repository mentioned in examples. ".repeat(2_300), "seed");
+      "A demo repository mentioned in examples. ".repeat(1_500), "seed");
     vi.spyOn(kb, "search").mockResolvedValue([owner, incidental].map((conceptPath) => ({
       path: conceptPath, type: "Note", title: conceptPath === owner ? "Queue Recovery Operations" : "Failed Queue Demo",
       score: 10, confidenceQualified: false,
     })));
-    const fact = 'Queue Recovery Operations: retry transient deliveries. The quoted example repository "Failed Queue Demo" is incidental.';
+    const fact = 'Queue Recovery Operations: retry transient deliveries. The request is not about the quoted example repository "Failed Queue Demo".';
     generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
       .mockResolvedValueOnce({ object: { path: owner } })
+      .mockResolvedValueOnce({ object: { path: "" } })
       .mockResolvedValueOnce({ object: { safe: true } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
       ok: true, result: { filesChanged: [owner] },
@@ -2855,7 +2856,7 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body).toContain(fact);
     expect((await kb.readConcept(incidental)).body).not.toContain(fact);
 
-    const competingFact = 'Queue Recovery Operations: retry transient deliveries. The quoted example repository "Failed Queue Demo" is incidental.';
+    const competingFact = 'Queue Recovery Operations: retry transient deliveries. The request is not about the quoted example repository "Failed Queue Demo".';
     generateObjectMock.mockResolvedValueOnce({ object: { path: "/projects/failed-queue-demo.md" } })
       .mockResolvedValueOnce({ object: { safe: true } });
     // A claimed competing owner cannot override the explicitly named primary subject.
