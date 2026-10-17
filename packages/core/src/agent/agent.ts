@@ -1053,12 +1053,6 @@ function stagedDiscriminativeOwnerAnchor(
   // request must not authorize a different concept.
   const oldClaims = [
     input.match(/\breplace\s+(?:the\s+)?(?:exact\s+)?(?:phrase|text|claim)?\s*`([^`]{12,2000})`\s+with\b/i)?.[1],
-    // Supersession may be described without imperative "replace X with Y"
-    // wording. Require a complete, sufficiently long verbatim quotation.
-    ...(/\b(?:supersed(?:ed|es)|obsolete|no longer current|outdated)\b/i.test(input) &&
-      !/\b(?:not|never|isn't|wasn't)\s+(?:explicitly\s+)?(?:superseded|obsolete|outdated)\b/i.test(input)
-      ? [...input.matchAll(/[“”\"]([^“”\"]{30,2000})[“”\"]/g)].map((match) => match[1])
-      : []),
     input.match(/\breplace\s+([\p{L}\p{N}][\p{L}\p{N}_-]*\d[\p{L}\p{N}_-]*)\s+with\b/iu)?.[1],
     // Workbook/content hashes are common correction operands but are not
     // identifier-shaped like domain IDs (e.g. godkendt_id2).
@@ -1079,17 +1073,7 @@ function stagedDiscriminativeOwnerAnchor(
     const itemIds = input.match(/\b[\p{L}][\p{L}\p{N}]*_[\p{L}\p{N}_]*\d+[\p{L}\p{N}_]*\b/gu) ?? [];
     return itemIds.some(positivelyPresent);
   }
-  return oldClaims.some((claim) => {
-    if (!positivelyPresent(claim)) return false;
-    // Artifact recovery needs independent identity and payload anchors in the
-    // same observed passage, not merely a matching page title or search rank.
-    if (/\b(?:artifact|page|snapshot|restore|recovery|recover)\b/i.test(input)) {
-      const pageIdentity = /\b(?:page\s*(?:id|identity)|page\s*#|stable\s+page|page\s+[\p{L}\p{N}_-]+)\b/i.test(claim);
-      const independentAnchor = /\b(?:sha(?:-?256)?|fingerprint|content\s+hash|storage\s+key|queue\s+(?:id|key|entry))\b/i.test(claim);
-      if (!pageIdentity || !independentAnchor) return false;
-    }
-    return true;
-  });
+  return oldClaims.some(positivelyPresent);
 }
 
 /** Knowledge add/update — full toolset, low temperature. */

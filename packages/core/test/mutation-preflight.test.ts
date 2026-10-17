@@ -2964,32 +2964,6 @@ describe("mutation owner preflight", () => {
       expect((await kb.readConcept(owner)).body).toBe(`${ownerBody}\n`);
     });
 
-  it("anchors an explicitly superseded paraphrase to one complete observed passage", async () => {
-    staged();
-    const owner = "/projects/harbor-workflow.md";
-    const old = "Harbor workflow policy: every export used a fixed replay token, including ordinary production runs.";
-    const body = `${old}\n\nArchived comparison results remain historical.`;
-    await kb.writeConcept(owner, { type: "Project", title: "Workflow Notes" }, body, "seed");
-    vi.spyOn(kb, "search").mockResolvedValue([{
-      path: owner, type: "Project", title: "Workflow Notes", score: 10, confidenceQualified: false,
-    }]);
-    const instruction = `Update Harbor workflow policy: the old instruction “${old}” is superseded; ordinary exports now use fresh entropy.`;
-    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
-      if (prompt.includes("CANDIDATE METADATA")) return { object: { path: owner } };
-      return { object: { ...baseProposal, action: "defer", reason: "grounded passage accepted" } };
-    });
-    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("grounded passage accepted") });
-    expect(generateObjectMock).toHaveBeenCalledTimes(2);
-
-    generateObjectMock.mockReset();
-    const duplicate = `${body}\n\nCopied passage: ${old}`;
-    await kb.writeConcept(owner, { type: "Project", title: "Workflow Notes" }, duplicate, "seed");
-    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
-      .toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).not.toHaveBeenCalled();
-  });
-
   it("does not accept a hash-only replacement for a requested current-cell clearing", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering.md";
