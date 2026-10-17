@@ -5216,6 +5216,24 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
+  it("derives renamed report identity, date, counts, and facts from the caller", async () => {
+    staged();
+    const owner = "/projects/cedar-inspection-continuation.md";
+    const old = "The Cedar Inspection 2027-02-03 baseline report at ~/archive/cedar/baselines/2027-02-03/changes.md used title 'Cedar full inventory'. It preserved 18 sample IDs and all 7 approved mappings, including unchanged categories.";
+    const instruction = "Update Cedar Inspection 2027-02-03 baseline change-report knowledge: Record the changes-only report at ~/archive/cedar/baselines/2027-02-03/changes.md with title 'Cedar changes from February 1 to February 3'. It covers 3 changed mappings and 2 category updates, excluding unchanged entries. Supersede any statement that the CURRENT report preserves 18 sample IDs or all 7 approved mappings. The report is focused strictly on changes from the previous baseline.";
+    await kb.writeConcept(owner, { type: "Project Continuation", title: "Cedar Inspection" }, old, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(`Earlier non-focused report version (superseded by changes-only edition): ${old}`);
+    expect(body).toContain("Current Cedar Inspection 2027-02-03 changes-only baseline report:");
+    expect(body).toContain("3 changed mappings and 2 category updates");
+    expect(body).not.toContain("Current FS");
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+  });
+
   it("uses the observed old paragraph when its Markdown whitespace is reflowed", async () => {
     staged();
     const reflowed = fsChangesOld.replace("All 459 photo-ID mentions,", "All 459 photo-ID\nmentions,");
@@ -5299,7 +5317,7 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" }, fsChangesOld, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
     expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS change-report check declined") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent change-report check declined") });
     expect((await kb.readConcept(fsChangesOwner)).body).toContain(fsChangesOld);
   });
 
