@@ -22,6 +22,7 @@ vi.mock("../src/providers/index.js", async () => ({
   })),
 }));
 
+import { NoObjectGeneratedError } from "ai";
 import { runMutation } from "../src/agent/agent.js";
 import { createModel } from "../src/providers/index.js";
 import { KnowledgeBase } from "../src/okf/index.js";
@@ -4862,6 +4863,95 @@ describe("mutation owner preflight", () => {
       .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("replacement introduces facts absent") });
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
     expect((await kb.readConcept(owner)).body.trim()).toBe(oldText);
+  });
+
+  const euroevalSubmittedInstruction = "Update EuroEval PR #2234 review status: review ID 5518245608 by saattrupdan, previously PENDING, was submitted on 14 Oct 2026 with state CHANGES_REQUESTED. It contains four inline comments: two substantive findings on multilingual ranking refresh and invalid-marker display, plus Dan's two readability/style comments in task_metadata.py and invalid_results.py. No longer describe it as unsubmitted.";
+  const euroevalOldReview = "On 14 Oct 2026 Dan's GitHub account saattrupdan created unsubmitted PENDING review 5518245608 on head 0f255b1278c47a2051d348cd222ed0f2f862bdce with two inline comments: (1) leaderboard_generation.py:252 compares only overall ranked membership, so a per-language rank change for an overall-unranked model leaves multilingual CSVs stale on non-force runs; (2) leaderboard_generation.py:841 appends '(invalid)' to orthogonal percentage scores but LeaderboardTable.vue percent formatter and scatter tooltip drop the suffix (and interval). Comment IDs 4271055779 and 4271055802. Review was intentionally NOT submitted.";
+
+  it("confirms submitted EuroEval review without rewriting final PR status or unrelated review history", async () => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    const other = "On 15 Oct PR #2234 was squash-merged as commit ac33731f88806b1a45593c83dbfd473f1cc877fa.";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval" },
+      `Prior EuroEval review #5510000000 remains historical.\n\n${euroevalOldReview}\n\n${other}`, "seed");
+    await kb.writeConcept("/repos/euroeval-followup.md", { type: "Repository", title: "EuroEval followup" },
+      "Separate PR #2234 review discussions are historical.", "seed");
+    generateObjectMock.mockRejectedValueOnce(new NoObjectGeneratedError({
+      message: "No object generated: could not parse the response.", response: {} as never,
+      usage: {} as never, finishReason: "stop", text: "invalid JSON",
+    })).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(euroevalOldReview);
+      expect(prompt).toContain(other);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).not.toContain("unsubmitted PENDING review 5518245608");
+    expect(body).not.toContain("Review was intentionally NOT submitted.");
+    expect(body).toContain("review 5518245608 on head 0f255b1278c47a2051d348cd222ed0f2f862bdce with state CHANGES_REQUESTED and four inline comments");
+    expect(body).toContain("4271055779 and 4271055802");
+    expect(body).toContain("a readability/style comment in task_metadata.py");
+    expect(body).toContain("a readability/style comment in invalid_results.py");
+    expect(body).toContain(other);
+    expect(body).toContain("Prior EuroEval review #5510000000 remains historical.");
+    expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("defers EuroEval review correction for a competing owner or declined independent review", async () => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    const peer = "/projects/euroeval-review.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval" }, euroevalOldReview, "seed");
+    await kb.writeConcept(peer, { type: "Project", title: "EuroEval review" },
+      "Review 5518245608 is still PENDING.", "seed");
+    expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing owner") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+    await kb.writeConcept(peer, { type: "Project", title: "EuroEval review" }, "Other PR history.", "replace");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent check declined") });
+    expect((await kb.readConcept(owner)).body).toContain(euroevalOldReview);
+  });
+
+  it("finds a competing PR review claim even without the review ID", async () => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    const peer = "/users/dan-review-note.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval" }, euroevalOldReview, "seed");
+    await kb.writeConcept(peer, { type: "Person", title: "Dan review note" },
+      "Dan's review on EuroEval PR #2234 is still PENDING and unsubmitted.", "seed");
+    expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing owner") });
+    expect((await kb.readConcept(owner)).body).toContain(euroevalOldReview);
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("does not claim a corrected review is complete while another old assertion remains", async () => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval" },
+      `${euroevalOldReview}\n\nDan's review 5518245608 remains PENDING on PR #2234.`, "seed");
+    expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("another stale owner passage") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("does not retry malformed JSON when the generation hit its output cap", async () => {
+    staged();
+    const owner = "/repos/euroeval.md";
+    await kb.writeConcept(owner, { type: "Repository", title: "EuroEval" }, euroevalOldReview, "seed");
+    generateObjectMock.mockRejectedValueOnce(new NoObjectGeneratedError({
+      message: "No object generated: could not parse the response.", response: {} as never,
+      usage: {} as never, finishReason: "length", text: "incomplete JSON",
+    }));
+    expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("output cap") });
+    expect((await kb.readConcept(owner)).body).toContain(euroevalOldReview);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
   const confirmedDeployInstruction = "For saattrupdan.com deployment knowledge, correct the prior provisional state: makefile deploy target removal and AGENTS.md Git-deployment guidance were committed as e7159f328f1d54bf6c789b625429b1591e264381 and pushed to origin/main on 2026-10-14. Vercel Git-triggered production deployment dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8 from that exact SHA reached READY, GitHub Vercel status success, and www.saattrupdan.com aliases the new deployment. Working tree clean.";
