@@ -3129,6 +3129,7 @@ async function runStagedMutation(
     const selectionBudget = focused.length && !sectionOwnerPath ? 24_000 : STAGED_MAX_EVIDENCE_CHARS;
     let selectedPath: string | undefined;
     let verifiedMetadataOwner = false;
+    let historicalProvenanceOwner: string | undefined;
     let fallbackCandidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> | undefined;
     if (evidence.length + raw.length > selectionBudget && candidates.length <= 1) {
       throw new Error("Staged mutation deferred: evidence exceeds prompt budget.");
@@ -3270,9 +3271,9 @@ async function runStagedMutation(
             model: resolved.model,
             schema: z.object({ observedOldPassage: z.string(), requestOldClause: z.string(),
               sameOldClaim: z.boolean(), currentlyActive: z.boolean(), quotedOrHistorical: z.boolean(),
-              negated: z.boolean() }).strict(),
+              historicalProvenance: z.boolean(), negated: z.boolean() }).strict(),
             temperature: 0, abortSignal: options.signal,
-            prompt: `Read-only old-claim locator; NEVER authorize a write. Quote one COMPLETE, exact, currently active old sentence or bounded paragraph in the owner that the caller explicitly corrects, and quote the exact corresponding old-claim clause from the instruction. If the superseded advice names an old numeric value or identifier, the observed passage MUST contain that SAME old value or identifier; do not select a related sentence that omits it. Include the full old-claim clause, not just a convenient phrase. An old claim can be paraphrased; a new fact, common project name, historic/quoted assertion or negative example cannot locate an owner. Return empty strings and false status on uncertainty. JSON only.\nEXPLICIT SUPERSEDED ADVICE (not evidence by itself):\n${oldContext}\nINSTRUCTION:\n${raw}\nFULL SELECTED OWNER ${selected.path}:\n${selected.body}`,
+            prompt: `Read-only old-claim locator; NEVER authorize a write. Quote one COMPLETE, exact, currently active old sentence or bounded paragraph in the owner that the caller explicitly corrects, and quote the exact corresponding old-claim clause from the instruction. If the superseded advice names an old numeric value or identifier, the observed passage MUST contain that SAME old value or identifier; do not select a related sentence that omits it. Include the full old-claim clause, not just a convenient phrase. An old claim can be paraphrased. A genuine dated earlier policy/provenance may locate its own owner for a NEW dated follow-up, but must be reported as currentlyActive=false, quotedOrHistorical=true, historicalProvenance=true. A copied quote, hypothetical, new fact, or common project name is NOT historical provenance and cannot locate an owner. Return empty strings and false status on uncertainty. JSON only.\nEXPLICIT SUPERSEDED ADVICE (not evidence by itself):\n${oldContext}\nINSTRUCTION:\n${raw}\nFULL SELECTED OWNER ${selected.path}:\n${selected.body}`,
           });
           state.checkCancellation();
           if (selection.finishReason === "length") noAnchor("locator-output-cap");
@@ -3289,17 +3290,31 @@ async function runStagedMutation(
           const hasOldValue = oldIdentifiers.some((value) => passage.includes(value));
           const hasSubject = stagedWords(raw).some((word) => word.length >= 5 && passageWords.has(word) &&
             !["earlier", "current", "previous", "update", "correct", "supersede"].includes(word));
-          if (!located.sameOldClaim || !located.currentlyActive || located.quotedOrHistorical || located.negated ||
+          const pastPolicy = !located.currentlyActive && located.quotedOrHistorical && located.historicalProvenance;
+          const activePolicy = located.currentlyActive && !located.quotedOrHistorical && !located.historicalProvenance;
+          if (!located.sameOldClaim || !(activePolicy || pastPolicy) || located.negated ||
               passage.length < 35 || passage.length > 4_000 || enclosing.length !== 1 ||
               selected.body.split(passage).length !== 2 || clause.length < 12 || clause.length > 2_000 ||
-              raw.split(clause).length !== 2 || /^\s*(?:Historical|Quoted|Previously|Formerly)\b/i.test(enclosing[0]) ||
+              raw.split(clause).length !== 2 ||
+              (activePolicy && /^\s*(?:Historical|Quoted|Previously|Formerly)\b/i.test(enclosing[0])) ||
               (sharedWords.length < 2 && !(hasOldValue && hasSubject))) noAnchor(`locator(${[
-                located.sameOldClaim, located.currentlyActive, !located.quotedOrHistorical, !located.negated,
-                passage.length >= 35 && passage.length <= 4_000, enclosing.length === 1,
+                located.sameOldClaim, located.currentlyActive, !located.quotedOrHistorical, located.historicalProvenance,
+                !located.negated, passage.length >= 35 && passage.length <= 4_000, enclosing.length === 1,
                 selected.body.split(passage).length === 2, clause.length >= 12 && clause.length <= 2_000,
-                raw.split(clause).length === 2, !/^\s*(?:Historical|Quoted|Previously|Formerly)\b/i.test(enclosing[0] ?? ""),
-                sharedWords.length >= 2, hasOldValue, hasSubject,
+                raw.split(clause).length === 2, sharedWords.length >= 2, hasOldValue, hasSubject,
               ].map(Number).join("")})`);
+          if (pastPolicy) {
+            const pastCheck = await generateObject({
+              model: resolved.model,
+              schema: z.object({ authenticPastPolicy: z.boolean(), noCurrentContradiction: z.boolean(), certain: z.boolean() }).strict(),
+              temperature: 0, abortSignal: options.signal,
+              prompt: `Independent read-only provenance check. Is the observed exact passage a REAL earlier policy or pending decision in this owner's dated account (not a quoted instruction, hypothetical, negative example, or another entity's claim)? Is the requested follow-up a later decision about the SAME scoped corpus/item, with no existing CURRENT assertion in the full owner contradicting it? Do not say an old conditional warning is false when its condition has since been satisfied. If uncertain, return false. This check never authorizes a write or changes history. JSON only.\nINSTRUCTION:\n${raw}\nOLD PASSAGE:\n${passage}\nFULL OWNER ${selected.path}:\n${selected.body}`,
+            });
+            state.checkCancellation();
+            if (pastCheck.finishReason === "length" || !pastCheck.object.certain ||
+                !pastCheck.object.authenticPastPolicy || !pastCheck.object.noCurrentContradiction) noAnchor("historical-provenance-veto");
+            historicalProvenanceOwner = selected.path;
+          }
           // Every retained search hit gets its own complete-body peer check.
           // Never truncate a peer or rely on absence of an exact string alone.
           for (const peer of evidenceCandidates.filter((candidate) => candidate.path !== selectedPath)) {
@@ -3308,7 +3323,7 @@ async function runStagedMutation(
               model: resolved.model,
               schema: z.object({ competingCurrentOrAmbiguous: z.boolean(), certain: z.boolean() }).strict(),
               temperature: 0, abortSignal: options.signal,
-              prompt: `Independent read-only competing-owner check. Does this FULL peer body contain the same old policy/status as an active claim, a conflicting current claim, or an ambiguous chronology? A clearly dated historical mention is not current ownership. Return competingCurrentOrAmbiguous=true on uncertainty. JSON only.\nREQUEST:\n${raw}\nOBSERVED OLD CLAIM FROM SELECTED OWNER:\n${passage}\nFULL PEER ${peer.path}:\n${peer.body}`,
+              prompt: `Independent read-only competing-owner check. Does this FULL peer body contain the same old policy/status as an active claim, ALREADY own the requested new fact, contradict that new fact, or present ambiguous chronology/ownership? A clearly dated historical mention alone is not current ownership. Return competingCurrentOrAmbiguous=true on uncertainty. JSON only.\nREQUEST:\n${raw}\nOBSERVED OLD CLAIM FROM SELECTED OWNER:\n${passage}\nFULL PEER ${peer.path}:\n${peer.body}`,
             });
             state.checkCancellation();
             if (check.finishReason === "length" || !check.object.certain || check.object.competingCurrentOrAmbiguous) noAnchor(`peer(${peer.path},certain=${check.object.certain},conflict=${check.object.competingCurrentOrAmbiguous},capped=${check.finishReason === "length"})`);
@@ -3866,12 +3881,12 @@ async function runStagedMutation(
       schema: proposalSchema,
       temperature: 0,
       abortSignal: options.signal,
-      prompt: `Propose exactly one safe knowledge-base mutation from this instruction and complete observed candidate evidence. Fill EVERY JSON field: unused strings must be empty and unused frontmatter must have empty type/title/description. For replace, supply candidate path, an exact old_text substring, and new_text that removes the old claim. For append, supply candidate path and the complete new fact in new_text only if genuinely non-conflicting. For create, supply a new path, nonempty body and frontmatter type/title/description; never create a duplicate owner or an unrelated backlink. For noop, quote a nonempty exact substring of an observed body in claim that establishes the requested knowledge. Otherwise defer and explain why. Never invent evidence. A suggested path is not proof of ownership; defer if it does not fit.\nINSTRUCTION:\n${raw}\nSUGGESTED EXISTING OWNER:\n${options.ownerHint ?? "none"}\nCANDIDATES:\n${evidence}`,
+      prompt: `Propose exactly one safe knowledge-base mutation from this instruction and complete observed candidate evidence. Fill EVERY JSON field: unused strings must be empty and unused frontmatter must have empty type/title/description. For replace, supply candidate path, an exact old_text substring, and new_text that removes the old claim. For append, supply candidate path and the complete new fact in new_text only if genuinely non-conflicting. For create, supply a new path, nonempty body and frontmatter type/title/description; never create a duplicate owner or an unrelated backlink. For noop, quote a nonempty exact substring of an observed body in claim that establishes the requested knowledge. Otherwise defer and explain why. Never invent evidence. A suggested path is not proof of ownership; defer if it does not fit. ${historicalProvenanceOwner ? `The old policy in ${historicalProvenanceOwner} is genuine dated history, not an active false claim. Preserve it verbatim; only APPEND a complete, supported later policy to that owner if safe. Never replace or erase the old passage.` : ""}\nINSTRUCTION:\n${raw}\nSUGGESTED EXISTING OWNER:\n${options.ownerHint ?? "none"}\nCANDIDATES:\n${evidence}`,
     });
     state.checkCancellation();
     const p = proposal.object;
     let repairedCorrection = false;
-    if (correction && (p.action === "append" || p.action === "create")) {
+    if (correction && (p.action === "create" || (p.action === "append" && p.path !== historicalProvenanceOwner))) {
       // Appending or creating a correction leaves the contradicted old assertion in place.
       // Try one exact, local replacement instead; the ordinary replacement
       // branch below still enforces support, independent review and CAS.
@@ -3890,6 +3905,9 @@ async function runStagedMutation(
       p.new_text = repair.object.new_text;
     }
     if (p.action === "defer") throw new Error(`Staged mutation deferred: ${p.reason || "proposal is not safely actionable"}`);
+    if (historicalProvenanceOwner && p.action === "replace") {
+      throw new Error("Staged mutation deferred: dated historical provenance must not be replaced.");
+    }
     if (p.action === "noop") {
       const claim = p.claim.trim();
       const requestedClaim = raw.trim().replace(/^(?:remember|record|persist)\s+(?:that\s+)?/i, "").trim();
@@ -3912,8 +3930,8 @@ async function runStagedMutation(
       const target = candidates.find((c) => c.path === p.path);
       const title = target?.frontmatter.title;
       const titleNegated = !!title && raw.toLowerCase().includes(title.toLowerCase()) && !stagedTitleMention(raw, title);
-      if (!target || !title || titleNegated ||
-          !(stagedTitleMention(raw, title) || hintedPath === target.path || stagedOwnerAnchor(raw, target.path)) || correction ||
+      if (!target || !title || titleNegated ||           !(stagedTitleMention(raw, title) || hintedPath === target.path || stagedOwnerAnchor(raw, target.path) ||
+             historicalProvenanceOwner === target.path) || (correction && historicalProvenanceOwner !== target.path) ||
           p.new_text.length < 20 || p.new_text.length > 4_000 ||
           stagedOverlap(p.new_text, raw) < 0.8 || stagedOverlap(raw, p.new_text) < 0.6 ||
           target.body.toLowerCase().includes(p.new_text.trim().toLowerCase())) {

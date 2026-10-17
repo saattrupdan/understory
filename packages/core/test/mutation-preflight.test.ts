@@ -2980,7 +2980,8 @@ describe("mutation owner preflight", () => {
       if (prompt.includes("Read-only old-claim locator")) return { object: {
         observedOldPassage: old,
         requestOldClause: "infer unknown labels from nearby context",
-        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false, negated: false,
+        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false,
+        historicalProvenance: false, negated: false,
       } };
       if (prompt.includes("Independent read-only competing-owner check")) return { object: { competingCurrentOrAmbiguous: false, certain: true } };
       if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
@@ -3017,7 +3018,8 @@ describe("mutation owner preflight", () => {
       if (prompt.includes("CANDIDATE METADATA:")) return { object: { path: owner } };
       if (prompt.includes("Read-only old-claim locator")) return { object: {
         observedOldPassage: old, requestOldClause: "require manual annotation",
-        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false, negated: false,
+        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false,
+        historicalProvenance: false, negated: false,
       } };
       if (prompt.includes("Independent read-only competing-owner check")) return { object: { competingCurrentOrAmbiguous: false, certain: true } };
       if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
@@ -3051,7 +3053,8 @@ describe("mutation owner preflight", () => {
       if (prompt.includes("CANDIDATE METADATA:")) return { object: { path: owner } };
       if (prompt.includes("Read-only old-claim locator")) return { object: {
         observedOldPassage: old, requestOldClause: "infer unknown labels from nearby context",
-        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false, negated: false,
+        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false,
+        historicalProvenance: false, negated: false,
       } };
       if (prompt.includes("Independent read-only competing-owner check")) {
         expect(prompt).toContain(`Historical advice (superseded): ${old}`);
@@ -3070,6 +3073,46 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(peer)).body).toContain(`Historical advice (superseded): ${old}`);
   });
 
+  it("adds a dated follow-up beside genuine earlier policy without rewriting history", async () => {
+    staged();
+    const owner = "/notes/continuation.md";
+    const peer = "/notes/other-history.md";
+    const old = "Unknown -1 labels must remain unknown until a reviewer manually annotates them.";
+    const instruction = "Correct the current unknown-label guidance: supersedes earlier advice to keep -1 or require manual annotation; owner policy now converts -1 to false 0 for this reviewed corpus. Keep the earlier guidance as historical provenance.";
+    await kb.writeConcept(owner, { type: "Note", title: "Policy Continuation" },
+      `Earlier review policy (dated): ${old} ${"Additional neutral guidance. ".repeat(1_900)}`, "seed");
+    await kb.writeConcept(peer, { type: "Note", title: "Other History" },
+      `Unrelated archive. ${"Additional unrelated notes. ".repeat(1_900)}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((path) => ({
+      path, type: "Note", title: path === owner ? "Policy Continuation" : "Other History",
+      score: 10, confidenceQualified: false,
+    })));
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("CANDIDATE METADATA:")) return { object: { path: owner } };
+      if (prompt.includes("Read-only old-claim locator")) return { object: {
+        observedOldPassage: old, requestOldClause: "require manual annotation",
+        sameOldClaim: true, currentlyActive: false, quotedOrHistorical: true,
+        historicalProvenance: true, negated: false,
+      } };
+      if (prompt.includes("Independent read-only provenance check")) return { object: {
+        authenticPastPolicy: true, noCurrentContradiction: true, certain: true,
+      } };
+      if (prompt.includes("Independent read-only competing-owner check")) return { object: { competingCurrentOrAmbiguous: false, certain: true } };
+      if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
+        ...baseProposal, action: "append", path: owner,
+        new_text: "Current unknown-label guidance: owner policy now converts -1 to false 0 for this reviewed corpus. Keep the earlier guidance as historical provenance.",
+      } };
+      if (prompt.includes("Independent safety check.")) return { object: { safe: true, reason: "Later policy is supported and history remains." } };
+      throw new Error(`Unexpected mutation check: ${prompt.slice(0, 100)}`);
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(`Earlier review policy (dated): ${old}`);
+    expect(body).toContain("Current unknown-label guidance: owner policy now converts -1 to false 0");
+    expect((await kb.readConcept(peer)).body).not.toContain("Current unknown-label guidance");
+  });
+
   it.each(["duplicate", "unrelated"])("does not write when metadata old-passage selection is %s", async (mode) => {
     staged();
     const owner = "/notes/continuation.md";
@@ -3086,7 +3129,8 @@ describe("mutation owner preflight", () => {
       if (prompt.includes("CANDIDATE METADATA:")) return { object: { path: owner } };
       if (prompt.includes("Read-only old-claim locator")) return { object: {
         observedOldPassage: old, requestOldClause: "infer unknown labels from nearby context",
-        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false, negated: false,
+        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false,
+        historicalProvenance: false, negated: false,
       } };
       if (prompt.includes("Independent read-only competing-owner check")) return { object: {
         competingCurrentOrAmbiguous: true, certain: true,
