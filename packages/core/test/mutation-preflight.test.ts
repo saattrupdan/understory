@@ -83,6 +83,69 @@ describe("mutation owner preflight", () => {
     frontmatter: { type: "", title: "", description: "" }, claim: "", reason: "",
   };
 
+  const yuNetOwner = "/projects/fs-fotovalidering/auto-crop-investigation.md";
+  const yuNetOld = "FS Fotovalidering YuNet face gate (feat/yunet-face-gate, Oct 2026): /preprocess screens NSFW. /validate checks 0.90. The old cache uses rendered crop JPEG digest.";
+  const yuNetInstruction = "Update FS Fotovalidering YuNet face gate architecture (feat/yunet-face-gate, Oct 2026): Upload selection calls /content-screen at 0.90. Cache by original exact bytes and model revision/SHA. Camera /preprocess must NOT fall back to local crop. Tests: 2 backend passed, 3 frontend passed.";
+
+  it("supersedes only the uniquely owned YuNet baseline and verifies a repeat as a no-op", async () => {
+    staged();
+    const unrelated = "Keep this independent project observation unchanged.";
+    await kb.writeConcept(yuNetOwner, { type: "Project", title: "Crop research" },
+      `${unrelated}\n\n${yuNetOld}\n\nAnother independent observation.`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(yuNetOld);
+      expect(prompt).toContain(yuNetInstruction);
+      expect(prompt.length).toBeLessThan(3_000);
+      expect(prompt).not.toContain(unrelated);
+      return { object: { safe: true }, finishReason: "stop" };
+    });
+    const first = await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction });
+    expect(first).toMatchObject({ ok: true, result: { filesChanged: [yuNetOwner] } });
+    const body = (await kb.readConcept(yuNetOwner)).body;
+    expect(body).toContain(unrelated);
+    expect(body).toContain("Historical YuNet face gate baseline (superseded 13 Oct 2026; not current guidance):");
+    expect(body).toContain(yuNetOld);
+    expect(body).toContain("original exact bytes and model revision/SHA");
+    expect(await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("defers YuNet corrections with duplicate owners, missing anchors, or an existing partial update", async () => {
+    staged();
+    await kb.writeConcept(yuNetOwner, { type: "Project", title: "Crop research" }, yuNetOld, "seed");
+    const peer = "/projects/fs-fotovalidering-continuation-aaaabbbb.md";
+    await kb.writeConcept(peer, { type: "Project", title: "Other research" }, yuNetOld, "seed");
+    expect(await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    await kb.writeConcept(peer, { type: "Project", title: "Other research" }, "Unrelated facts.", "replace");
+    await kb.writeConcept(yuNetOwner, { type: "Project", title: "Crop research" },
+      yuNetOld.replace("rendered crop JPEG digest", "some other key"), "replace");
+    expect(await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    await kb.writeConcept(yuNetOwner, { type: "Project", title: "Crop research" },
+      `${yuNetOld}\n\nFS Fotovalidering YuNet face gate architecture (feat/yunet-face-gate, Oct 2026): ${yuNetInstruction.slice(yuNetInstruction.indexOf(": ") + 2)}`, "replace");
+    expect(await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("vetoes a YuNet correction and rejects a concurrent owner change", async () => {
+    staged();
+    await kb.writeConcept(yuNetOwner, { type: "Project", title: "Crop research" }, yuNetOld, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false }, finishReason: "stop" });
+    expect(await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    generateObjectMock.mockImplementationOnce(async () => {
+      await kb.writeConcept(yuNetOwner, { type: "Project", title: "Crop research" },
+        `${yuNetOld}\n\nA concurrent observation.`, "external");
+      return { object: { safe: true }, finishReason: "stop" };
+    });
+    expect(await runMutation(kb, yuNetInstruction, { preflightInput: yuNetInstruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(yuNetOwner)).body).toContain("A concurrent observation.");
+  });
+
   it("disables reasoning for independent staged checks even when deep mutations enable it", async () => {
     staged();
     vi.stubEnv("MUTATION_ENABLE_THINKING", "true");

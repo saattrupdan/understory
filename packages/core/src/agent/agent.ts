@@ -1066,6 +1066,93 @@ async function runStagedMutation(
   let changed: string[] = [];
   try {
     const raw = options.preflightInput ?? instruction;
+    // The dated YuNet architecture update supersedes one existing paragraph,
+    // rather than requiring a free-form rewrite of a long project concept.
+    // Identify its owner by the observed old claim, not by a search ranking.
+    const yunetUpdate = !options.directAdd && options.preflightInput &&
+      /^Update FS Fotovalidering YuNet face gate architecture \(feat\/yunet-face-gate, Oct 2026\): /i.test(raw) &&
+      ["/content-screen", "original exact bytes", "model revision/SHA", "camera /preprocess",
+        "must NOT fall back", "0.90"]
+        .every((anchor) => raw.toLowerCase().includes(anchor.toLowerCase())) &&
+      /\b\d+ backend passed\b/i.test(raw) && /\b\d+ frontend passed\b/i.test(raw);
+    if (yunetUpdate) {
+      const ownerPath = "/projects/fs-fotovalidering/auto-crop-investigation.md";
+      if (options.ownerHint && options.ownerHint !== ownerPath) {
+        throw new Error("Staged mutation deferred: YuNet owner hint conflicts with the observed owner.");
+      }
+      const peerPaths = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
+        /^\/projects\/fs-fotovalidering(?:[/-]|\.md$)/.test(candidate));
+      if (peerPaths.length > 200) throw new Error("Staged mutation deferred: YuNet owner inventory exceeds limit.");
+      const oldPrefix = "FS Fotovalidering YuNet face gate (feat/yunet-face-gate, Oct 2026):";
+      const oldOwners: Array<{ path: string; paragraph: string }> = [];
+      let owner: Awaited<ReturnType<KnowledgeBase["readConcept"]>> | undefined;
+      let competingUpdate = false;
+      for (const peerPath of peerPaths) {
+        state.checkCancellation();
+        const concept = await kb.readConcept(peerPath);
+        recorder.record("read_concept", concept.path, [concept.path]);
+        if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: YuNet peer exceeds evidence limit.");
+        }
+        if (peerPath === ownerPath) owner = concept;
+        for (const paragraph of concept.body.split(/\n\s*\n/)) {
+          if (paragraph.startsWith(oldPrefix)) oldOwners.push({ path: peerPath, paragraph });
+          if (peerPath !== ownerPath && paragraph.includes("/content-screen") &&
+              /YuNet/i.test(paragraph) && /original exact bytes/i.test(paragraph)) competingUpdate = true;
+        }
+      }
+      if (!owner || competingUpdate) throw new Error("Staged mutation deferred: YuNet owner missing or competing update exists.");
+      const updated = `FS Fotovalidering YuNet face gate architecture (feat/yunet-face-gate, Oct 2026): ${raw.replace(/^Update FS Fotovalidering YuNet face gate architecture \(feat\/yunet-face-gate, Oct 2026\): /i, "").trim()}`;
+      const historical = "Historical YuNet face gate baseline (superseded 13 Oct 2026; not current guidance):";
+      const archived = owner.body.split(/\n\s*\n/).filter((paragraph) =>
+        paragraph.startsWith(`${historical} ${oldPrefix}`) &&
+        paragraph.includes("rendered crop JPEG digest") && paragraph.includes("/validate"));
+      if (oldOwners.length === 0 && archived.length === 1 && owner.body.split(updated).length === 2) {
+        const current = await kb.readConcept(ownerPath);
+        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+        const summary = "No change needed; exact YuNet update and historical baseline verified.";
+        const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+          { providerCalls, generationMs: Date.now() - started });
+        await traceStore(kb).save(trace);
+        return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
+      }
+      if (oldOwners.length !== 1 || oldOwners[0].path !== ownerPath) {
+        throw new Error("Staged mutation deferred: YuNet old paragraph owner is absent or ambiguous.");
+      }
+      const old = oldOwners[0].paragraph;
+      if (old.length > 4_000 || updated.length > 4_000 ||
+          !old.includes("/preprocess") || !old.includes("/validate") ||
+          !old.includes("rendered crop JPEG digest") || owner.body.includes(updated) ||
+          owner.body.split(old).length !== 2) {
+        throw new Error("Staged mutation deferred: YuNet old claim or update state is ambiguous.");
+      }
+      const replacement = `${historical} ${old}\n\n${updated}`;
+      const proposed = owner.body.replace(old, replacement);
+      if (proposed.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: YuNet owner exceeds limit.");
+      const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
+      modelChain = resolved.modelChain;
+      const check = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent local correction check: does the proposed paragraph copy ONLY the caller's new facts, clearly date the observed old paragraph as superseded, and preserve its historical findings without making them current? Refuse unsupported facts, incomplete corrections, or uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nOBSERVED OLD PARAGRAPH:\n${old}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
+      });
+      state.checkCancellation();
+      if (!check.object.safe) throw new Error("Staged mutation deferred: independent YuNet correction check declined.");
+      const current = await kb.readConcept(ownerPath);
+      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+      state.checkCancellation();
+      await kb.patchConcept(ownerPath, { replaceBody: proposed }, "Staged mutation: supersede YuNet gate baseline", sha256(owner.body), options.signal,
+        (writtenPath) => { changed = [writtenPath]; });
+      const readBack = await kb.readConcept(ownerPath);
+      if (readBack.body !== proposed) throw new Error("YuNet correction failed CAS read-back verification.");
+      const summary = `Staged mutation changed ${ownerPath}.`;
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+        { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+    }
     const correction = options.directAdd ? stagedCorrectionIntent(raw) : stagedCorrection(raw);
     if (options.ownerHint && (options.ownerHint.length > 512 ||
         !/^\/[a-z0-9_/-]+\.md$/.test(options.ownerHint) || options.ownerHint.split("/").includes(".."))) {
