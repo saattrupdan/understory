@@ -3424,6 +3424,37 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])("locates a dated FS status across all siblings and rejects a duplicate (%s)", async (duplicate) => {
+    staged();
+    const owner = "/projects/fs-fotovalidering-continuation-f5bd33e9.md";
+    const copy = "/projects/fs-fotovalidering-continuation-copy.md";
+    const heading = "FS Fotovalidering owner-reviewed v3 retrain (13 Oct 2026):";
+    const instruction = "Update FS Fotovalidering owner-reviewed v3 retrain status recorded on 13 Oct 2026: a fresh 24-head Sparkie training run completed; the earlier job remains historical.";
+    await kb.writeConcept(owner, { type: "Project Continuation", title: "FS Continuation" },
+      `${heading} Mac MPS was interrupted; fresh Sparkie training still pending.`, "seed");
+    await kb.writeConcept(copy, { type: "Project Continuation", title: "Another Continuation" },
+      duplicate ? `${heading} A copied status note.` : "Separate observations.", "seed");
+    const competing = ["/projects/other-a.md", "/projects/other-b.md"];
+    for (const candidate of competing) {
+      await kb.writeConcept(candidate, { type: "Project Continuation", title: "Other Project" },
+        "Unrelated observations. ".repeat(1_600), "seed");
+    }
+    // Ranked results omit the actual dated owner and the non-ranked duplicate.
+    vi.spyOn(kb, "search").mockResolvedValue(competing.map((conceptPath) => ({
+      path: conceptPath, type: "Project Continuation", title: "Other Project", score: 10,
+      confidenceQualified: false,
+    })));
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`"path":"${owner}"`);
+      return { object: { ...baseProposal, action: "defer", reason: "dated status owner located" } };
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining(
+      duplicate ? "named section is not unique" : "dated status owner located") });
+    expect(generateObjectMock).toHaveBeenCalledTimes(duplicate ? 0 : 1);
+    expect((await kb.readConcept(owner)).body).toContain("still pending");
+  });
+
   it("rejects an incident section that appears in two complete owners", async () => {
     staged();
     const owner = "/repos/pi-agent/memory-async.md";

@@ -953,7 +953,8 @@ function stagedNamedSection(input: string): RegExp | undefined {
   // A dated section named at the start of a correction may be more specific
   // than its containing concept's title. Require a line-leading Markdown
   // heading or colon-labelled paragraph, not a passing mention in prose.
-  const match = input.trim().match(/^(?:update|correct|revise)\s+(?:the\s+)?(.{16,120}?)\s+(?:note|record)\s+\(((?:[A-Za-z]{3,9}\s+\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9})\s+\d{4})\)\s*:/i);
+  const match = input.trim().match(/^(?:update|correct|revise)\s+(?:the\s+)?(.{16,120}?)\s+(?:note|record)\s+\(((?:[A-Za-z]{3,9}\s+\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9})\s+\d{4})\)\s*:/i) ??
+    input.trim().match(/^(?:update|correct|revise)\s+(?:the\s+)?(.{16,120}?)\s+status\s+recorded\s+on\s+((?:[A-Za-z]{3,9}\s+\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9})\s+\d{4})\s*:/i);
   if (!match) return undefined;
   const escaped = `${match[1]} (${match[2]})`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`^(?:#{1,6}\\s+|\\*\\*)?${escaped}(?:\\*\\*)?\\s*:(?:\\*\\*)?(?=\\s|$)`, "mi");
@@ -1457,16 +1458,25 @@ async function runStagedMutation(
     }
     let sectionOwnerPath: string | undefined = prReviewOwnerPath;
     if (namedSection) {
+      // A dated FS retrain status can be copied into sibling continuations
+      // absent from ranked search. Check the bounded project inventory before
+      // letting a heading identify its owner; a locator is not write permission.
+      const datedFsStatus = /^update FS Fotovalidering .{16,120}? status recorded on (?:[A-Za-z]{3,9} \d{1,2}|\d{1,2} [A-Za-z]{3,9}) \d{4}\s*:/i.test(raw.trim());
+      const siblingPaths = datedFsStatus
+        ? (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
+          /^\/projects\/fs-fotovalidering(?:-|\.md$)/.test(candidate)) : [];
+      if (siblingPaths.length > 200) {
+        throw new Error("Staged mutation deferred: named-section peer inventory exceeds limit.");
+      }
       const sectionOwners: string[] = [];
-      for (const hit of hits) {
-        const concept = await kb.readConcept(hit.path);
+      for (const candidatePath of new Set([...hits.map((hit) => hit.path), ...siblingPaths])) {
+        const concept = await kb.readConcept(candidatePath);
         recorder.record("read_concept", concept.path, [concept.path]);
         state.checkCancellation();
-        if (!namedSection.test(concept.body)) continue;
         if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
-          throw new Error("Staged mutation deferred: named-section owner exceeds evidence limit.");
+          throw new Error("Staged mutation deferred: named-section owner or peer exceeds evidence limit.");
         }
-        sectionOwners.push(concept.path);
+        if (namedSection.test(concept.body)) sectionOwners.push(concept.path);
       }
       if (sectionOwners.length !== 1) {
         throw new Error("Staged mutation deferred: named section is not unique to one observed owner.");
