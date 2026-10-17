@@ -177,6 +177,22 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(fs577Owner)).body).toBe(`${fs577Old}\n`);
   });
 
+  it("presents bounded context from a long FS 5779826 peer passage", async () => {
+    staged();
+    await kb.writeConcept(fs577Owner, { type: "Project Continuation", title: "FS reorganization" }, fs577Old, "seed");
+    const peer = "/projects/fs-fotovalidering-long.md";
+    await kb.writeConcept(peer, { type: "Project Continuation", title: "FS later correction" },
+      `Earlier findings: ${"unrelated classification evidence. ".repeat(140)}Later a081a66 fixed src/scripts/rebuild_test_baseline.py for the owner-corrected 257-photo parsed/ baseline after 5779826.${" Unrelated audit history. ".repeat(100)}`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`${peer}: Earlier findings:`);
+      expect(prompt).toContain("Later a081a66 fixed src/scripts/rebuild_test_baseline.py");
+      expect(prompt).toContain("[... omitted peer context ...]");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fs577Owner] } });
+  });
+
   it("defers 5779826 status when independent review vetoes or the owner changes", async () => {
     staged();
     await kb.writeConcept(fs577Owner, { type: "Project Continuation", title: "FS reorganization" }, fs577Old, "seed");

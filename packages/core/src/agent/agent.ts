@@ -1414,10 +1414,20 @@ async function runStagedMutation(
           if ((paragraph.includes("rebuild_test_baseline.py") &&
                /(?:257|Godkendt|parsed\/|5779826)/i.test(paragraph)) ||
               (paragraph.includes("5779826") && /(?:baseline|source-only)/i.test(paragraph))) {
+            let excerpt = paragraph;
             if (paragraph.length > 4_000) {
-              throw new Error("Staged mutation deferred: FS 5779826 peer passage exceeds evidence limit.");
+              const mentions = [...paragraph.matchAll(/(?:rebuild_test_baseline\.py|5779826)/gi)];
+              if (mentions.length > 3) {
+                throw new Error("Staged mutation deferred: FS 5779826 peer has too many script/commit mentions for bounded evidence.");
+              }
+              excerpt = `${paragraph.slice(0, 250)}\n[... omitted peer context ...]\n${mentions.map((mention) =>
+                paragraph.slice(Math.max(0, mention.index - 450), Math.min(paragraph.length, mention.index + 700)))
+                .join("\n[... omitted peer context ...]\n")}\n[... omitted peer context ...]\n${paragraph.slice(-250)}`;
+              if (excerpt.length > 4_000) {
+                throw new Error("Staged mutation deferred: FS 5779826 peer passage exceeds evidence limit.");
+              }
             }
-            peerEvidence.push(`${peerPath}: ${paragraph}`);
+            peerEvidence.push(`${peerPath}: ${excerpt}`);
           }
         }
       }
