@@ -1111,7 +1111,11 @@ async function runStagedMutation(
       const heading = "Current FS Fotovalidering 2026-10-14 changes-only baseline report: ";
       const current = `${heading}Dan wants the Danish Markdown and PDF at ~/Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes.md and .pdf titled 'Ændringer fra baselinen 2026-10-09 til 2026-10-14', focused strictly on changes from the 2026-10-09 baseline, not unchanged items, interim-review history, or a full current-state inventory. It covers 30 changed approved-photo ID mappings (23 moved and seven renumbered), removal of godkendt_id30, two previously unlabelled existing photos now labelled, changed presentation counts, 264 added and 28 removed active category marks, new photo-of-a-photo marks and retirement of Hovedbeklædning 4, and 68 changed embedded photo files by ID. It excludes the unchanged 50 workbook-only columns, unchanged approved IDs, and 43 intermediate question-mark resolutions. The 459 photo-ID mentions and all 34 approved-photo mappings describe only the earlier non-focused Danish version, not this current report. Keep the report ID-based, with no hashes; baseline photos were not inspected.`;
       const observed = new Map<string, Awaited<ReturnType<typeof kb.readConcept>>>();
-      const normalizeReport = (text: string): string => text.replace(/\s+/g, " ").trim();
+      // The old Jottacloud path was recorded with inconsistent slash/backtick
+      // notation. Normalize only that path token, never the report claims.
+      const reportPath = /~[^\s]{0,5}Jottacloud\/syv-ai\/faerdselsstyrelsen\/baselines\/2026-10-14\/baseline_changes[^\s]{0,6}/;
+      const normalizeReport = (text: string): string =>
+        text.replace(/\s+/g, " ").trim().replace(reportPath, "<baseline_changes path>");
       const oldOwners: Array<{ path: string; paragraph: string }> = [];
       const historicalOwners: string[] = [];
       const nearOwners: string[] = [];
@@ -1124,12 +1128,12 @@ async function runStagedMutation(
         }
         observed.set(peer.path, peer);
         for (const paragraph of peer.body.split(/\n\s*\n/)) {
-          if (normalizeReport(paragraph) === normalizeReport(old)) {
+          if (reportPath.test(paragraph) && normalizeReport(paragraph) === normalizeReport(old)) {
             oldOwners.push({ path: peer.path, paragraph });
           } else if (paragraph.includes("459 photo-ID mentions") && paragraph.includes("Ændringer i baselinen fra 2026-10-14")) {
             nearOwners.push(peer.path);
           }
-          if (normalizeReport(paragraph) === normalizeReport(`${historical}${old}`) &&
+          if (reportPath.test(paragraph) && normalizeReport(paragraph) === normalizeReport(`${historical}${old}`) &&
               peer.body.includes(current)) historicalOwners.push(peer.path);
         }
       }

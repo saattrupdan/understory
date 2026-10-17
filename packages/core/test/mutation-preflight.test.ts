@@ -4912,6 +4912,20 @@ describe("mutation owner preflight", () => {
       .toMatchObject({ ok: true, result: { filesChanged: [] } });
   });
 
+  it("preserves the observed Jottacloud path notation while matching the old FS report", async () => {
+    staged();
+    const pathVariant = fsChangesOld.replace("~`Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes`",
+      "~/`Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes.md`");
+    await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" }, pathVariant, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsChangesOwner] } });
+    const body = (await kb.readConcept(fsChangesOwner)).body;
+    expect(body).toContain(`Earlier non-focused Danish report version (superseded by changes-only edition): ${pathVariant}`);
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+  });
+
   it("rejects FS change-report correction if another peer owns the old report", async () => {
     staged();
     await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" }, fsChangesOld, "seed");
