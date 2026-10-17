@@ -5622,6 +5622,19 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
+  it("does not accept scattered deployment tokens as a completed correction", async () => {
+    staged();
+    const owner = "/repos/saattrupdan-com.md";
+    const incomplete = "# Deployment Policy\n\nCommit e7159f328f1d54bf6c789b625429b1591e264381 was pushed.\n\n" +
+      "Deployment dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8 reached READY, but the provisional claim is missing.\n\n" +
+      "# Vercel CLI\n\n`vercel --prod` returned Not authorized.";
+    await kb.writeConcept(owner, { type: "Repository", title: "saattrupdan.com Website" }, incomplete, "seed");
+    expect(await runMutation(kb, confirmedDeployInstruction, { preflightInput: confirmedDeployInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("absent or ambiguous") });
+    expect((await kb.readConcept(owner)).body).toBe(`${incomplete}\n`);
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
   it("derives a renamed repository deployment identity from the request and observed provisional sentence", async () => {
     staged();
     const site = "example.test";
