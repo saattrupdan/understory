@@ -3255,38 +3255,56 @@ async function runStagedMutation(
           }
           selectedPath = sectionOwners[0].path;
         } else if (!stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd)) {
-          const selection = await generateObject({
-            model: resolved.model,
-            schema: z.object({
-              observedOldPassage: z.string(), requestOldClause: z.string(),
-              sameOldClaim: z.boolean(), currentlyActive: z.boolean(), peerConflict: z.boolean(),
-              quotedOrHistorical: z.boolean(), negated: z.boolean(), selectorApproval: z.boolean(),
-            }).strict(),
-            temperature: 0,
-            abortSignal: options.signal,
-            prompt: `Read-only passage locator, NOT an authorization check. Identify an exact currently active old passage in the selected owner's body that the instruction asks to supersede, and the exact old-claim clause in the instruction. Return empty strings and false flags unless evidence supports the selection. Report sameOldClaim, currentlyActive, peerConflict (any retained peer owns/duplicates/conflicts with it), quotedOrHistorical, negated, and selectorApproval (must always be false). Do not treat path, metadata, or this result as write approval. JSON only.\nINSTRUCTION:\n${raw}\nSELECTED OWNER ${selected.path}:\n${selected.body}\nALL RETAINED PEERS (complete bodies):\n${JSON.stringify(evidenceCandidates.filter((candidate) => candidate.path !== selectedPath))}`,
-          });
-          state.checkCancellation();
-          const located = selection.object;
-          const owner = evidenceCandidates.find((candidate) => candidate.path === selectedPath);
-          const peers = evidenceCandidates.filter((candidate) => candidate.path !== selectedPath);
-          const oldCount = owner && located.observedOldPassage ? owner.body.split(located.observedOldPassage).length - 1 : 0;
-          const requestCount = located.requestOldClause ? raw.split(located.requestOldClause).length - 1 : 0;
-          const relevant = stagedOverlap(owner?.body ?? "", located.requestOldClause) >= 0.2 &&
-            stagedOverlap(located.requestOldClause, raw) === 1;
-          const peerConflict = peers.some((peer) => peer.body.includes(located.observedOldPassage));
-          if (!owner || !peers.every((peer) => typeof peer.body === "string") ||
-              !located.observedOldPassage || located.observedOldPassage.length > 2_000 || oldCount !== 1 ||
-              !located.requestOldClause || located.requestOldClause.length > 2_000 || requestCount !== 1 ||
-              !located.sameOldClaim || !located.currentlyActive || located.peerConflict || peerConflict ||
-              located.quotedOrHistorical || located.negated || located.selectorApproval || !relevant ||
-              /[“”‘’"]/.test(located.observedOldPassage) ||
-              /\\b(?:historical|formerly|superseded|retracted|not|never|no longer)\\b/i.test(located.observedOldPassage)) {
+          const noAnchor = () => {
             const oldHash = stagedContrastedOldHash(raw);
-            const selectedOwner = evidenceCandidates.find((candidate) => candidate.path === selectedPath);
             const peerCopies = oldHash ? evidenceCandidates.filter((candidate) =>
               candidate.path !== selectedPath && candidate.body.includes(oldHash)).length : 0;
-            throw new Error(`Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor (selected=${selectedPath}, contrasted_hash=${!!oldHash}, selected_has_old=${!!oldHash && !!selectedOwner?.body.includes(oldHash)}, peer_copies=${peerCopies}).`);
+            throw new Error(`Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor (selected=${selectedPath}, contrasted_hash=${!!oldHash}, selected_has_old=${!!oldHash && selected.body.includes(oldHash)}, peer_copies=${peerCopies}).`);
+          };
+          // Only an explicit correction of earlier guidance may use semantic
+          // old-claim matching. Metadata ranking and new facts are not anchors.
+          if (options.directAdd || !/\b(?:supersed(?:ed|es|ing)?|correct(?:ed|ion)?\s+(?:the\s+)?(?:earlier|prior|old))\b/i.test(raw)) noAnchor();
+          if (raw.length + selected.body.length + 3_000 > STAGED_MAX_EVIDENCE_CHARS) noAnchor();
+          const selection = await generateObject({
+            model: resolved.model,
+            schema: z.object({ observedOldPassage: z.string(), requestOldClause: z.string(),
+              sameOldClaim: z.boolean(), currentlyActive: z.boolean(), quotedOrHistorical: z.boolean(),
+              negated: z.boolean() }).strict(),
+            temperature: 0, abortSignal: options.signal,
+            prompt: `Read-only old-claim locator; NEVER authorize a write. Quote one COMPLETE, exact, currently active old sentence or bounded paragraph in the owner that the caller explicitly corrects, and quote the exact corresponding old-claim clause from the instruction. An old claim can be paraphrased; a new fact, common project name, historic/quoted assertion or negative example cannot locate an owner. Return empty strings and false status on uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nFULL SELECTED OWNER ${selected.path}:\n${selected.body}`,
+          });
+          state.checkCancellation();
+          if (selection.finishReason === "length") noAnchor();
+          const located = selection.object;
+          const passage = located.observedOldPassage.trim();
+          const clause = located.requestOldClause.trim();
+          const paragraphs = selected.body.split(/\n\s*\n/);
+          const enclosing = paragraphs.filter((part) => part.includes(passage));
+          const requestWords = stagedWords(clause).filter((word) => word.length >= 4);
+          const passageWords = new Set(stagedWords(passage));
+          const sharedWords = requestWords.filter((word) => passageWords.has(word));
+          const oldIdentifiers = [...clause.matchAll(/(?:^|[^\w])(-?\d+(?:[.,]\d+)*|[a-f0-9]{12,}|[\w-]+_\d+)(?=$|[^\w])/gi)]
+            .map((match) => match[1]);
+          const hasOldValue = oldIdentifiers.some((value) => passage.includes(value));
+          const hasSubject = stagedWords(raw).some((word) => word.length >= 5 && passageWords.has(word) &&
+            !["earlier", "current", "previous", "update", "correct", "supersede"].includes(word));
+          if (!located.sameOldClaim || !located.currentlyActive || located.quotedOrHistorical || located.negated ||
+              passage.length < 35 || passage.length > 4_000 || enclosing.length !== 1 ||
+              selected.body.split(passage).length !== 2 || clause.length < 12 || clause.length > 2_000 ||
+              raw.split(clause).length !== 2 || /^\s*(?:Historical|Quoted|Previously|Formerly)\b/i.test(enclosing[0]) ||
+              (sharedWords.length < 2 && !(hasOldValue && hasSubject))) noAnchor();
+          // Every retained search hit gets its own complete-body peer check.
+          // Never truncate a peer or rely on absence of an exact string alone.
+          for (const peer of evidenceCandidates.filter((candidate) => candidate.path !== selectedPath)) {
+            if (peer.body.includes(passage) || raw.length + peer.body.length + passage.length + 3_000 > STAGED_MAX_EVIDENCE_CHARS) noAnchor();
+            const check = await generateObject({
+              model: resolved.model,
+              schema: z.object({ competingCurrentOrAmbiguous: z.boolean(), certain: z.boolean() }).strict(),
+              temperature: 0, abortSignal: options.signal,
+              prompt: `Independent read-only competing-owner check. Does this FULL peer body contain the same old policy/status as an active claim, a conflicting current claim, or an ambiguous chronology? A clearly dated historical mention is not current ownership. Return competingCurrentOrAmbiguous=true on uncertainty. JSON only.\nREQUEST:\n${raw}\nOBSERVED OLD CLAIM FROM SELECTED OWNER:\n${passage}\nFULL PEER ${peer.path}:\n${peer.body}`,
+            });
+            state.checkCancellation();
+            if (check.finishReason === "length" || !check.object.certain || check.object.competingCurrentOrAmbiguous) noAnchor();
           }
         }
       }
