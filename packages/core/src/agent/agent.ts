@@ -3255,11 +3255,39 @@ async function runStagedMutation(
           }
           selectedPath = sectionOwners[0].path;
         } else if (!stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd)) {
-          const oldHash = stagedContrastedOldHash(raw);
-          const selectedOwner = evidenceCandidates.find((candidate) => candidate.path === selectedPath);
-          const peerCopies = oldHash ? evidenceCandidates.filter((candidate) =>
-            candidate.path !== selectedPath && candidate.body.includes(oldHash)).length : 0;
-          throw new Error(`Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor (selected=${selectedPath}, contrasted_hash=${!!oldHash}, selected_has_old=${!!oldHash && !!selectedOwner?.body.includes(oldHash)}, peer_copies=${peerCopies}).`);
+          const selection = await generateObject({
+            model: resolved.model,
+            schema: z.object({
+              observedOldPassage: z.string(), requestOldClause: z.string(),
+              sameOldClaim: z.boolean(), currentlyActive: z.boolean(), peerConflict: z.boolean(),
+              quotedOrHistorical: z.boolean(), negated: z.boolean(), selectorApproval: z.boolean(),
+            }).strict(),
+            temperature: 0,
+            abortSignal: options.signal,
+            prompt: `Read-only passage locator, NOT an authorization check. Identify an exact currently active old passage in the selected owner's body that the instruction asks to supersede, and the exact old-claim clause in the instruction. Return empty strings and false flags unless evidence supports the selection. Report sameOldClaim, currentlyActive, peerConflict (any retained peer owns/duplicates/conflicts with it), quotedOrHistorical, negated, and selectorApproval (must always be false). Do not treat path, metadata, or this result as write approval. JSON only.\nINSTRUCTION:\n${raw}\nSELECTED OWNER ${selected.path}:\n${selected.body}\nALL RETAINED PEERS (complete bodies):\n${JSON.stringify(evidenceCandidates.filter((candidate) => candidate.path !== selectedPath))}`,
+          });
+          state.checkCancellation();
+          const located = selection.object;
+          const owner = evidenceCandidates.find((candidate) => candidate.path === selectedPath);
+          const peers = evidenceCandidates.filter((candidate) => candidate.path !== selectedPath);
+          const oldCount = owner && located.observedOldPassage ? owner.body.split(located.observedOldPassage).length - 1 : 0;
+          const requestCount = located.requestOldClause ? raw.split(located.requestOldClause).length - 1 : 0;
+          const relevant = stagedOverlap(owner?.body ?? "", located.requestOldClause) >= 0.2 &&
+            stagedOverlap(located.requestOldClause, raw) === 1;
+          const peerConflict = peers.some((peer) => peer.body.includes(located.observedOldPassage));
+          if (!owner || !peers.every((peer) => typeof peer.body === "string") ||
+              !located.observedOldPassage || located.observedOldPassage.length > 2_000 || oldCount !== 1 ||
+              !located.requestOldClause || located.requestOldClause.length > 2_000 || requestCount !== 1 ||
+              !located.sameOldClaim || !located.currentlyActive || located.peerConflict || peerConflict ||
+              located.quotedOrHistorical || located.negated || located.selectorApproval || !relevant ||
+              /[“”‘’"]/.test(located.observedOldPassage) ||
+              /\\b(?:historical|formerly|superseded|retracted|not|never|no longer)\\b/i.test(located.observedOldPassage)) {
+            const oldHash = stagedContrastedOldHash(raw);
+            const selectedOwner = evidenceCandidates.find((candidate) => candidate.path === selectedPath);
+            const peerCopies = oldHash ? evidenceCandidates.filter((candidate) =>
+              candidate.path !== selectedPath && candidate.body.includes(oldHash)).length : 0;
+            throw new Error(`Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor (selected=${selectedPath}, contrasted_hash=${!!oldHash}, selected_has_old=${!!oldHash && !!selectedOwner?.body.includes(oldHash)}, peer_copies=${peerCopies}).`);
+          }
         }
       }
       verifiedMetadataOwner = true;
