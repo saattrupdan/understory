@@ -57,7 +57,17 @@ async function generateObject<S extends z.ZodTypeAny>(options: {
     // finish an entire JSON object. Stream deltas to keep the transport alive,
     // but expose ONLY the final validated object to the safety checks.
     const streamed = sdkStreamObject(options);
-    const [object, finishReason] = await Promise.all([streamed.object, streamed.finishReason]);
+    // AI SDK streamObject's final promises are driven by consuming the stream.
+    // Awaiting .object alone leaves the generation suspended indefinitely.
+    const [, object, finishReason] = await Promise.all([
+      (async () => {
+        for await (const part of streamed.fullStream) {
+          if (part.type === "error") throw part.error;
+        }
+      })(),
+      streamed.object,
+      streamed.finishReason,
+    ]);
     if (finishReason === "length") {
       throw new Error("Mutation generation hit its output cap; result is incomplete");
     }

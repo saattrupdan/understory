@@ -325,7 +325,13 @@ describe("mutation owner preflight", () => {
     const paragraph = "This complete owner paragraph has a distinctive beginning and a distinctive ending.";
     await kb.writeConcept(owner, { type: "Project", title: "Owner" },
       `Before.\n\n${paragraph}\n\nAfter.`, "seed");
-    streamObjectMock.mockReturnValueOnce({ object: Promise.resolve({ safe: true }), finishReason: Promise.resolve("stop") });
+    let complete!: (value: { safe: boolean }) => void;
+    const object = new Promise<{ safe: boolean }>((resolve) => { complete = resolve; });
+    streamObjectMock.mockReturnValueOnce({
+      object,
+      finishReason: Promise.resolve("stop"),
+      fullStream: (async function* () { complete({ safe: true }); yield { type: "finish" }; })(),
+    });
     const instruction = `In \`${owner}\`, remove ONLY the exact paragraph beginning \`This complete owner paragraph\` and ending \`a distinctive ending.\`.`;
     expect(await runMutation(kb, instruction)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
     expect(streamObjectMock).toHaveBeenCalledOnce();
@@ -339,7 +345,8 @@ describe("mutation owner preflight", () => {
     const paragraph = "This complete owner paragraph has a distinctive beginning and a distinctive ending.";
     await kb.writeConcept(owner, { type: "Project", title: "Owner" },
       `Before.\n\n${paragraph}\n\nAfter.`, "seed");
-    streamObjectMock.mockReturnValueOnce({ object: Promise.resolve({ safe: true }), finishReason: Promise.resolve("length") });
+    streamObjectMock.mockReturnValueOnce({ object: Promise.resolve({ safe: true }), finishReason: Promise.resolve("length"),
+      fullStream: (async function* () { yield { type: "finish" }; })() });
     const instruction = `In \`${owner}\`, remove ONLY the exact paragraph beginning \`This complete owner paragraph\` and ending \`a distinctive ending.\`.`;
     expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("output cap") });
     expect((await kb.readConcept(owner)).body).toContain(paragraph);
