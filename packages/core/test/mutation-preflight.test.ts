@@ -273,7 +273,7 @@ describe("mutation owner preflight", () => {
     const body = (await kb.readConcept(annotationHandoffOwner)).body;
     expect(body).toContain(annotationHandoffCompletion);
     expect(body).toContain("Independent later note.");
-    expect(body).toContain("Historical FS baseline annotation handoff (14 Oct 2026; decisions completed later that day):");
+    expect(body).toContain("Historical FS Fotovalidering baseline annotation handoff (pending at request time; completed later):");
     expect(body).toContain("Workbook has not been altered pending Dan's JSON decisions");
     expect(body).toContain("zero '?' remained in the source workbook, and the photo-bearing HTML was deleted.");
     expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
@@ -312,7 +312,7 @@ describe("mutation owner preflight", () => {
       return { object: { safe: false } };
     });
     expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS annotation handoff") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent historical handoff") });
     expect((await kb.readConcept(annotationHandoffOwner)).body).toBe(`${annotationHandoffCompletion}\n`);
   });
 
@@ -331,7 +331,7 @@ describe("mutation owner preflight", () => {
       annotationHandoffCompletion, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
     expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS annotation handoff") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent historical handoff") });
     generateObjectMock.mockImplementationOnce(async () => {
       await kb.writeConcept(annotationHandoffOwner, { type: "Project Continuation", title: "FS baseline decisions" },
         `${annotationHandoffCompletion}\n\nA concurrent note.`, "external");
@@ -340,6 +340,26 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
       .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("Concept changed") });
     expect((await kb.readConcept(annotationHandoffOwner)).body).toContain("A concurrent note.");
+  });
+
+  it("records a renamed synthetic historical handoff from observed completion", async () => {
+    staged();
+    const owner = "/projects/orchid-harbor.md";
+    const fact = "Orchid Harbor review handoff: Mira is still awaiting the 17 sample checks; do not mark them complete until Mira returns the results.";
+    const completed = "Mira completed all 17 sample checks and recorded the verified results.";
+    await kb.writeConcept(owner, { type: "Project", title: "Orchid Harbor" }, completed, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("Orchid Harbor");
+      expect(prompt).toContain("17 sample checks");
+      expect(prompt).toContain("Mira completed all 17 sample checks");
+      return { object: { safe: true } };
+    });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain("Historical Orchid Harbor review handoff");
+    expect(body).toContain(fact);
+    expect(body).toContain(completed);
   });
 
   const fsBaselineOwner = "/projects/fs-fotovalidering-continuation-d2fd99e3dfc67efb.md";
