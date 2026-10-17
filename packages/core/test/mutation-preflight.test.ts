@@ -4899,6 +4899,19 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
+  it("uses the observed old paragraph when its Markdown whitespace is reflowed", async () => {
+    staged();
+    const reflowed = fsChangesOld.replace("All 459 photo-ID mentions,", "All 459 photo-ID\nmentions,");
+    await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" }, reflowed, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsChangesOwner] } });
+    const updated = (await kb.readConcept(fsChangesOwner)).body;
+    expect(updated).toContain(`Earlier non-focused Danish report version (superseded by changes-only edition): ${reflowed}`);
+    expect(await runMutation(kb, fsChangesInstruction, { preflightInput: fsChangesInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+  });
+
   it("rejects FS change-report correction if another peer owns the old report", async () => {
     staged();
     await kb.writeConcept(fsChangesOwner, { type: "Project", title: "FS Fotovalidering" }, fsChangesOld, "seed");

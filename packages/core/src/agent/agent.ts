@@ -1111,8 +1111,10 @@ async function runStagedMutation(
       const heading = "Current FS Fotovalidering 2026-10-14 changes-only baseline report: ";
       const current = `${heading}Dan wants the Danish Markdown and PDF at ~/Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes.md and .pdf titled 'Ændringer fra baselinen 2026-10-09 til 2026-10-14', focused strictly on changes from the 2026-10-09 baseline, not unchanged items, interim-review history, or a full current-state inventory. It covers 30 changed approved-photo ID mappings (23 moved and seven renumbered), removal of godkendt_id30, two previously unlabelled existing photos now labelled, changed presentation counts, 264 added and 28 removed active category marks, new photo-of-a-photo marks and retirement of Hovedbeklædning 4, and 68 changed embedded photo files by ID. It excludes the unchanged 50 workbook-only columns, unchanged approved IDs, and 43 intermediate question-mark resolutions. The 459 photo-ID mentions and all 34 approved-photo mappings describe only the earlier non-focused Danish version, not this current report. Keep the report ID-based, with no hashes; baseline photos were not inspected.`;
       const observed = new Map<string, Awaited<ReturnType<typeof kb.readConcept>>>();
-      const oldOwners: string[] = [];
+      const normalizeReport = (text: string): string => text.replace(/\s+/g, " ").trim();
+      const oldOwners: Array<{ path: string; paragraph: string }> = [];
       const historicalOwners: string[] = [];
+      const nearOwners: string[] = [];
       for (const peerPath of new Set([...siblings, ...reportHits.map((hit) => hit.path)])) {
         state.checkCancellation();
         const peer = await kb.readConcept(peerPath);
@@ -1122,15 +1124,20 @@ async function runStagedMutation(
         }
         observed.set(peer.path, peer);
         for (const paragraph of peer.body.split(/\n\s*\n/)) {
-          if (paragraph.trimEnd() === old) oldOwners.push(peer.path);
-          if (paragraph.trimEnd() === `${historical}${old}` && peer.body.includes(current)) historicalOwners.push(peer.path);
+          if (normalizeReport(paragraph) === normalizeReport(old)) {
+            oldOwners.push({ path: peer.path, paragraph });
+          } else if (paragraph.includes("459 photo-ID mentions") && paragraph.includes("Ændringer i baselinen fra 2026-10-14")) {
+            nearOwners.push(peer.path);
+          }
+          if (normalizeReport(paragraph) === normalizeReport(`${historical}${old}`) &&
+              peer.body.includes(current)) historicalOwners.push(peer.path);
         }
       }
-      const ownerPath = oldOwners.length === 1 ? oldOwners[0]
+      const ownerPath = oldOwners.length === 1 ? oldOwners[0].path
         : oldOwners.length === 0 && historicalOwners.length === 1 ? historicalOwners[0] : undefined;
       if (!ownerPath || !siblings.includes(ownerPath) ||
           (options.ownerHint && options.ownerHint !== ownerPath)) {
-        throw new Error("Staged mutation deferred: FS change-report owner is absent, duplicated, or conflicts with hint.");
+        throw new Error(`Staged mutation deferred: FS change-report owner is absent, duplicated, or conflicts with hint (old=${oldOwners.length}, historical=${historicalOwners.length}, near=${nearOwners.join(",").slice(0, 300)}, sibling=${!!ownerPath && siblings.includes(ownerPath)}).`);
       }
       const owner = observed.get(ownerPath)!;
       const peerEvidence: string[] = [];
@@ -1153,15 +1160,16 @@ async function runStagedMutation(
         part.startsWith(historical));
       const updates = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
       const staleOwnerClaims = owner.body.split(/\n\s*\n/).filter((part) =>
-        part.trimEnd() !== old && !part.startsWith(historical) &&
+        normalizeReport(part) !== normalizeReport(old) && !part.startsWith(historical) &&
         !part.startsWith(heading) &&
         /(?:459 photo-ID mentions|34 approved-photo ID mappings)/i.test(part) &&
         /(?:baseline_changes|2026-10-14 baseline change report)/i.test(part));
       if (staleOwnerClaims.length) {
         throw new Error("Staged mutation deferred: FS report has another unsuperseded owner claim.");
       }
-      if (oldOwners.length === 0 && archived.length === 1 && archived[0].trimEnd() === `${historical}${old}` &&
-          updates.length === 1 && updates[0].trimEnd() === current) {
+      if (oldOwners.length === 0 && archived.length === 1 &&
+          normalizeReport(archived[0]) === normalizeReport(`${historical}${old}`) &&
+          updates.length === 1 && normalizeReport(updates[0]) === normalizeReport(current)) {
         if (peerEvidence.some((entry) => /(?:459 photo-ID mentions|34 approved-photo ID mappings)/i.test(entry))) {
           throw new Error("Staged mutation deferred: FS report peers may retain a competing old claim.");
         }
@@ -1173,15 +1181,16 @@ async function runStagedMutation(
         await traceStore(kb).save(trace);
         return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
       }
-      if (oldOwners.length !== 1 || oldOwners[0] !== ownerPath || archived.length || updates.length ||
+      if (oldOwners.length !== 1 || oldOwners[0].path !== ownerPath || archived.length || updates.length ||
           peerEvidence.some((entry) => /(?:459 photo-ID mentions|34 approved-photo ID mappings)/i.test(entry))) {
         throw new Error("Staged mutation deferred: FS change-report old owner is absent, duplicated, or contradicted.");
       }
-      if (old.length > 4_000 || owner.body.split(old).length !== 2) {
+      const oldParagraph = oldOwners[0].paragraph.trimEnd();
+      if (oldParagraph.length > 4_000 || owner.body.split(oldParagraph).length !== 2) {
         throw new Error("Staged mutation deferred: FS change-report old paragraph is not unique or complete.");
       }
-      const replacement = `${historical}${old.trimEnd()}\n\n${current}`;
-      const proposed = owner.body.replace(old.trimEnd(), replacement);
+      const replacement = `${historical}${oldParagraph}\n\n${current}`;
+      const proposed = owner.body.replace(oldParagraph, replacement);
       if (proposed.length > STAGED_MAX_OWNER_CHARS) {
         throw new Error("Staged mutation deferred: FS change-report replacement exceeds evidence limit.");
       }
@@ -1192,7 +1201,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent FS change-report correction check. Does EXACT OLD PARAGRAPH uniquely describe the earlier non-focused Danish version, while the caller explicitly supplies a later changes-only report with the proposed title and all listed differences? Is its old 459/34 claim clearly labeled historical rather than left as current? Check complete owner and ALL relevant peer passages for duplicates or contradictions; path selection alone never authorizes a write. Does the local replacement preserve every other owner paragraph and avoid adding unsupported facts or implying photos were inspected? Reject any competing owner, unsupported detail, or uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nEXACT OLD PARAGRAPH:\n${old}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
+        prompt: `Independent FS change-report correction check. Does EXACT OLD PARAGRAPH uniquely describe the earlier non-focused Danish version, while the caller explicitly supplies a later changes-only report with the proposed title and all listed differences? Is its old 459/34 claim clearly labeled historical rather than left as current? Check complete owner and ALL relevant peer passages for duplicates or contradictions; path selection alone never authorizes a write. Does the local replacement preserve every other owner paragraph and avoid adding unsupported facts or implying photos were inspected? Reject any competing owner, unsupported detail, or uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nEXACT OLD PARAGRAPH:\n${oldParagraph}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) {
