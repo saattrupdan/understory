@@ -3265,13 +3265,14 @@ async function runStagedMutation(
           // old-claim matching. Metadata ranking and new facts are not anchors.
           if (options.directAdd || !/\b(?:supersed(?:ed|es|ing)?|correct(?:ed|ion)?\s+(?:the\s+)?(?:earlier|prior|old))\b/i.test(raw)) noAnchor("no-explicit-old-claim");
           if (raw.length + selected.body.length + 3_000 > STAGED_MAX_EVIDENCE_CHARS) noAnchor("owner-budget");
+          const oldContext = raw.match(/\bsupersed(?:es|ed|ing)?\s+(?:the\s+)?(?:earlier|prior|old)\s+([^.!?;]{12,350})/i)?.[1] ?? "";
           const selection = await generateObject({
             model: resolved.model,
             schema: z.object({ observedOldPassage: z.string(), requestOldClause: z.string(),
               sameOldClaim: z.boolean(), currentlyActive: z.boolean(), quotedOrHistorical: z.boolean(),
               negated: z.boolean() }).strict(),
             temperature: 0, abortSignal: options.signal,
-            prompt: `Read-only old-claim locator; NEVER authorize a write. Quote one COMPLETE, exact, currently active old sentence or bounded paragraph in the owner that the caller explicitly corrects, and quote the exact corresponding old-claim clause from the instruction. An old claim can be paraphrased; a new fact, common project name, historic/quoted assertion or negative example cannot locate an owner. Return empty strings and false status on uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nFULL SELECTED OWNER ${selected.path}:\n${selected.body}`,
+            prompt: `Read-only old-claim locator; NEVER authorize a write. Quote one COMPLETE, exact, currently active old sentence or bounded paragraph in the owner that the caller explicitly corrects, and quote the exact corresponding old-claim clause from the instruction. If the superseded advice names an old numeric value or identifier, the observed passage MUST contain that SAME old value or identifier; do not select a related sentence that omits it. Include the full old-claim clause, not just a convenient phrase. An old claim can be paraphrased; a new fact, common project name, historic/quoted assertion or negative example cannot locate an owner. Return empty strings and false status on uncertainty. JSON only.\nEXPLICIT SUPERSEDED ADVICE (not evidence by itself):\n${oldContext}\nINSTRUCTION:\n${raw}\nFULL SELECTED OWNER ${selected.path}:\n${selected.body}`,
           });
           state.checkCancellation();
           if (selection.finishReason === "length") noAnchor("locator-output-cap");
@@ -3283,7 +3284,6 @@ async function runStagedMutation(
           const requestWords = stagedWords(clause).filter((word) => word.length >= 4);
           const passageWords = new Set(stagedWords(passage));
           const sharedWords = requestWords.filter((word) => passageWords.has(word));
-          const oldContext = raw.match(/\bsupersed(?:es|ed|ing)?\s+(?:the\s+)?(?:earlier|prior|old)\s+([^.!?;]{12,350})/i)?.[1] ?? "";
           const oldIdentifiers = [...`${clause} ${oldContext}`.matchAll(/(?:^|[^\w])(-?\d+(?:[.,]\d+)*|[a-f0-9]{12,}|[\w-]+_\d+)(?=$|[^\w])/gi)]
             .map((match) => match[1]);
           const hasOldValue = oldIdentifiers.some((value) => passage.includes(value));
