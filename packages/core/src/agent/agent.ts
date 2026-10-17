@@ -2800,11 +2800,13 @@ async function runStagedMutation(
       const normalizeIdentity = (value: string) => value.toLowerCase().replace(/[-_\s]+/g, " ").trim();
       const normalizedRepoName = normalizeIdentity(leadingRepoName!);
       const normalizedRepoTitle = normalizeIdentity(canonicalRepo.frontmatter.title ?? "");
+      const canonicalRepoTitleMatches = normalizedRepoTitle === normalizedRepoName ||
+        normalizedRepoTitle === `${normalizedRepoName} repository` ||
+        normalizedRepoTitle.startsWith(`${normalizedRepoName} repository — `) &&
+          normalizedRepoTitle.length > `${normalizedRepoName} repository — `.length;
       const ownsDotfilesExtensions = !dotfilesExtensionsTests ||
         /(?:^|[\s`])agentic\/pi\/extensions\/(?:[\s`.,;:]|$)/m.test(canonicalRepo.body);
-      if ((canonicalRepo.frontmatter.type === "Repository" || canonicalRepo.frontmatter.type === "Knowledge") &&
-          (normalizedRepoTitle === normalizedRepoName || normalizedRepoTitle === `${normalizedRepoName} repository`) &&
-          ownsDotfilesExtensions) {
+      if (canonicalRepo.frontmatter.type === "Repository" && canonicalRepoTitleMatches && ownsDotfilesExtensions) {
         if (canonicalRepo.body.length > STAGED_MAX_OWNER_CHARS) {
           throw new Error("Staged mutation deferred: named repository owner exceeds evidence limit.");
         }

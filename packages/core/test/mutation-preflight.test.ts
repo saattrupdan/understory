@@ -84,6 +84,53 @@ describe("mutation owner preflight", () => {
     frontmatter: { type: "", title: "", description: "" }, claim: "", reason: "",
   };
 
+  it("recognizes qualified canonical repository titles without weakening owner checks", async () => {
+    staged();
+    const owner = "/repos/understory.md";
+    const fact = "Understory records that the public fork uses a distinct release cadence.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Understory Repository — Public Fork" },
+      "Understory public fork release history.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: owner, type: "Repository", title: "Understory Repository — Public Fork",
+      score: 10, confidenceQualified: false,
+    }]);
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+
+    const peer = "/repos/understory-fork-history.md";
+    await kb.writeConcept(peer, { type: "Repository", title: "Understory Fork History" },
+      `Independent ownership claim: ${fact}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((conceptPath) => ({
+      path: conceptPath, type: "Repository",
+      title: conceptPath === owner ? "Understory Repository — Public Fork" : "Understory Fork History",
+      score: 10, confidenceQualified: false,
+    })));
+    const competingFact = "Understory records that the public fork has a separate issue tracker.";
+    expect(await runMutation(kb, competingFact, { preflightInput: competingFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(owner)).body).not.toContain(competingFact);
+
+    const wrongType = "/repos/understory.md";
+    await kb.writeConcept(wrongType, { type: "Project", title: "Understory Repository — Public Fork" },
+      "Understory public fork release history.", "seed");
+    const wrongTypeFact = "Understory tracks an additional public fork release milestone.";
+    generateObjectMock.mockReset();
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { path: "" } });
+    expect(await runMutation(kb, wrongTypeFact, { preflightInput: wrongTypeFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+
+    await kb.writeConcept(wrongType, { type: "Repository", title: "Understory something else" },
+      "Understory public fork release history.", "seed");
+    const arbitraryPrefixFact = "Understory documents an unrelated deployment observation.";
+    generateObjectMock.mockReset();
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { path: "" } });
+    expect(await runMutation(kb, arbitraryPrefixFact, { preflightInput: arbitraryPrefixFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+  });
+
   const claesSeedlessOwner = "/projects/claes-jev-diagnostics.md";
   const claesSeedlessInstruction = "Update Claes design/preference: Dan explicitly says the old workflow guidance is superseded. Dan explicitly does not want reproducibility seeds set anywhere in remaining repository code for this dataset. He chose to REMOVE all archived pilot workflows (scripts/modules/tests and runnable workflow docs), but preserve historical data artifacts. On feat/laya-taxonomy-sampler at 942642e, remaining task-first Laya sampler/collector and benchmark have no --seed parameters, derived seeds, or seed fields in new manifests; local draws use fresh system entropy. Resume uses source-bound manifest + append-only checkpoint for completed row identities, tasks validated against pool and persisted informal row-index schedule; a seed-bearing legacy manifest is rejected rather than migrated. Generic Jev question-answering and task-first Luna generation/review remain. Historic docs/samples/seed-* data artifacts and old ignored data/ outputs were preserved. make check and 81 tests pass; independent reviewer LGTM. Seedless throughput should be benchmarked anew when needed; previous 32-worker ~5.22 assignments/s measurement was from seeded implementation, though Laya transport/concurrency otherwise unchanged.";
   const claesSeedlessHistory = "Claes Laya throughput knowledge: the task-first pipeline update uses a seed-spread Informal pilot; historical seed20261013 benchmark files measured 5.223 assignments/s with 32 workers. Pilot observations and data artifacts remain.";
