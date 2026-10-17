@@ -2243,99 +2243,83 @@ async function runStagedMutation(
       await traceStore(kb).save(trace);
       return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
     }
-    // The ID 30 removal and 5779826 source-only rebuild followed the 258/11
-    // reorganization snapshot. Later owner corrections followed this rebuild;
-    // preserve both 14 Oct stages as history, not today's baseline guidance.
-    if (!options.directAdd && options.preflightInput &&
-        /^Correct FS Fotovalidering baseline 2026-10-14 status:/i.test(raw.trim()) &&
-        ["src/scripts/rebuild_test_baseline.py", "HEAD 5779826", "257 unique photo SHA-256s",
-          "10 accept / 247 reject", "50 workbook-only exclusions", "24 labels per record",
-          "parsed/source-hashes.json", "Python 3.12", "491 passed"]
-          .every((anchor) => raw.includes(anchor))) {
-      const ownerPath = "/projects/fs-fotovalidering-continuation-faa257ccc4eab983.md";
-      if (options.ownerHint && options.ownerHint !== ownerPath) {
-        throw new Error("Staged mutation deferred: FS 5779826 owner hint conflicts with reorganization snapshot.");
-      }
+    // Preserve a dated source-only baseline rebuild as a milestone, without
+    // hard-coding any project-specific provenance or treating it as current.
+    const baselineMilestone = !options.directAdd && options.preflightInput
+      ? raw.trim().match(/^Record the (.+?) baseline milestone (\d{4}-\d{2}-\d{2}):\s*([\s\S]+)$/i)
+      : null;
+    if (baselineMilestone && /source-only/i.test(baselineMilestone[3]) &&
+        /(?:script|builder|generator)/i.test(baselineMilestone[3]) &&
+        /(?:commit|HEAD)\s+[a-f0-9]{7,40}/i.test(baselineMilestone[3]) &&
+        /(?:passed|accept|reject|photo|hash|record)/i.test(baselineMilestone[3])) {
+      const [, project, date, facts] = baselineMilestone;
+      const slug = project.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
       const paths = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-        /^\/projects\/fs-fotovalidering(?:[/-]|\.md$)/.test(candidate));
-      if (paths.length > 200 || !paths.includes(ownerPath)) {
-        throw new Error("Staged mutation deferred: FS 5779826 peer inventory is incomplete.");
+        candidate.startsWith(`/projects/${slug}`) &&
+        (candidate === `/projects/${slug}.md` || /^[/-]/.test(candidate.slice(`/projects/${slug}`.length))));
+      if (paths.length > 200 || paths.length === 0) {
+        throw new Error("Staged mutation deferred: baseline milestone peer inventory is incomplete.");
       }
-      const oldPrefix = "FS Fotovalidering baseline 2026-10-14:";
-      const historical = "Historical FS Fotovalidering baseline reorganization snapshot (before ID 30 removal and source-only rebuild; not current guidance): ";
-      const heading = "FS Fotovalidering source-only baseline milestone (14 Oct 2026; 5779826; later owner corrections may change marks):";
-      const update = `${heading} ${raw.trim().replace(/^Correct FS Fotovalidering baseline 2026-10-14 status:\s*/i, "")}`;
+      const oldPrefix = `${project} baseline ${date}:`;
+      const historical = `Historical ${project} baseline snapshot (superseded by the dated source-only rebuild; not current guidance): `;
+      const heading = `${project} source-only baseline milestone (${date}; later corrections may change results):`;
+      const update = `${heading} ${facts.trim()}`;
       const oldOwners: Array<{ path: string; paragraph: string }> = [];
       const peerEvidence: string[] = [];
+      const updates: Array<{ path: string; paragraph: string }> = [];
       let owner: Awaited<ReturnType<KnowledgeBase["readConcept"]>> | undefined;
       for (const peerPath of paths) {
         state.checkCancellation();
         const peer = await kb.readConcept(peerPath);
         recorder.record("read_concept", peer.path, [peer.path]);
         if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
-          throw new Error("Staged mutation deferred: FS 5779826 owner or peer exceeds evidence limit.");
+          throw new Error("Staged mutation deferred: baseline milestone owner or peer exceeds evidence limit.");
         }
-        if (peerPath === ownerPath) owner = peer;
         for (const paragraph of peer.body.split(/\n\s*\n/)) {
-          if (paragraph.startsWith(oldPrefix) && paragraph.includes("34-column/31-row Godkendt")) {
+          if (paragraph.startsWith(oldPrefix) && /(?:script|builder|generator)/i.test(paragraph) &&
+              /(?:layout|reorganiz|old|stale|cannot|cannot regenerate)/i.test(paragraph)) {
             oldOwners.push({ path: peerPath, paragraph });
           }
-          if (peerPath === ownerPath) continue;
-          // A later correction can cite this commit without owning the earlier
-          // milestone. Present its claim to independent review rather than
-          // rejecting on two shared identifiers.
-          if ((paragraph.includes("rebuild_test_baseline.py") &&
-               /(?:257|Godkendt|parsed\/|5779826)/i.test(paragraph)) ||
-              (paragraph.includes("5779826") && /(?:baseline|source-only)/i.test(paragraph))) {
-            let excerpt = paragraph;
+          if (paragraph.startsWith(heading)) updates.push({ path: peerPath, paragraph });
+          if (/(?:source-only|baseline)/i.test(paragraph) && /(?:script|builder|generator|commit|HEAD)/i.test(paragraph)) {
             if (paragraph.length > 4_000) {
-              const mentions = [...paragraph.matchAll(/(?:rebuild_test_baseline\.py|5779826)/gi)];
-              if (mentions.length > 3) {
-                throw new Error("Staged mutation deferred: FS 5779826 peer has too many script/commit mentions for bounded evidence.");
-              }
-              excerpt = `${paragraph.slice(0, 250)}\n[... omitted peer context ...]\n${mentions.map((mention) =>
-                paragraph.slice(Math.max(0, mention.index - 450), Math.min(paragraph.length, mention.index + 700)))
-                .join("\n[... omitted peer context ...]\n")}\n[... omitted peer context ...]\n${paragraph.slice(-250)}`;
-              if (excerpt.length > 4_000) {
-                throw new Error("Staged mutation deferred: FS 5779826 peer passage exceeds evidence limit.");
-              }
+              throw new Error("Staged mutation deferred: baseline milestone peer passage exceeds evidence limit.");
             }
-            peerEvidence.push(`${peerPath}: ${excerpt}`);
+            peerEvidence.push(`${peerPath}: ${paragraph}`);
           }
         }
+        if (oldOwners.some((claim) => claim.path === peerPath) || updates.some((claim) => claim.path === peerPath)) owner = peer;
       }
       if (peerEvidence.length > 20 || peerEvidence.join("\n\n").length > 24_000) {
-        throw new Error("Staged mutation deferred: FS 5779826 peer evidence exceeds limit.");
+        throw new Error("Staged mutation deferred: baseline milestone peer evidence exceeds limit.");
       }
-      if (!owner) throw new Error("Staged mutation deferred: FS 5779826 snapshot owner is missing.");
+      if (!owner || (options.ownerHint && options.ownerHint !== owner.path)) {
+        throw new Error("Staged mutation deferred: baseline snapshot owner is missing or conflicts with owner hint.");
+      }
       const paragraphs = owner.body.split(/\n\s*\n/);
-      const archived = paragraphs.filter((part) => part.startsWith(`${historical}${oldPrefix}`) &&
-        part.includes("258 unique photo IDs") && part.includes("parsed/ remains stale"));
-      const updates = paragraphs.filter((part) => part.startsWith(heading));
-      if (oldOwners.length === 0 && archived.length === 1 && updates.length === 1 &&
-          updates[0].trimEnd() === update) {
-        const current = await kb.readConcept(ownerPath);
-        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
-        const summary = "No change needed; historical FS 5779826 milestone and preceding snapshot verified.";
+      const archived = paragraphs.filter((part) => part.startsWith(`${historical}${oldPrefix}`));
+      const ownUpdates = updates.filter((claim) => claim.path === owner.path);
+      if (oldOwners.length === 0 && archived.length === 1 && ownUpdates.length === 1 &&
+          ownUpdates[0].paragraph.trimEnd() === update && updates.length === 1) {
+        const current = await kb.readConcept(owner.path);
+        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${owner.path}`);
+        const summary = "No change needed; dated source-only baseline milestone and historical snapshot verified.";
         const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
           { providerCalls, generationMs: Date.now() - started });
         await traceStore(kb).save(trace);
         return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
       }
-      if (oldOwners.length !== 1 || oldOwners[0].path !== ownerPath || archived.length || updates.length) {
-        throw new Error("Staged mutation deferred: FS 5779826 snapshot is absent, duplicated, or partially updated.");
+      if (oldOwners.length !== 1 || oldOwners[0].path !== owner.path || archived.length || updates.length) {
+        throw new Error("Staged mutation deferred: baseline snapshot is absent, duplicated, or partially updated.");
       }
       const old = oldOwners[0].paragraph;
-      if (old.length > 4_000 || update.length > 4_000 ||
-          !old.includes("258 unique photo IDs") || !old.includes("parsed/ remains stale") ||
-          !old.includes("src/scripts/rebuild_test_baseline.py") ||
-          owner.body.split(old.trimEnd()).length !== 2) {
-        throw new Error("Staged mutation deferred: FS 5779826 old snapshot is not unique or complete.");
+      if (old.length > 4_000 || update.length > 4_000 || owner.body.split(old.trimEnd()).length !== 2) {
+        throw new Error("Staged mutation deferred: baseline snapshot is not unique or complete.");
       }
       const replacement = `${historical}${old.trimEnd()}\n\n${update}`;
       const proposed = owner.body.replace(old.trimEnd(), replacement);
       if (proposed.length > STAGED_MAX_OWNER_CHARS) {
-        throw new Error("Staged mutation deferred: FS 5779826 replacement exceeds evidence limit.");
+        throw new Error("Staged mutation deferred: baseline replacement exceeds evidence limit.");
       }
       const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
@@ -2344,18 +2328,18 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent FS 5779826 milestone check. Does the observed 258/11 source reorganization snapshot precede the caller's 257/10 ID 30 removal and source-only rebuild? Does the proposed replacement preserve the complete old snapshot as historical, reproduce only caller facts, keep other paragraphs, and mark the 5779826 state as a dated milestone rather than current guidance after later owner corrections? Review EVERY relevant peer passage: a later a081a66 builder fix or later owner mark correction is not a contradiction of this dated milestone, but a duplicate, unsupported order, or ambiguous owner must decline. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT FS PEER PASSAGES:\n${peerEvidence.join("\n\n")}\nOBSERVED OLD PARAGRAPH:\n${old}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
+        prompt: `Independent dated source-only baseline milestone check. Derive project, date, prior observed baseline paragraph, source script, commit, and result facts only from the instruction and complete owner. Preserve the superseded snapshot verbatim as history and append only caller-supported facts. Review every complete relevant sibling passage, including later corrections: do not label corrected post-milestone results current, but reject duplicate/partial/conflicting claims or ambiguous ownership. Preserve unrelated paragraphs. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT SIBLING PEERS:\n${peerEvidence.join("\n\n")}\nOBSERVED OLD PARAGRAPH:\n${old}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
       });
       state.checkCancellation();
-      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent FS 5779826 milestone check declined.");
-      const current = await kb.readConcept(ownerPath);
-      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent baseline milestone check declined.");
+      const current = await kb.readConcept(owner.path);
+      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${owner.path}`);
       state.checkCancellation();
-      await kb.patchConcept(ownerPath, { replaceBody: proposed }, "Staged mutation: preserve FS 5779826 baseline milestone", sha256(owner.body), options.signal,
+      await kb.patchConcept(owner.path, { replaceBody: proposed }, "Staged mutation: preserve dated source-only baseline milestone", sha256(owner.body), options.signal,
         (writtenPath) => { changed = [writtenPath]; });
-      const readBack = await kb.readConcept(ownerPath);
-      if (readBack.body !== proposed) throw new Error("FS 5779826 milestone failed CAS read-back verification.");
-      const summary = `Staged mutation changed ${ownerPath}.`;
+      const readBack = await kb.readConcept(owner.path);
+      if (readBack.body !== proposed) throw new Error("Baseline milestone failed CAS read-back verification.");
+      const summary = `Staged mutation changed ${owner.path}.`;
       const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
         { providerCalls, generationMs: Date.now() - started });
       await traceStore(kb).save(trace);
