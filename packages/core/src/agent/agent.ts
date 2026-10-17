@@ -1429,12 +1429,18 @@ async function runStagedMutation(
       // A generic Knowledge type does not establish exclusive repository
       // ownership. Search other named concepts before accepting the canonical
       // title/path, then check their full bodies against the proposed fact.
-      const subjectHits = await kb.search(namedApplication, { limit: 200 });
+      // A common application name can occur in hundreds of unrelated bodies.
+      // Search the bounded whole corpus before filtering on title/slug; a
+      // fixed top-200 cutoff would hide a later genuinely named owner, even
+      // though only a handful of hits actually name the application.
+      const conceptCount = (await kb.bundle.listConceptPaths()).length;
+      state.checkCancellation();
+      if (conceptCount > 10_000) {
+        throw new Error("Staged mutation deferred: named owner inventory exceeds limit.");
+      }
+      const subjectHits = await kb.search(namedApplication, { limit: conceptCount });
       recorder.record("search_knowledge", namedApplication, subjectHits.map((hit) => hit.path));
       state.checkCancellation();
-      if (subjectHits.length >= 200) {
-        throw new Error("Staged mutation deferred: named owner search exceeds evidence limit.");
-      }
       for (const hit of subjectHits) {
         const slug = path.posix.basename(hit.path, ".md").replace(/[-_]/g, " ");
         if (!stagedWords(`${hit.title ?? ""} ${slug}`).includes(namedApplication.toLowerCase())) continue;

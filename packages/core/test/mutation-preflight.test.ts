@@ -1150,6 +1150,42 @@ describe("mutation owner preflight", () => {
     expect(search.mock.calls.some(([query]) => query.toLowerCase() === "job-bot")).toBe(true);
   });
 
+  it.each([false, true])("finds a late named owner beyond 200 incidental mentions (duplicate=%s)", async (duplicate) => {
+    staged();
+    const owner = "/repos/job-bot.md";
+    const competitor = "/features/job-bot-auth0.md";
+    const fact = "Job-bot Auth0 diagnosis (Oct 2026): a database/password identity was unverified, " +
+      "while a separate Google identity for that address was verified.";
+    await kb.writeConcept(owner, { type: "Knowledge", title: "Job Bot" },
+      "Job-bot uses Auth0 authentication.", "seed");
+    await kb.writeConcept(competitor, { type: "Feature", title: "Job-bot Auth0" },
+      duplicate ? fact : "Job-bot Auth0 deployment notes, without the identity diagnosis.", "seed");
+    const noiseDir = path.join(root, "noise");
+    await fs.mkdir(noiseDir);
+    await Promise.all(Array.from({ length: 201 }, (_, i) => fs.writeFile(path.join(noiseDir, `note-${i}.md`),
+      "---\ntype: Note\ntitle: Other topic\n---\nIncidental Job-bot mention.\n")));
+    const namedHits = [
+      { path: owner, type: "Knowledge", title: "Job Bot", score: 100, confidenceQualified: false },
+      ...Array.from({ length: 201 }, (_, i) => ({ path: `/noise/note-${i}.md`, type: "Note",
+        title: "Other topic", score: 50, confidenceQualified: false })),
+      { path: competitor, type: "Feature", title: "Job-bot Auth0", score: 1, confidenceQualified: false },
+    ];
+    const search = vi.spyOn(kb, "search").mockImplementation(async (query: string, options) =>
+      query.toLowerCase() === "job-bot" ? namedHits.slice(0, options?.limit) : namedHits.slice(0, 3));
+    generateObjectMock.mockResolvedValue({ object: { safe: true } });
+    const result = await runMutation(kb, fact, { preflightInput: fact, directAdd: true });
+    if (duplicate) {
+      expect(result).toMatchObject({ ok: false, status: "failed",
+        error: expect.stringContaining("exact fact already belongs to another named owner") });
+      expect((await kb.readConcept(owner)).body).not.toContain(fact);
+    } else {
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+      expect((await kb.readConcept(owner)).body).toContain(fact);
+    }
+    expect(search.mock.calls.some(([query, options]) => query.toLowerCase() === "job-bot" &&
+      (options?.limit ?? 0) > 200)).toBe(true);
+  });
+
   it("routes a project add to the unique continuation owning its exact artifact, while checking parent and peers", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering.md";
