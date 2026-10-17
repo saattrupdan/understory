@@ -2431,6 +2431,63 @@ describe("mutation owner preflight", () => {
     expect(await kb.bundle.exists("/projects/unrelated-release-notes.md")).toBe(false);
   });
 
+  it("creates a specifically named versioned concept only after full-peer safety review", async () => {
+    staged();
+    const hintedPath = "/projects/harbor-atlas-v4.md";
+    const peer = "/projects/harbor-atlas-history.md";
+    await kb.writeConcept(peer, { type: "Project", title: "Harbor Atlas History" },
+      "Harbor Atlas v3 was an older local run; no v4 checkpoint was used.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: peer, type: "Project", title: "Harbor Atlas History", score: 10,
+      confidence: 10, confidenceQualified: false,
+    }]);
+    const fact = "Harbor Atlas v4 local release uses a new checkpoint, retains the v3 history, and passes the current smoke test.";
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("Harbor Atlas v3 was an older local run");
+      expect(prompt).toContain(hintedPath);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fact, { ownerHint: hintedPath, preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [hintedPath] } });
+    expect((await kb.readConcept(hintedPath)).body).toContain(fact);
+    expect((await kb.readConcept(peer)).body).toContain("v3 was an older local run");
+  });
+
+  it.each([
+    ["Harbor Atlas v40 local release uses a new checkpoint.", "/projects/harbor-atlas-v4.md"],
+    ["Cedar Grove v4 local release uses a new checkpoint.", "/projects/harbor-atlas-v4.md"],
+  ])("rejects a missing versioned path when its exact subject or version is absent (%s)", async (fact, hintedPath) => {
+    staged();
+    const peer = "/projects/reference.md";
+    await kb.writeConcept(peer, { type: "Project", title: "Reference" }, "Older reference context.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: peer, type: "Project", title: "Reference", score: 10, confidence: 10,
+      confidenceQualified: false,
+    }]);
+    expect(await runMutation(kb, fact, { ownerHint: hintedPath, preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("positive fact-topic anchor") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+    expect(await kb.bundle.exists(hintedPath)).toBe(false);
+  });
+
+  it("keeps a versioned missing path unwritten when independent peer review vetoes", async () => {
+    staged();
+    const hintedPath = "/projects/harbor-atlas-v4.md";
+    const peer = "/projects/harbor-atlas-history.md";
+    await kb.writeConcept(peer, { type: "Project", title: "Harbor Atlas History" },
+      "The Harbor Atlas v4 checkpoint has already been recorded here.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{
+      path: peer, type: "Project", title: "Harbor Atlas History", score: 10,
+      confidence: 10, confidenceQualified: false,
+    }]);
+    const fact = "Harbor Atlas v4 checkpoint was verified for the local demo and is ready for review.";
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fact, { ownerHint: hintedPath, preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+    expect(await kb.bundle.exists(hintedPath)).toBe(false);
+  });
+
   it("does not create a missing hinted concept when the independent check detects a duplicate or unsafe fact", async () => {
     staged();
     const existing = "/projects/claes-jev-history.md";

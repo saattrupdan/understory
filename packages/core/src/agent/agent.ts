@@ -2984,7 +2984,8 @@ async function runStagedMutation(
       const ordinaryAnchor = distinctiveOverlap.length >=
         ((leadingPullRequest && namedApplication === leadingPullRequest) || leadingTool ? 1 : 2);
       const versionedEntityAnchor = hasExplicitVersionAnchor && distinctiveOverlap.length >= 1;
-      if ((!ordinaryAnchor && !versionedEntityAnchor) || hits.length === 0) {
+      if ((!ordinaryAnchor && !versionedEntityAnchor) ||
+          (versionTokens.length > 0 && !hasExplicitVersionAnchor) || hits.length === 0) {
         throw new Error("Staged mutation deferred: missing suggested path lacks a positive fact-topic anchor.");
       }
       const evidence = [];
