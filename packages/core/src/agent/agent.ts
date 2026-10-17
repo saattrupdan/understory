@@ -1036,7 +1036,10 @@ function stagedDiscriminativeOwnerAnchor(
       !negatedMentions.some((mention) => mention.has(term))))) return false;
   const titleAnchor = selectedTerms.some((term) => {
     if (!inputTerms.has(term)) return false;
-    return !negatedMentions.some((mention) => mention.has(term));
+    const escaped = term.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+    const quotedOnly = new RegExp(`[\\\"“”‘’']${escaped}[\\\"“”‘’']`, "i").test(input) &&
+      !input.replace(new RegExp(`[\\\"“”‘’']${escaped}[\\\"“”‘’']`, "gi"), " ").toLowerCase().includes(term);
+    return !quotedOnly && !negatedMentions.some((mention) => mention.has(term));
   });
   if (titleAnchor) return true;
 
@@ -3121,6 +3124,7 @@ async function runStagedMutation(
     const selectionBudget = focused.length && !sectionOwnerPath ? 24_000 : STAGED_MAX_EVIDENCE_CHARS;
     let selectedPath: string | undefined;
     let verifiedMetadataOwner = false;
+    let fallbackCandidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> | undefined;
     if (evidence.length + raw.length > selectionBudget && candidates.length <= 1) {
       throw new Error("Staged mutation deferred: evidence exceeds prompt budget.");
     }
@@ -3150,11 +3154,36 @@ async function runStagedMutation(
         prompt: `Read-only owner selection. Choose exactly one positively relevant existing concept from the candidate metadata. Any owner whose topic plausibly fits the fact is acceptable; do not reject a relevant owner just because another could also fit. If none fit, return an empty path. When multiple owners fit equally, choose the first in candidate order. A mere negative/unrelated mention is not relevance. This choice does not authorize a write. JSON only.\nINSTRUCTION:\n${raw}\nCANDIDATE METADATA:\n${JSON.stringify(metadata)}`,
       });
       state.checkCancellation();
-      const selectedHit = hits.find((hit) => hit.path === selection.object.path) ??
-        (selection.object.path === "" ? hits.find((hit) =>
-          !(hit.title && raw.toLowerCase().includes(hit.title.toLowerCase()) && !stagedTitleMention(raw, hit.title)) &&
-          ((hit.title && stagedTitleMention(raw, hit.title)) || stagedOwnerAnchor(raw, hit.path))) : undefined);
-      if (!selectedHit) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
+      let selectedHit = hits.find((hit) => hit.path === selection.object.path);
+      if (!selectedHit) {
+        // A metadata selector can abstain or hallucinate a path. Give it one
+        // bounded, content-grounded retry over every ranked candidate, rather
+        // than guessing from search order or discarding competing owners.
+        const completeCandidates: Array<{ path: string; frontmatter: { title?: string; type?: string }; body: string }> = [];
+        for (const hit of hits) {
+          state.checkCancellation();
+          const concept = await kb.readConcept(hit.path);
+          recorder.record("read_concept", concept.path, [concept.path]);
+          if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
+            throw new Error("Staged mutation deferred: competing owner body exceeds evidence limit.");
+          }
+          completeCandidates.push({ path: concept.path, frontmatter: concept.frontmatter, body: concept.body });
+        }
+        const fullEvidence = JSON.stringify(completeCandidates);
+        if (fullEvidence.length + raw.length > STAGED_MAX_EVIDENCE_CHARS) {
+          throw new Error("Staged mutation deferred: complete candidate evidence exceeds prompt budget.");
+        }
+        const fallback = await generateObject({
+          model: selector.model,
+          schema: z.object({ path: z.string() }).strict(),
+          temperature: 0,
+          abortSignal: options.signal,
+          prompt: `Read-only owner selection using complete evidence. Select a path only when one concept positively owns the instruction's primary subject/topic. Treat quoted examples and incidental mentions of other projects/repos as context, not ownership. Compare every candidate; return an empty path if ownership is ambiguous or unsupported. Never use candidate order as a tie-break. This choice does not authorize a write. JSON only.\\nINSTRUCTION:\\n${raw}\\nCOMPLETE CANDIDATES (title, type, and full body):\\n${fullEvidence}`,
+        });
+        selectedHit = hits.find((hit) => hit.path === fallback.object.path);
+        if (!selectedHit) throw new Error("Staged mutation deferred: candidate owner selection is uncertain.");
+        fallbackCandidates = completeCandidates;
+      }
       selectedPath = selectedHit.path;
       // Metadata selection cannot authorize a write. Re-read the selected hit
       // even when it ranked fourth or fifth; never send a truncated body onward.
@@ -3165,7 +3194,9 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: owner body exceeds evidence limit.");
       }
       const selected = { path: owner.path, frontmatter: owner.frontmatter, body: owner.body };
-      const evidenceCandidates = [...candidates.filter((candidate) => candidate.path !== selectedPath), selected];
+      const evidenceCandidates = fallbackCandidates
+        ? fallbackCandidates
+        : [...candidates.filter((candidate) => candidate.path !== selectedPath), selected];
       if (!hintedPath && (namedSection ||
           (!options.directAdd && stagedContrastedOldHash(raw)) ||
           !stagedDiscriminativeOwnerAnchor(raw, selected.path, evidenceCandidates, hits, !!options.directAdd))) {
