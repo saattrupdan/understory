@@ -3326,7 +3326,33 @@ async function runStagedMutation(
               prompt: `Independent read-only competing-owner check. Does this FULL peer body own the SAME requested version/artifact and its substantive new facts, contradict them at that time, or leave the version chronology/ownership ambiguous? Compare full version identifiers and dates, not just a shared corpus size, old label, or one card count. A clearly earlier note or a DIFFERENT later successor version is not a competing owner of a distinct dated intermediate milestone; the latter must not make that older milestone sound current today. Return competingCurrentOrAmbiguous=true on uncertainty. JSON only.\nREQUEST:\n${raw}\nOBSERVED OLD CLAIM FROM SELECTED OWNER:\n${passage}\nFULL PEER ${peer.path}:\n${peer.body}`,
             });
             state.checkCancellation();
-            if (check.finishReason === "length" || !check.object.certain || check.object.competingCurrentOrAmbiguous) noAnchor(`peer(${peer.path},certain=${check.object.certain},conflict=${check.object.competingCurrentOrAmbiguous},capped=${check.finishReason === "length"})`);
+            if (check.finishReason === "length") noAnchor("peer-output-cap");
+            if (!check.object.certain || check.object.competingCurrentOrAmbiguous) {
+              // A broad shared corpus can obscure a distinct intermediate
+              // version. Escalate only with independently checkable, different
+              // complete artifact paths and at least two unshared measurements.
+              const artifacts = (text: string) => text.match(/(?:data\/[\w./-]{20,}|file:\/\/\/tmp\/[\w.-]{20,}\.html)/g) ?? [];
+              const requested = artifacts(raw).find((artifact) => artifact.includes("/") && !peer.body.includes(artifact));
+              const peerArtifact = requested && artifacts(peer.body).find((artifact) =>
+                artifact !== requested && artifact.slice(0, artifact.lastIndexOf("/") + 1) ===
+                  requested.slice(0, requested.lastIndexOf("/") + 1));
+              const unsharedCounts = [...new Set(raw.match(/\b\d{1,3}(?:,\d{3})+\b/g) ?? [])]
+                .filter((count) => !peer.body.includes(count));
+              if (!pastPolicy || !requested || !peerArtifact || unsharedCounts.length < 2) {
+                noAnchor(`peer(${peer.path},certain=${check.object.certain},conflict=${check.object.competingCurrentOrAmbiguous},distinct=false)`);
+              }
+              const versionCheck = await generateObject({
+                model: resolved.model,
+                schema: z.object({ distinctDatedVersion: z.boolean(), laterPeerSuccessor: z.boolean(),
+                  noDuplicateOrContradiction: z.boolean(), certain: z.boolean() }).strict(),
+                temperature: 0, abortSignal: options.signal,
+                prompt: `Independent read-only version disambiguation after an uncertain peer check. The requested and peer artifact paths are EXACT, share a parent, and differ; that alone is not enough. Does the request describe a distinct EARLIER dated intermediate version of this same subject, with the peer describing a LATER successor? Does this complete peer contain NO duplicate of the requested exact version, its distinctive measurements, or a factual contradiction at the requested time? Treat "current" in the request as scoped to its stated date, never as current today. Shared corpus sizes or generic policy themes do not establish duplicate ownership. Decline on uncertain ordering, overlapping exact version facts, or unresolved conflict. JSON only.\nINSTRUCTION:\n${raw}\nREQUESTED ARTIFACT:\n${requested}\nDIFFERENT PEER ARTIFACT:\n${peerArtifact}\nREQUEST-ONLY MEASUREMENTS:\n${JSON.stringify(unsharedCounts.slice(0, 12))}\nOLD OWNER PASSAGE:\n${passage}\nFULL PEER ${peer.path}:\n${peer.body}`,
+              });
+              state.checkCancellation();
+              if (versionCheck.finishReason === "length" || !versionCheck.object.certain ||
+                  !versionCheck.object.distinctDatedVersion || !versionCheck.object.laterPeerSuccessor ||
+                  !versionCheck.object.noDuplicateOrContradiction) noAnchor(`peer-version(${peer.path},certain=${versionCheck.object.certain},distinct=${versionCheck.object.distinctDatedVersion},later=${versionCheck.object.laterPeerSuccessor},safe=${versionCheck.object.noDuplicateOrContradiction})`);
+            }
           }
         }
       }

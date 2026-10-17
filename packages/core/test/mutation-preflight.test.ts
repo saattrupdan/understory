@@ -3078,11 +3078,11 @@ describe("mutation owner preflight", () => {
     const owner = "/notes/continuation.md";
     const peer = "/notes/other-history.md";
     const old = "Unknown -1 labels must remain unknown until a reviewer manually annotates them.";
-    const instruction = "Correct the current unknown-label guidance: on 18 Apr 2028, supersedes earlier advice to keep -1 or require manual annotation; owner policy now converts -1 to false 0 for this reviewed corpus. Keep the earlier guidance as historical provenance.";
+    const instruction = "Correct the current unknown-label guidance: on 18 Apr 2028, supersedes earlier advice to keep -1 or require manual annotation; owner policy now converts -1 to false 0 for this reviewed corpus in data/experiments/harbor/owner/review/binary-v1 with 12,345 cells and 23,456 reviewed examples. Keep the earlier guidance as historical provenance.";
     await kb.writeConcept(owner, { type: "Note", title: "Policy Continuation" },
       `Earlier review policy (dated): ${old} ${"Additional neutral guidance. ".repeat(1_900)}`, "seed");
     await kb.writeConcept(peer, { type: "Note", title: "Other History" },
-      `Unrelated archive. ${"Additional unrelated notes. ".repeat(1_900)}`, "seed");
+      `Later successor on 19 Apr 2028: data/experiments/harbor/owner/review/binary-v2. ${"Additional unrelated notes. ".repeat(1_900)}`, "seed");
     vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((path) => ({
       path, type: "Note", title: path === owner ? "Policy Continuation" : "Other History",
       score: 10, confidenceQualified: false,
@@ -3097,10 +3097,16 @@ describe("mutation owner preflight", () => {
       if (prompt.includes("Independent read-only provenance check")) return { object: {
         authenticPastPolicy: true, noCurrentContradiction: true, certain: true,
       } };
-      if (prompt.includes("Independent read-only competing-owner check")) return { object: { competingCurrentOrAmbiguous: false, certain: true } };
+      if (prompt.includes("Independent read-only competing-owner check")) return { object: { competingCurrentOrAmbiguous: true, certain: false } };
+      if (prompt.includes("Independent read-only version disambiguation")) {
+        expect(prompt).toContain("data/experiments/harbor/owner/review/binary-v1");
+        expect(prompt).toContain("data/experiments/harbor/owner/review/binary-v2");
+        return { object: { distinctDatedVersion: true, laterPeerSuccessor: true,
+          noDuplicateOrContradiction: true, certain: true } };
+      }
       if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
         ...baseProposal, action: "append", path: owner,
-        new_text: "On 18 Apr 2028, owner policy now converts -1 to false 0 for this reviewed corpus; this supersedes earlier advice to keep -1 or require manual annotation. Keep the earlier guidance as historical provenance.",
+        new_text: "On 18 Apr 2028, owner policy now converts -1 to false 0 for this reviewed corpus in data/experiments/harbor/owner/review/binary-v1 with 12,345 cells and 23,456 reviewed examples; this supersedes earlier advice to keep -1 or require manual annotation. Keep the earlier guidance as historical provenance.",
       } };
       if (prompt.includes("Independent safety check.")) return { object: { safe: true, reason: "Later policy is supported and history remains." } };
       throw new Error(`Unexpected mutation check: ${prompt.slice(0, 100)}`);
