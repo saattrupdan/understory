@@ -1093,6 +1093,21 @@ async function runStagedMutation(
   let modelChain: string[] = [];
   let changed: string[] = [];
   try {
+    if (options.ownerHint) {
+      const hint = options.ownerHint;
+      const segments = hint.startsWith("/") ? hint.slice(1).split("/") : [];
+      const hasMarkdownExtension = segments.at(-1)?.endsWith(".md") ?? false;
+      const conceptSegments = hasMarkdownExtension
+        ? [...segments.slice(0, -1), segments.at(-1)!.slice(0, -3)]
+        : segments;
+      if (hint.length > 512 || conceptSegments.length === 0 ||
+          conceptSegments.some((segment) => !/^[a-z0-9_-]+$/.test(segment))) {
+        throw new Error("Staged mutation deferred: owner hint is not a bounded concept path.");
+      }
+      // Normalize valid extensionless suggestions before special owner checks so
+      // they receive exactly the same existence and evidence vetting as .md paths.
+      if (!hasMarkdownExtension) options.ownerHint = `${hint}.md`;
+    }
     const raw = options.preflightInput ?? instruction;
     // The dated published test manifest and the currently parsed on-disk
     // manifest are different snapshots. Append the evaluation to the detailed
