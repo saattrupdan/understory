@@ -4865,6 +4865,73 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body.trim()).toBe(oldText);
   });
 
+  const fsDatedBaselineOwner = "/projects/fs-fotovalidering-continuation-257a96e360815542.md";
+  const fsDatedBaselinePrior = "FS Fotovalidering baseline 2026-10-14 — Dan completed owner annotation for all 258 test photos. On 14 Oct 2026 it was applied exclusively to the source Excel workbook and parsed/ was regenerated. 258 sample IDs and hashes stayed unchanged. Current parsed manifest SHA-256: 3d27505b085a9506a11a87855fa782031500248ea288d48700da44619976ccb6. Source baselines/2026-10-14/regenerate_parsed.py remains the reproducible method.";
+  const fsDatedBaselineExtraction = "FS Fotovalidering 14 Oct 2026 source policy: source workbook corrections were kept in the Excel workbook; six source decks now extract 257 unique photos, not 258. No photo pixels were surfaced to the agent.";
+  const fsDatedBaselineInstruction = "Update FS Fotovalidering 2026-10-14 dated test baseline and new 24-head retrain evaluation. As of 15 Oct 2026 the current on-disk `~/Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/parsed/manifest.jsonl` contains **257** test images (not the earlier reported 258); SHA-256 `225de8e9d265ea284fd3a5b8de7e6bf56eda9c2dcedb24b5544a84ff26c348b0`. Paths JSONL also has 257 rows, parsed/images 257 files, no unlabelled image exclusions, all 257 have exact canonical 24 binary labels, 247 role=reject and 10 role=accept; all seven recorded source XLSX/PPTX hashes still match. Do not erase historical 258-photo/published-manifest notes: this is the currently parsed on-disk version, and no source edits were made. On Mac MPS, safely evaluated checkpoint SHA `f17cdc68e95d7afea6aa2f53e456d2bab34afaeb1fdd7bc1a91307c4a0114c86` at fixed 0.50, no TTA, 1000 row-bootstrap draws, no HTML/PDF, without displaying or inspecting photo pixels. Results under ignored private run `data/experiments/experiment-89/model/owner-25-review/retrained-sparkie-binary-exclude-review-20261014/test-evaluation-baseline-2026-10-14/`; evaluation exit 0, report SHA `48590b5a949f9cd65c5707f41c183341d54014d78c3b988e70530623330df776`. Whole-photo confusion TP232 TN7 FP3 FN15: false rejection 3/10=30.0%, false approval 15/247=6.07%; macro F1 raw24=0.5496813 but 3 heads lack positive test support, positive-support21 macro F1=0.4853501, micro F1=0.5930599. No exact image digest overlaps with 24,285 synthetic train/validation samples. This test set has been repeatedly used, so numbers are descriptive and must not be represented as independent held-out evidence or proof of FS thresholds. Prior owner policy mapping unknown→false applies to train/validation corpus; this test baseline already has binary labels and was not modified.";
+
+  it("appends the currently parsed FS test baseline without erasing published 258-photo history", async () => {
+    staged();
+    const prior = `${fsDatedBaselineExtraction}\n\n${fsDatedBaselinePrior}\n\nOther current baseline source policy remains intact.`;
+    await kb.writeConcept(fsDatedBaselineOwner, { type: "Project Continuation", title: "FS dated test baseline" }, prior, "seed");
+    await kb.writeConcept("/projects/fs-test-peer.md", { type: "Project", title: "FS test details" },
+      "The baselines/2026-10-14 source decks yield 257, while a dated published review mentioned 258 photos.", "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(fsDatedBaselinePrior);
+      expect(prompt).toContain("RELEVANT PEERS:");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fsDatedBaselineInstruction, { preflightInput: fsDatedBaselineInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsDatedBaselineOwner] } });
+    const current = (await kb.readConcept(fsDatedBaselineOwner)).body;
+    expect(current).toContain(prior);
+    for (const fact of ["Current on-disk FS dated test baseline and retrain evaluation (15 Oct 2026):",
+      "225de8e9d265ea284fd3a5b8de7e6bf56eda9c2dcedb24b5544a84ff26c348b0",
+      "48590b5a949f9cd65c5707f41c183341d54014d78c3b988e70530623330df776",
+      "TP232 TN7 FP3 FN15", "3 heads lack positive test support", "no source edits were made",
+      "independent held-out evidence"])
+      expect(current).toContain(fact);
+    expect(await runMutation(kb, fsDatedBaselineInstruction, { preflightInput: fsDatedBaselineInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("allows a peer's historical 258-image manifest reference without assigning it ownership", async () => {
+    staged();
+    await kb.writeConcept(fsDatedBaselineOwner, { type: "Project Continuation", title: "FS baseline" },
+      `${fsDatedBaselineExtraction}\n\n${fsDatedBaselinePrior}`, "seed");
+    await kb.writeConcept("/projects/fs-test-peer.md", { type: "Project", title: "FS test history" },
+      "Prior 258-image test manifest SHA 3d27505b085a9506a11a87855fa782031500248ea288d48700da44619976ccb6 remained historical.", "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fsDatedBaselineInstruction, { preflightInput: fsDatedBaselineInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsDatedBaselineOwner] } });
+  });
+
+  it("defers a competing FS test baseline owner or semantically duplicate evaluation", async () => {
+    staged();
+    await kb.writeConcept(fsDatedBaselineOwner, { type: "Project Continuation", title: "FS baseline" },
+      `${fsDatedBaselineExtraction}\n\n${fsDatedBaselinePrior}`, "seed");
+    await kb.writeConcept("/projects/fs-test-peer.md", { type: "Project", title: "FS test" },
+      `${fsDatedBaselineExtraction}\n\n${fsDatedBaselinePrior}`, "seed");
+    expect(await runMutation(kb, fsDatedBaselineInstruction, { preflightInput: fsDatedBaselineInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing or already updated peer") });
+    await kb.writeConcept("/projects/fs-test-peer.md", { type: "Project", title: "FS test" },
+      "Checkpoint f17cdc68e95d7afea6aa2f53e456d2bab34afaeb1fdd7bc1a91307c4a0114c86 was used for another test evaluation: TP232 TN7 FP3 FN15.", "seed");
+    expect(await runMutation(kb, fsDatedBaselineInstruction, { preflightInput: fsDatedBaselineInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing or already updated peer") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("defers the FS dated test update if independent ownership review declines", async () => {
+    staged();
+    await kb.writeConcept(fsDatedBaselineOwner, { type: "Project Continuation", title: "FS baseline" },
+      `${fsDatedBaselineExtraction}\n\n${fsDatedBaselinePrior}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fsDatedBaselineInstruction, { preflightInput: fsDatedBaselineInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS dated test baseline check declined") });
+    expect((await kb.readConcept(fsDatedBaselineOwner)).body).not.toContain("225de8e9d265ea28");
+  });
+
   const fsPriorityInstruction = "Update FS Fotovalidering 15 Oct 2026 retrained 5,441-card synthetic annotation-page order at file:///tmp/fs-v3-merged24-retrained-binary-review-20261014.html. Dan requested focus on the three 2026-10-14 test false-rejection trigger categories, without adding test photos to synthetic annotation: `image_blurred`, `background_not_uniform`, `eyes_not_looking_straight`. Current page uses four stable buckets in order: 657 fitting train/validation samples with a false-positive model flag at fixed0.50 in any target category; 1,483 other fitting samples; 504 excluded-from-fitting target-category false positives; 2,797 other excluded samples. Within each bucket, prior descending class-balanced BCE model-error priority, disagreement-count and stable-ID ties remain unchanged. All 5,441 IDs, category display order, annotations by ID, storage key, server 127.0.0.1:8782 and original immutable queues remain intact. New private queue: `.../retrained-sparkie-binary-exclude-review-20261014/next-review-queue-fit-first-target-fp.jsonl`, SHA `79828fca1165dc1f94d58d9d5f4b90307c9b4f9fca971ad5b70a609f9da869a0`; new page SHA `31bf05689e43c6b3388664d78b88fcf578a724bad7871b30e9ce47f255dc4eb7` supersedes old fit-first page SHA `f478b3d193fd8276a8e25899726fcc98ad4c100a59571dbf5d7642e942e33bb4`. `/tmp/recreate-fs-retrained-binary-review.py` updated to reconstruct current priority from frozen private queue; preserving same page path/key is critical for browser autosave.";
   const fsPriorityOwner = "/projects/fs-fotovalidering/continuation-retrained.md";
   const fsPriorPage = "Inference on all 24,285 synthetic images produced 5,441 class-balanced-BCE-prioritised cards at file:///tmp/fs-v3-merged24-retrained-binary-review-20261014.html, local-only server 127.0.0.1:8782 and page SHA f381c4ab888136d905d0db51bdc336f77ff7a45f68f6de229bbabe2e8daf3bda. The previous display order remains; owner reviews retain their annotations.";
