@@ -1098,15 +1098,21 @@ async function runStagedMutation(
         ["257", "258", "225de8e9d265ea284fd3a5b8de7e6bf56eda9c2dcedb24b5544a84ff26c348b0",
           "f17cdc68e95d7afea6aa2f53e456d2bab34afaeb1fdd7bc1a91307c4a0114c86",
           "48590b5a949f9cd65c5707f41c183341d54014d78c3b988e70530623330df776",
-          "TP232 TN7 FP3 FN15", "1000 row-bootstrap", "24,285", "independent held-out evidence"]
+          "TP232 TN7 FP3 FN15", "1000 row-bootstrap", "24,285", "independent held-out evidence",
+          "As of 15 Oct 2026 the current on-disk", "this is the currently parsed on-disk version"]
           .every((anchor) => raw.includes(anchor))) {
       const ownerPath = "/projects/fs-fotovalidering-continuation-257a96e360815542.md";
       const oldPublishedSha = "3d27505b085a9506a11a87855fa782031500248ea288d48700da44619976ccb6";
       const manifestSha = "225de8e9d265ea284fd3a5b8de7e6bf56eda9c2dcedb24b5544a84ff26c348b0";
       const reportSha = "48590b5a949f9cd65c5707f41c183341d54014d78c3b988e70530623330df776";
       const checkpointSha = "f17cdc68e95d7afea6aa2f53e456d2bab34afaeb1fdd7bc1a91307c4a0114c86";
-      const heading = "Current on-disk FS dated test baseline and retrain evaluation (15 Oct 2026): ";
-      const update = `${heading}${raw.trim().replace(/^Update FS Fotovalidering 2026-10-14 dated test baseline and new 24-head retrain evaluation\.\s*/i, "")}`;
+      const laterManifestSha = "d0e41600805f1652c86f84974030192a17db1eed20779a15c20f8af948110ec0";
+      const heading = "Historical FS on-disk dated test baseline and retrain evaluation (before the 15 Oct 2026 owner-blur correction): ";
+      const update = `${heading}${raw.trim()
+        .replace(/^Update FS Fotovalidering 2026-10-14 dated test baseline and new 24-head retrain evaluation\.\s*/i, "")
+        .replace("As of 15 Oct 2026 the current on-disk", "Before the later 15 Oct owner-blur correction, the then-current on-disk")
+        .replace("this is the currently parsed on-disk version", "this was the parsed on-disk version before the owner-blur correction")
+        .replace("this test baseline already has binary labels and was not modified.", "this test baseline already had binary labels and was not modified in this evaluation.")} Later on 15 Oct, the separate owner-blur correction changed one label and superseded this manifest with SHA ${laterManifestSha} (still 257 photos); this evaluation describes the earlier snapshot.`;
       if (options.ownerHint && options.ownerHint !== ownerPath) {
         throw new Error("Staged mutation deferred: FS dated test baseline conflicts with owner hint.");
       }
@@ -1115,6 +1121,7 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: FS dated test baseline concept inventory is incomplete.");
       }
       const peerEvidence: string[] = [];
+      const supersedingPeers: string[] = [];
       let owner: Awaited<ReturnType<KnowledgeBase["readConcept"]>> | undefined;
       for (const peerPath of paths) {
         state.checkCancellation();
@@ -1132,7 +1139,11 @@ async function runStagedMutation(
           owner = peer;
           continue;
         }
-        const peerConflict = peer.body.includes(manifestSha) ? "current manifest" :
+        const confirmedLaterCorrection = peer.body.includes(manifestSha) &&
+          peer.body.includes(laterManifestSha) && peer.body.includes("owner-blur") &&
+          peer.body.includes("257-photo") && peer.body.includes("Godkendt!C4=x");
+        if (confirmedLaterCorrection) supersedingPeers.push(peer.path);
+        const peerConflict = peer.body.includes(manifestSha) && !confirmedLaterCorrection ? "unexplained prior manifest" :
           peer.body.includes(reportSha) ? "evaluation report" :
           peer.body.includes("TP232 TN7 FP3 FN15") ? "evaluation confusion" :
           peer.body.includes(oldPublishedSha) && peer.body.includes("258 sample IDs") &&
@@ -1143,7 +1154,8 @@ async function runStagedMutation(
         for (const part of peer.body.split(/\n\s*\n/)) {
           if ((part.includes("baselines/2026-10-14") && /\b(?:257|258)\b/.test(part)) ||
               part.includes(oldPublishedSha) || part.includes(checkpointSha) ||
-              part.includes("test-evaluation-baseline-2026-10-14")) {
+              part.includes("test-evaluation-baseline-2026-10-14") ||
+              (confirmedLaterCorrection && part.includes(manifestSha))) {
             if (part.length > 4_000) {
               throw new Error("Staged mutation deferred: FS dated test baseline peer passage exceeds evidence limit.");
             }
@@ -1151,8 +1163,9 @@ async function runStagedMutation(
           }
         }
       }
-      if (peerEvidence.length > 28 || peerEvidence.join("\n\n").length > 32_000) {
-        throw new Error("Staged mutation deferred: FS dated test baseline peer evidence exceeds limit.");
+      if (peerEvidence.length > 28 || peerEvidence.join("\n\n").length > 32_000 ||
+          supersedingPeers.length !== 1) {
+        throw new Error("Staged mutation deferred: FS dated test baseline peer evidence or later correction is incomplete.");
       }
       if (!owner || !owner.body.includes(oldPublishedSha) ||
           !owner.body.includes("258 sample IDs") ||
@@ -1185,7 +1198,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent FS dated test-baseline ownership and temporal check. Is this the detailed owner of the 14 Oct source XLSX/PPTX baseline and its earlier published 258-photo manifest, rather than a generic project mention or synthetic training set? Does the appended 15 Oct note accurately distinguish the currently parsed on-disk 257-image manifest from historical 258-photo/published snapshots without retracting source corrections or claiming source edits, and record the checkpoint, evaluation, confusion, F1 support caveat, privacy, no-overlap and repeatedly used test-set caveat exactly as instructed? Check all relevant peers for an equivalent current evaluation or better owner. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nPROPOSED APPENDED NOTE:\n${update}`,
+        prompt: `Independent FS dated test-baseline ownership and temporal check. Is this the detailed owner of the 14 Oct source XLSX/PPTX baseline and its earlier published 258-photo manifest, rather than a generic project mention or synthetic training set? Does the proposed historical note correctly identify the 257-image SHA 225de8e9 as the on-disk snapshot BEFORE the separately recorded 15 Oct owner-blur label correction (new manifest SHA d0e416...), NOT the current manifest, and preserve historical 258-photo/published snapshots without retracting source corrections or claiming source edits? Are the checkpoint, evaluation, confusion, F1 support caveat, privacy, no-overlap and repeatedly used test-set caveat exactly as instructed? Check all relevant peers for an equivalent evaluation or better owner. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.join("\n\n")}\nPROPOSED APPENDED NOTE:\n${update}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent FS dated test baseline check declined.");
