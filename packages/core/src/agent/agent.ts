@@ -1158,7 +1158,7 @@ async function runStagedMutation(
           // Require a separate, bounded adjudication; other paths still fail
           // closed on a substantive competing claim.
           if (peer.path !== "/repos/pi-agent/memory-async.md" || conflicting.length > 4) {
-            throw new Error(`Staged mutation deferred: EuroEval review has a competing owner (${peer.path}).`);
+            throw new Error(`Staged mutation deferred: EuroEval review has a competing owner (${peer.path}; ${conflicting.length} review passages).`);
           }
           const excerpt = conflicting.map((paragraph) => {
             const id = paragraph.indexOf("5518245608");
@@ -1173,14 +1173,14 @@ async function runStagedMutation(
           modelChain = resolved.modelChain;
           const ownership = await generateObject({
             model: resolved.model,
-            schema: z.object({ exampleOnly: z.boolean() }).strict(),
+            schema: z.object({ exampleOnly: z.boolean(), reason: z.string().max(300) }).strict(),
             temperature: 0,
             abortSignal: options.signal,
             prompt: `Independent ownership check. The candidate peer is an async memory-queue runbook, not the EuroEval repository. Is EVERY mention of EuroEval PR #2234 review 5518245608 in the quoted excerpts ONLY an example of a queued/failed memory request, rather than this peer asserting the review's current state or storing the authoritative review record? Respond exampleOnly=false on uncertainty or any competing substantive claim. JSON only.\nPEER ${peer.path}:\n${excerpt}\nCORRECTION:\n${raw}`,
           });
           state.checkCancellation();
           if (!ownership.object.exampleOnly) {
-            throw new Error(`Staged mutation deferred: EuroEval review has a competing owner (${peer.path}).`);
+            throw new Error(`Staged mutation deferred: EuroEval queue example adjudication declined (${peer.path}: ${ownership.object.reason.slice(0, 160)}).`);
           }
           adjudicatedExcerpt = excerpt;
         }

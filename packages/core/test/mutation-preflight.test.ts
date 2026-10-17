@@ -4940,7 +4940,7 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain("PEER /repos/pi-agent/memory-async.md:");
       expect(prompt).toContain("Example failed request");
-      return { object: { exampleOnly: true } };
+      return { object: { exampleOnly: true, reason: "The review is quoted in a queued-write example." } };
     }).mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain("independently classified as a queue example");
       return { object: { safe: true } };
@@ -4957,9 +4957,9 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(owner, { type: "Repository", title: "EuroEval" }, euroevalOldReview, "seed");
     await kb.writeConcept("/repos/pi-agent/memory-async.md", { type: "Repository", title: "Memory async" },
       "The current EuroEval PR #2234 review 5518245608 by Dan is still PENDING.", "seed");
-    generateObjectMock.mockResolvedValueOnce({ object: { exampleOnly: false } });
+    generateObjectMock.mockResolvedValueOnce({ object: { exampleOnly: false, reason: "This peer asserts current review status." } });
     expect(await runMutation(kb, euroevalSubmittedInstruction, { preflightInput: euroevalSubmittedInstruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing owner") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("adjudication declined") });
     expect((await kb.readConcept(owner)).body).toContain(euroevalOldReview);
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
