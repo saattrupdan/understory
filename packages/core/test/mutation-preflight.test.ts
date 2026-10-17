@@ -3839,10 +3839,10 @@ describe("mutation owner preflight", () => {
 
   it.each([false, true])("locates a dated FS status across all siblings and rejects a duplicate (%s)", async (duplicate) => {
     staged();
-    const owner = "/projects/fs-fotovalidering-continuation-f5bd33e9.md";
-    const copy = "/projects/fs-fotovalidering-continuation-copy.md";
-    const heading = "FS Fotovalidering owner-reviewed v3 retrain (13 Oct 2026):";
-    const instruction = "Update FS Fotovalidering owner-reviewed v3 retrain status recorded on 13 Oct 2026: a fresh 24-head Sparkie training run completed; the earlier job remains historical.";
+    const owner = "/projects/orchid-validation-continuation-f5bd33e9.md";
+    const copy = "/projects/orchid-validation-continuation-copy.md";
+    const heading = "Orchid Validation owner-reviewed v3 retrain (13 Oct 2026):";
+    const instruction = "Update Orchid Validation owner-reviewed v3 retrain status recorded on 13 Oct 2026: a fresh 24-head Sparkie training run completed; the earlier job remains historical.";
     await kb.writeConcept(owner, { type: "Project Continuation", title: "FS Continuation" },
       `${heading} Mac MPS was interrupted; fresh Sparkie training still pending.`, "seed");
     await kb.writeConcept(copy, { type: "Project Continuation", title: "Another Continuation" },
@@ -4116,21 +4116,21 @@ describe("mutation owner preflight", () => {
 
   it.each([false, true])("locates a unique FS keyboard note beyond ranked page hits (duplicate=%s)", async (duplicate) => {
     staged();
-    const ordering = "/projects/fs-fotovalidering-continuation-e0d0ea92dc7fde84.md";
-    const keyboard = "/projects/fs-fotovalidering-continuation-8559c6035bedff77.md";
-    const hiddenPeer = "/projects/fs-fotovalidering-continuation-hidden.md";
-    const oldOrdering = "FS Fotovalidering 25-class annotation buttons are sorted by config/categories.yaml priority. " +
-      "The running /tmp/fs-photo-candidates-25.html page on port 8772 keeps the same localStorage key.";
-    const controls = "FS Fotovalidering 25-class annotation UI preference: keyboard-first controls with keys 1–9 mapped in rank order. " +
-      "Enter saves and advances. The /tmp/fs-photo-candidates-25.html page runs on port 8772; localStorage is preserved.";
-    const instruction = "Correct the FS Fotovalidering 25-class annotation UI knowledge: controls are binary selected/unselected. " +
-      "Number keys 1–9 select categories. The running /tmp/fs-photo-candidates-25.html page on port 8772 " +
+    const ordering = "/projects/orchid-validation-continuation-e0d0ea92dc7fde84.md";
+    const keyboard = "/projects/orchid-validation-continuation-8559c6035bedff77.md";
+    const hiddenPeer = "/projects/orchid-validation-continuation-hidden.md";
+    const oldOrdering = "Orchid Validation annotation buttons are sorted by config/categories.yaml priority. " +
+      "The running /tmp/orchid-review-page.html page on port 9123 keeps the same localStorage key.";
+    const controls = "Orchid Validation annotation UI preference: keyboard-first controls with keys 1–9 mapped in rank order. " +
+      "Enter saves and advances. The /tmp/orchid-review-page.html page runs on port 9123; localStorage is preserved.";
+    const instruction = "Correct the Orchid Validation annotation UI knowledge: controls are binary selected/unselected. " +
+      "Number keys 1–9 select categories. The running /tmp/orchid-review-page.html page on port 9123 " +
       "was updated in place; localStorage key unchanged.";
-    await kb.writeConcept(ordering, { type: "Project Continuation", title: "FS Fotovalidering — Phase 1 PoC — Continuation e0d0ea92" },
+    await kb.writeConcept(ordering, { type: "Project Continuation", title: "Orchid Validation — Ordering Notes" },
       `${oldOrdering} ${"Documented ordering history. ".repeat(1_200)}`, "seed");
-    await kb.writeConcept(keyboard, { type: "Project Continuation", title: "FS Fotovalidering — Keyboard Notes" },
+    await kb.writeConcept(keyboard, { type: "Project Continuation", title: "Orchid Validation — Keyboard Notes"},
       controls, "seed");
-    await kb.writeConcept(hiddenPeer, { type: "Project Continuation", title: "FS Fotovalidering — Later Review" },
+    await kb.writeConcept(hiddenPeer, { type: "Project Continuation", title: "Orchid Validation — Later Review"},
       duplicate ? controls : "Reviewed unknown labels without keyboard controls.", "seed");
     // The top hit is the page-ordering note; the matching keyboard note is
     // absent from ranked search, and a duplicate can also be absent from it.
@@ -4150,22 +4150,21 @@ describe("mutation owner preflight", () => {
 
   it.each([false, true])("locates the dated zero-row workbook owner beyond ranked retirement hits (duplicate=%s)", async (duplicate) => {
     staged();
-    const workbook = "/projects/fs-fotovalidering-continuation-21b944fc45cea087.md";
-    const retirement = "/projects/fs-fotovalidering-continuation-2443b1fe8100f1af.md";
-    const hiddenPeer = "/projects/fs-fotovalidering-continuation-other.md";
-    const oldList = "FS Fotovalidering 2026-10-12 Jottacloud source workbook: across the workbook sheets, " +
-      "exactly six rejection-reason rows have zero `x` marks: Motiv 5, Briller 3, " +
-      "Hovedbeklædning 2, Hovedbeklædning 3, Hovedbeklædning 4, and Anstødeligt indhold. " +
-      "Separate approval-status row 'Godkendt med beskæring' also has zero marks but is not a rejection category.";
-    const later = "FS Fotovalidering category retirement: Hovedbeklædning 4 / headwear_face_shadow " +
-      "was removed from the active workbook; canonical-24 is active and experiment-88 remains 25-head.";
-    const instruction = "Update FS Fotovalidering facts after the 2026-10-12 Hovedbeklædning 4 retirement: " +
-      "active registry is canonical-24 and experiment-88 stays 25-head. " +
-      "Correct the earlier point-in-time 2026-10-12 workbook zero-annotation list: Hovedbeklædning 4 was removed " +
-      "from active source, not merely left unannotated. Keep 'Godkendt med beskæring' untouched.";
-    await kb.writeConcept(workbook, { type: "Project Continuation", title: "FS Fotovalidering — Workbook Notes" }, oldList, "seed");
-    await kb.writeConcept(retirement, { type: "Project Continuation", title: "FS Fotovalidering — Retirement" }, later, "seed");
-    await kb.writeConcept(hiddenPeer, { type: "Project Continuation", title: "FS Fotovalidering — Other" },
+    const workbook = "/projects/orchid-validation-continuation-21b944fc45cea087.md";
+    const retirement = "/projects/orchid-validation-continuation-2443b1fe8100f1af.md";
+    const hiddenPeer = "/projects/orchid-validation-continuation-other.md";
+    const oldList = "Orchid Validation 2027-02-08 source workbook: across the workbook sheets, " +
+      "exactly three rejection-reason rows have zero `x` marks: Hat 2, Glasses 7, and Coat 9. " +
+      "Separate approval-status row 'Approved with crop' also has zero marks but is not a rejection category.";
+    const later = "Orchid Validation category retirement: Coat 9 / outerwear_shadow " +
+      "was removed from the active workbook; canonical-12 is active and experiment-99 remains 13-head.";
+    const instruction = "Update Orchid Validation facts after the 2027-02-08 Coat 9 retirement: " +
+      "active registry is canonical-12 and experiment-99 stays 13-head. " +
+      "Correct the earlier point-in-time 2027-02-08 workbook zero-annotation list: Coat 9 was removed " +
+      "from active source, not merely left unannotated. Keep 'Approved with crop' untouched.";
+    await kb.writeConcept(workbook, { type: "Project Continuation", title: "Orchid Validation — Workbook Notes"}, oldList, "seed");
+    await kb.writeConcept(retirement, { type: "Project Continuation", title: "Orchid Validation — Retirement"}, later, "seed");
+    await kb.writeConcept(hiddenPeer, { type: "Project Continuation", title: "Orchid Validation — Other"},
       duplicate ? oldList : "An unrelated annotation experiment on a different workbook.", "seed");
     // A later retirement owner can outrank the actual historical paragraph;
     // a duplicate historical paragraph hidden from search must still veto.

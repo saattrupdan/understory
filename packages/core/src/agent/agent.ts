@@ -2710,10 +2710,8 @@ async function runStagedMutation(
       // A dated FS retrain status can be copied into sibling continuations
       // absent from ranked search. Check the bounded project inventory before
       // letting a heading identify its owner; a locator is not write permission.
-      const datedFsStatus = /^update FS Fotovalidering .{16,120}? status recorded on (?:[A-Za-z]{3,9} \d{1,2}|\d{1,2} [A-Za-z]{3,9}) \d{4}\s*:/i.test(raw.trim());
-      const siblingPaths = datedFsStatus
-        ? (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-          /^\/projects\/fs-fotovalidering(?:-|\.md$)/.test(candidate)) : [];
+      const datedStatus = /^update .{1,160}? status recorded on (?:[A-Za-z]{3,9} \d{1,2}|\d{1,2} [A-Za-z]{3,9}) \d{4}\s*:/i.test(raw.trim());
+      const siblingPaths = datedStatus ? await kb.bundle.listConceptPaths("/projects") : [];
       if (siblingPaths.length > 200) {
         throw new Error("Staged mutation deferred: named-section peer inventory exceeds limit.");
       }
@@ -3035,12 +3033,10 @@ async function runStagedMutation(
     // resolve by search order. This is owner location, not write permission.
     let uiKeyboardOwnerPath: string | undefined;
     if (!options.directAdd && options.preflightInput &&
-        /\bFS Fotovalidering 25-class annotation UI\b/i.test(raw) &&
-        /\bnumber keys 1[–-]9\b/i.test(raw) &&
-        raw.includes("/tmp/fs-photo-candidates-25.html") &&
-        /\bport\s*8772\b/i.test(raw)) {
-      const siblings = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-        /^\/projects\/fs-fotovalidering(?:-|\.md$)/.test(candidate));
+        /\bnumber keys?\b/i.test(raw) && /\bselect categories\b/i.test(raw) &&
+        /\bupdated in place\b/i.test(raw)) {
+      const pagePath = raw.match(/(?:file:\/\/)?(\/[^\s`]+\.html)/i)?.[1];
+      const siblings = await kb.bundle.listConceptPaths("/projects");
       if (siblings.length > 200) throw new Error("Staged mutation deferred: annotation UI owner inventory exceeds limit.");
       const matchingOwners: string[] = [];
       for (const sibling of siblings) {
@@ -3050,10 +3046,8 @@ async function runStagedMutation(
         if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
           throw new Error("Staged mutation deferred: annotation UI peer exceeds evidence limit.");
         }
-        if (concept.body.includes("/tmp/fs-photo-candidates-25.html") &&
-            /\b25-class annotation UI\b/i.test(concept.body) &&
-            /\bkeys 1[–-]9\b/i.test(concept.body) &&
-            /\bport[-\s]*8772\b/i.test(concept.body)) matchingOwners.push(concept.path);
+        if (pagePath && concept.body.includes(pagePath) && /\bkeys?\s+\d+[–-]\d+\b/i.test(concept.body) &&
+            /\bkeyboard-first controls\b/i.test(concept.body)) matchingOwners.push(concept.path);
       }
       if (matchingOwners.length !== 1) {
         throw new Error("Staged mutation deferred: 25-class keyboard-controls owner is missing or duplicated.");
@@ -3066,10 +3060,8 @@ async function runStagedMutation(
     // every sibling and require the complete old list to be unique.
     let zeroWorkbookOwnerPath: string | undefined;
     if (!options.directAdd && options.preflightInput &&
-        /correct the earlier point-in-time 2026-10-12 workbook zero-annotation list/i.test(raw) &&
-        /Hovedbeklædning 4 was removed/i.test(raw) && raw.includes("Godkendt med beskæring")) {
-      const siblings = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-        /^\/projects\/fs-fotovalidering(?:-|\.md$)/.test(candidate));
+        /correct the earlier point-in-time .* workbook zero-annotation list/i.test(raw)) {
+      const siblings = await kb.bundle.listConceptPaths("/projects");
       if (siblings.length > 200) throw new Error("Staged mutation deferred: workbook owner inventory exceeds limit.");
       const matchingOwners: string[] = [];
       for (const sibling of siblings) {
@@ -3079,10 +3071,10 @@ async function runStagedMutation(
         if (concept.body.length > STAGED_MAX_OWNER_CHARS) {
           throw new Error("Staged mutation deferred: workbook peer exceeds evidence limit.");
         }
-        if (concept.body.includes("2026-10-12 Jottacloud source workbook") &&
-            /exactly six rejection-reason rows have zero `x` marks/i.test(concept.body) &&
-            concept.body.includes("Hovedbeklædning 4") &&
-            concept.body.includes("Godkendt med beskæring")) matchingOwners.push(concept.path);
+        const categoryAnchors = [...new Set(raw.match(/[\p{Lu}][\p{L}-]+\s+\d+\b/gu) ?? [])];
+        const dateAnchor = raw.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0];
+        if (dateAnchor && concept.body.includes(dateAnchor) && /zero[^.]{0,80}(?:rows|marks)/i.test(concept.body) &&
+            categoryAnchors.some((anchor) => concept.body.includes(anchor))) matchingOwners.push(concept.path);
       }
       if (matchingOwners.length !== 1) {
         throw new Error("Staged mutation deferred: dated zero-row workbook owner is missing or duplicated.");
