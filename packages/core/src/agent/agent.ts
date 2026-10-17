@@ -1363,9 +1363,7 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: change-report request lacks report identity or explicit supersession facts.");
       }
       const reportBase = reportFile.replace(/\.md$/i, "");
-      const normalize = (text: string): string => text
-        .replace(/\s+/g, " ").replace(/[`~]/g, "").replace(/\/\.pdf\b/gi, ".pdf").trim().toLowerCase();
-      const pathMention = new RegExp(`(?:baselines/\\d{4}-\\d{2}-\\d{2}/)?${reportBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"})(?:\\.md)?`, "i");
+      const pathMention = new RegExp(`(?:baselines/\\d{4}-\\d{2}-\\d{2}/)?${reportBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.md)?`, "i");
       const staleCounts = [...superseded.matchAll(/\b\d[\d,]*\b/g)].map((match) => match[0].replace(/,/g, ""));
       const oldSignal = (paragraph: string): boolean => pathMention.test(paragraph) &&
         staleCounts.length > 0 && staleCounts.every((count) => new RegExp(`\\b${count}\\b`).test(paragraph.replace(/,/g, "")));
@@ -1401,11 +1399,13 @@ async function runStagedMutation(
       const oldOwnersArchived = [...observed.entries()].flatMap(([ownerPath, peer]) => peer.body.split(/\n\s*\n/)
         .filter((paragraph) => paragraph.startsWith(historical) && oldSignal(paragraph.slice(historical.length)))
         .map((paragraph) => ({ path: ownerPath, paragraph })));
-      const historicalClarification = superseded.match(/^(\d[\d,]*) ID mentions or all (\d[\d,]*) approved-photo mappings$/i);
+      const historicalClarification = superseded.match(/\b(\d[\d,]*) (?:photo-)?ID mentions or all (\d[\d,]*) approved-photo mappings\b/i);
       const clarifiedHistory = historicalClarification
         ? `${historicalClarification[1]} photo-ID mentions and all ${historicalClarification[2]} approved-photo mappings describe only the earlier non-focused ${reportLanguage ?? "full-inventory"} version.`
         : "";
-      const current = `${heading}${facts.trim()}${clarifiedHistory ? ` ${clarifiedHistory}` : ""}`;
+      const currentBase = `${heading}${facts.trim()}${clarifiedHistory ? ` ${clarifiedHistory}` : ""}`;
+      const currentFor = (oldReport: string): string =>
+        `${currentBase} (Prior report SHA-256: ${sha256(oldReport.trimEnd())})`;
       const ownerPath = oldOwners.length === 1 ? oldOwners[0].path :
         oldOwners.length === 0 && oldOwnersArchived.length === 1 ? oldOwnersArchived[0].path : undefined;
       if (!ownerPath || options.ownerHint && options.ownerHint !== ownerPath) throw new Error("Staged mutation deferred: change-report owner is absent, duplicated, or conflicts with hint.");
@@ -1414,7 +1414,8 @@ async function runStagedMutation(
       const blocks = owner.body.split(/\n\s*\n/);
       const archives = blocks.filter((part) => part.startsWith(historical));
       const updates = blocks.filter((part) => part.startsWith(heading));
-      if (!oldOwners.length && archives.length === 1 && oldOwnersArchived.length === 1 && updates.length === 1 && updates[0] === current) {
+      if (!oldOwners.length && archives.length === 1 && oldOwnersArchived.length === 1 &&
+          updates.length === 1 && updates[0].trimEnd() === currentFor(archives[0].slice(historical.length))) {
         if (peerEvidence.length) throw new Error("Staged mutation deferred: change-report peers retain a potentially competing old claim.");
         const reread = await kb.readConcept(ownerPath);
         if (reread.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
@@ -1426,7 +1427,7 @@ async function runStagedMutation(
       if (oldOwners.length !== 1 || oldOwners[0].path !== ownerPath || archives.length || updates.length || peerEvidence.length) throw new Error("Staged mutation deferred: change-report old owner is absent, duplicated, or contradicted.");
       const oldParagraph = oldOwners[0].paragraph.trimEnd();
       if (oldParagraph.length > 4_000 || owner.body.split(oldParagraph).length !== 2) throw new Error("Staged mutation deferred: change-report archive is not unique or complete.");
-      const replacement = `${historical}${oldParagraph}\n\n${current}`;
+      const replacement = `${historical}${oldParagraph}\n\n${currentFor(oldParagraph)}`;
       const proposed = owner.body.replace(oldParagraph, replacement);
       if (proposed.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: change-report replacement exceeds evidence limit.");
       const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));

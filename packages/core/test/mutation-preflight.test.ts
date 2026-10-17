@@ -5205,7 +5205,7 @@ describe("mutation owner preflight", () => {
     expect(body).toContain(`Earlier non-focused Danish report version (superseded by changes-only edition): ${fsChangesOld}`);
     expect(body).toContain("Current FS Fotovalidering 2026-10-14 changes-only baseline report:");
     for (const item of ["Ændringer fra baselinen 2026-10-09 til 2026-10-14", "30 changed approved-photo ID mappings",
-      "23 moved and seven renumbered", "godkendt_id30", "two previously unlabelled", "264 added and 28 removed",
+      "23 moved, seven renumbered", "godkendt_id30", "two previously unlabelled", "264 added and 28 removed",
       "Hovedbeklædning 4", "68 changed embedded photo files by ID", "unchanged 50 workbook-only columns",
       "43 intermediate question-mark resolutions", "459 photo-ID mentions and all 34 approved-photo mappings describe only the earlier non-focused Danish version"])
       expect(body).toContain(item);
