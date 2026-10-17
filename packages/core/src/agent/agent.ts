@@ -1648,44 +1648,80 @@ async function runStagedMutation(
     // A GitHub review can remain recorded as PENDING after it is submitted.
     // Correct only this observed review paragraph, not the PR's eventual
     // merge status or another review's history.
-    if (!options.directAdd && options.preflightInput &&
-        /^Update EuroEval PR #2234 review status:/i.test(raw.trim()) &&
-        ["5518245608", "14 Oct 2026", "CHANGES_REQUESTED", "four inline comments",
-          "task_metadata.py", "invalid_results.py", "multilingual ranking refresh", "invalid-marker display"]
-          .every((anchor) => raw.includes(anchor))) {
-      const ownerPath = "/repos/euroeval.md";
-      if (options.ownerHint && options.ownerHint !== ownerPath) {
-        throw new Error("Staged mutation deferred: EuroEval review owner hint conflicts.");
+    const reviewUpdate = raw.trim().match(/^Update ([^\n]+?) PR #?(\d+) review status:\s*/i);
+    if (!options.directAdd && options.preflightInput && reviewUpdate) {
+      const [, repository, prId] = reviewUpdate;
+      const reviewIdMatch = raw.match(/\breview ID\s+(\d+)\b/i);
+      const headMatch = raw.match(/\bhead\s+([a-f0-9]{7,64})\b/i);
+      const reviewId = reviewIdMatch?.[1];
+      if (!reviewId || !/\bpreviously\s+PENDING\b/i.test(raw) ||
+          !/\bsubmitted\b/i.test(raw) || !/\bCHANGES_REQUESTED\b/i.test(raw) ||
+          !/\b(?:inline )?comments?\b/i.test(raw)) {
+        throw new Error("Staged mutation deferred: review instruction lacks explicit prior and submitted status facts.");
       }
-      const owner = await kb.readConcept(ownerPath);
-      recorder.record("read_concept", owner.path, [owner.path]);
-      const old = "On 14 Oct 2026 Dan's GitHub account saattrupdan created unsubmitted PENDING review 5518245608 on head 0f255b1278c47a2051d348cd222ed0f2f862bdce with two inline comments: (1) leaderboard_generation.py:252 compares only overall ranked membership, so a per-language rank change for an overall-unranked model leaves multilingual CSVs stale on non-force runs; (2) leaderboard_generation.py:841 appends '(invalid)' to orthogonal percentage scores but LeaderboardTable.vue percent formatter and scatter tooltip drop the suffix (and interval). Comment IDs 4271055779 and 4271055802. Review was intentionally NOT submitted.";
-      const updated = "On 14 Oct 2026 Dan's GitHub account saattrupdan submitted review 5518245608 on head 0f255b1278c47a2051d348cd222ed0f2f862bdce with state CHANGES_REQUESTED and four inline comments: (1) leaderboard_generation.py:252 compares only overall ranked membership, so a per-language rank change for an overall-unranked model leaves multilingual CSVs stale on non-force runs; (2) leaderboard_generation.py:841 appends '(invalid)' to orthogonal percentage scores but LeaderboardTable.vue percent formatter and scatter tooltip drop the suffix (and interval); (3) a readability/style comment in task_metadata.py; (4) a readability/style comment in invalid_results.py. The first two substantive comment IDs are 4271055779 and 4271055802; the last two are readability/style comments.";
-      const oldCount = owner.body.split(old).length - 1;
+      const ownerPattern = repository.toLowerCase().replace(/[^a-z0-9-]/g, "");
+      const ownerPaths = (await kb.bundle.listConceptPaths()).filter((candidate) =>
+        new RegExp(`^/(?:repos|projects)/${ownerPattern}(?:[-/]|\\.md$)`, "i").test(candidate));
+      const ownerCandidates = new Set([...ownerPaths]);
+      const searchReview = await kb.search(reviewId, { limit: 200 });
+      const searchPr = await kb.search(prId, { limit: 1_000 });
+      recorder.record("search_knowledge", reviewId, searchReview.map((hit) => hit.path));
+      recorder.record("search_knowledge", prId, searchPr.map((hit) => hit.path));
+      if (ownerPaths.length > 200 || searchReview.length >= 200 || searchPr.length >= 1_000) {
+        throw new Error("Staged mutation deferred: review peer search exceeds limit.");
+      }
+      for (const hit of [...searchReview, ...searchPr]) ownerCandidates.add(hit.path);
+      const matchingOld = /\bPENDING\b/i;
+      const matchingIdentity = (paragraph: string): boolean => paragraph.includes(reviewId);
+      const ownerMatches: Array<{ path: string; body: string; old: string }> = [];
+      const ownerPathHint = options.ownerHint;
+      const peerDocs = new Map<string, Awaited<ReturnType<typeof kb.readConcept>>>();
+      for (const path of ownerCandidates) {
+        state.checkCancellation();
+        const peer = await kb.readConcept(path);
+        recorder.record("read_concept", peer.path, [peer.path]);
+        if (peer.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: review owner or peer exceeds evidence limit.");
+        peerDocs.set(peer.path, peer);
+        for (const paragraph of peer.body.split(/\n\s*\n/)) {
+          if (matchingIdentity(paragraph) && (matchingOld.test(paragraph) || /\bCHANGES_REQUESTED\b/i.test(paragraph))) {
+            ownerMatches.push({ path: peer.path, body: peer.body, old: paragraph });
+          }
+        }
+      }
+      const selected = ownerMatches.length === 1 ? ownerMatches[0] : undefined;
+      const ownerPath = selected?.path;
+      if (!selected || !ownerPath || (ownerPathHint && ownerPathHint !== ownerPath)) {
+        throw new Error("Staged mutation deferred: exact prior review paragraph is absent, duplicated, or conflicts with owner hint.");
+      }
+      const owner = peerDocs.get(ownerPath)!;
+      const observedParagraph = selected.old;
+      const alreadyUpdated = !matchingOld.test(observedParagraph);
+      const old = alreadyUpdated ? "" : observedParagraph;
+      const updated = (old || observedParagraph)
+        .replace(/created\s+unsubmitted\s+PENDING\s+review\s+/i, "submitted review ")
+        .replace(/\bPENDING\b/i, "CHANGES_REQUESTED")
+        .replace(/\b(?:two|2) inline comments\b/i, "four inline comments")
+        .replace(/\s*Review was intentionally NOT submitted\.?/i, "")
+        .replace(/\s*No longer describe it as unsubmitted\.?/i, "").trim();
+      if ((!alreadyUpdated && updated === old) || (headMatch && !observedParagraph.includes(headMatch[1])) ||
+          !/\bCHANGES_REQUESTED\b/.test(updated) || !/\bfour inline comments\b/i.test(updated)) {
+        throw new Error("Staged mutation deferred: old review paragraph cannot be safely reconciled with caller facts.");
+      }
+      const oldCount = old ? owner.body.split(old).length - 1 : 0;
       const updatedCount = owner.body.split(updated).length - 1;
       if (owner.body.length > STAGED_MAX_OWNER_CHARS ||
           (oldCount !== 1 && !(oldCount === 0 && updatedCount === 1))) {
-        throw new Error("Staged mutation deferred: EuroEval review paragraph is absent or ambiguous.");
+        throw new Error("Staged mutation deferred: exact review paragraph is absent or ambiguous.");
       }
       // PR-level review notes can omit the review ID. Search the number alone:
       // a multiword PR query matches generic PR prose and fills the hit cap.
-      const reviewHits = await kb.search("5518245608", { limit: 200 });
-      const prHits = await kb.search("2234", { limit: 1_000 });
-      recorder.record("search_knowledge", "5518245608", reviewHits.map((hit) => hit.path));
-      recorder.record("search_knowledge", "2234", prHits.map((hit) => hit.path));
-      if (reviewHits.length >= 200 || prHits.length >= 1_000) {
-        throw new Error("Staged mutation deferred: EuroEval review peer search exceeds limit.");
-      }
-      const siblingPaths = (await kb.bundle.listConceptPaths()).filter((candidate) =>
-        /^\/(?:repos|projects)\/euroeval(?:[/-]|\.md$)/i.test(candidate));
-      if (siblingPaths.length > 200) {
-        throw new Error("Staged mutation deferred: EuroEval review peer inventory exceeds limit.");
-      }
+      const reviewHits = searchReview;
+      const prHits = searchPr;
+      const siblingPaths = ownerPaths;
       const staleReviewClaim = (paragraph: string): boolean =>
         /(?:PENDING|unsubmitted|NOT submitted)/i.test(paragraph) &&
-        (paragraph.includes("5518245608") ||
-         (/\bPR\s*#2234\b/i.test(paragraph) && /\b(?:Dan|saattrupdan)\b/i.test(paragraph) &&
-          /\breview\b/i.test(paragraph)));
+        (paragraph.includes(reviewId) ||
+         (new RegExp(`\\bPR\\s*#?${prId}\\b`, "i").test(paragraph) && /\breview\b/i.test(paragraph)));
       // A second stale assertion makes even an already-updated paragraph
       // insufficient to complete this correction.
       if (owner.body.replace(oldCount ? old : updated, "").split(/\n\s*\n/).some(staleReviewClaim)) {
@@ -1706,18 +1742,18 @@ async function runStagedMutation(
         let adjudicatedExcerpt: string | undefined;
         const conflicting = paragraphs.filter((paragraph) =>
           staleReviewClaim(paragraph) ||
-          (paragraph.includes("5518245608") && /CHANGES_REQUESTED/i.test(paragraph)));
+          (paragraph.includes(reviewId) && /CHANGES_REQUESTED/i.test(paragraph)));
         if (conflicting.length) {
           // An async-queue runbook may quote a failed memory_update as an
           // incident example. A quotation is not a second review-status owner.
           // Require a separate, bounded adjudication; other paths still fail
           // closed on a substantive competing claim.
-          if (peer.path !== "/repos/pi-agent/memory-async.md" || conflicting.length > 4) {
+          if (!/async|queue/i.test(peer.path) || conflicting.length > 4) {
             throw new Error(`Staged mutation deferred: EuroEval review has a competing owner (${peer.path}; ${conflicting.length} review passages).`);
           }
           const excerpt = conflicting.map((paragraph) => {
-            const id = paragraph.indexOf("5518245608");
-            const pr = paragraph.search(/\bPR\s*#2234\b/i);
+            const id = paragraph.indexOf(reviewId);
+            const pr = paragraph.search(new RegExp(`\\bPR\\s*#?${prId}\\b`, "i"));
             const at = id >= 0 ? id : pr;
             return paragraph.slice(Math.max(0, at - 900), Math.min(paragraph.length, at + 2_500));
           }).join("\n\n");
@@ -1731,7 +1767,7 @@ async function runStagedMutation(
             schema: z.object({ exampleOnly: z.boolean(), reason: z.string().max(300) }).strict(),
             temperature: 0,
             abortSignal: options.signal,
-            prompt: `Independent ownership check. Judge ONLY the peer excerpt below, not a proposed correction. The peer is an async memory-queue runbook, not the EuroEval repository. Is EVERY mention of EuroEval PR #2234 review 5518245608 in this excerpt ONLY an example of a queued/failed memory request, rather than this peer asserting the review's current state or storing the authoritative review record? Respond exampleOnly=false on uncertainty or any competing substantive claim. JSON only.\nPEER ${peer.path}:\n${excerpt}`,
+            prompt: `Independent ownership check. Judge ONLY the peer excerpt below, not a proposed correction. Is EVERY mention of PR #${prId} review ${reviewId} in this async/queue peer ONLY an example of a queued or failed memory request, rather than this peer asserting current state or storing the authoritative record? Respond exampleOnly=false on uncertainty or any competing substantive claim. JSON only.\nPEER ${peer.path}:\n${excerpt}`,
           });
           state.checkCancellation();
           if (!ownership.object.exampleOnly) {
@@ -1740,9 +1776,8 @@ async function runStagedMutation(
           adjudicatedExcerpt = excerpt;
         }
         for (const paragraph of paragraphs) {
-          if (paragraph.includes("5518245608") ||
-              (/\bPR\s*#2234\b/i.test(paragraph) && /\breview\b/i.test(paragraph) &&
-                /\b(?:Dan|saattrupdan)\b/i.test(paragraph))) {
+          if (paragraph.includes(reviewId) ||
+              (new RegExp(`\\bPR\\s*#?${prId}\\b`, "i").test(paragraph) && /\breview\b/i.test(paragraph))) {
             if (paragraph.length > 4_000) {
               if (!adjudicatedExcerpt || !conflicting.includes(paragraph)) {
                 throw new Error("Staged mutation deferred: EuroEval review peer passage exceeds limit.");
