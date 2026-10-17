@@ -2999,6 +2999,43 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body).toContain(old);
   });
 
+  it("corrects an unquoted old claim when a peer only preserves a historical copy", async () => {
+    staged();
+    const owner = "/notes/continuation.md";
+    const peer = "/notes/archived-comparison.md";
+    const old = "Unknown labels should be inferred from nearby context before recording a result.";
+    const instruction = "Correct the current label-handling guidance: supersedes earlier advice to infer unknown labels from nearby context; preserve unknown labels as unknown. Keep the superseded advice as historical guidance.";
+    await kb.writeConcept(owner, { type: "Note", title: "Policy Continuation" },
+      `${old} ${"Additional neutral guidance. ".repeat(1_900)}`, "seed");
+    await kb.writeConcept(peer, { type: "Note", title: "Archived Comparison" },
+      `Historical advice (superseded): ${old} ${"Additional unrelated notes. ".repeat(1_900)}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((path) => ({
+      path, type: "Note", title: path === owner ? "Policy Continuation" : "Archived Comparison",
+      score: 10, confidenceQualified: false,
+    })));
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("CANDIDATE METADATA:")) return { object: { path: owner } };
+      if (prompt.includes("Read-only old-claim locator")) return { object: {
+        observedOldPassage: old, requestOldClause: "infer unknown labels from nearby context",
+        sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false, negated: false,
+      } };
+      if (prompt.includes("Independent read-only competing-owner check")) {
+        expect(prompt).toContain(`Historical advice (superseded): ${old}`);
+        return { object: { competingCurrentOrAmbiguous: false, certain: true } };
+      }
+      if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
+        ...baseProposal, action: "replace", path: owner, old_text: old,
+        new_text: `Historical advice (superseded): ${old} Current guidance: Preserve unknown labels as unknown.`,
+      } };
+      if (prompt.includes("Independent safety check.")) return { object: { safe: true, reason: "Old advice retained as history; current guidance corrected." } };
+      throw new Error(`Unexpected mutation check: ${prompt.slice(0, 100)}`);
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect((await kb.readConcept(owner)).body).toContain(`Historical advice (superseded): ${old} Current guidance: Preserve unknown labels as unknown.`);
+    expect((await kb.readConcept(peer)).body).toContain(`Historical advice (superseded): ${old}`);
+  });
+
   it.each(["duplicate", "unrelated"])("does not write when metadata old-passage selection is %s", async (mode) => {
     staged();
     const owner = "/notes/continuation.md";
@@ -3017,11 +3054,14 @@ describe("mutation owner preflight", () => {
         observedOldPassage: old, requestOldClause: "infer unknown labels from nearby context",
         sameOldClaim: true, currentlyActive: true, quotedOrHistorical: false, negated: false,
       } };
+      if (prompt.includes("Independent read-only competing-owner check")) return { object: {
+        competingCurrentOrAmbiguous: true, certain: true,
+      } };
       throw new Error("Unanchored owner must not reach mutation proposal.");
     });
     const result = await runMutation(kb, instruction, { preflightInput: instruction });
     expect(result).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(generateObjectMock).toHaveBeenCalledTimes(duplicate ? 3 : 2);
     expect((await kb.readConcept(owner)).body).toContain(mode === "unrelated" ? "Different active policy." : old);
     expect((await kb.readConcept(peer)).body).toContain(duplicate ? old : "Different historical passage.");
   });

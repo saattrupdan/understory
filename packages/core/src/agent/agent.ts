@@ -3296,7 +3296,7 @@ async function runStagedMutation(
           // Every retained search hit gets its own complete-body peer check.
           // Never truncate a peer or rely on absence of an exact string alone.
           for (const peer of evidenceCandidates.filter((candidate) => candidate.path !== selectedPath)) {
-            if (peer.body.includes(passage) || raw.length + peer.body.length + passage.length + 3_000 > STAGED_MAX_EVIDENCE_CHARS) noAnchor();
+            if (raw.length + peer.body.length + passage.length + 3_000 > STAGED_MAX_EVIDENCE_CHARS) noAnchor();
             const check = await generateObject({
               model: resolved.model,
               schema: z.object({ competingCurrentOrAmbiguous: z.boolean(), certain: z.boolean() }).strict(),
