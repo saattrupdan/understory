@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
 const generateObjectMock = vi.hoisted(() => vi.fn());
+const streamObjectMock = vi.hoisted(() => vi.fn());
 vi.mock("ai", async () => ({
   ...(await vi.importActual<typeof import("ai")>("ai")),
   generateText: generateTextMock,
   generateObject: generateObjectMock,
+  streamObject: streamObjectMock,
 }));
 vi.mock("../src/providers/index.js", async () => ({
   ...(await vi.importActual<typeof import("../src/providers/index.js")>("../src/providers/index.js")),
@@ -46,12 +48,14 @@ beforeEach(async () => {
   vi.stubEnv("LLM_API_FORMAT", "openai");
   vi.stubEnv("LLM_MODEL", "test-model");
   vi.stubEnv("MUTATION_PREFLIGHT", "true");
+  vi.stubEnv("MUTATION_STRUCTURED_STREAM", "false");
 });
 
 afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
   generateTextMock.mockReset();
   generateObjectMock.mockReset();
+  streamObjectMock.mockReset();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
@@ -248,6 +252,33 @@ describe("mutation owner preflight", () => {
     const result = await runMutation(kb,
       `In \`${owner}\`, remove ONLY the exact paragraph beginning \`This complete owner paragraph\` and ending \`a distinctive ending.\`.`);
     expect(result).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("output cap") });
+    expect((await kb.readConcept(owner)).body).toContain(paragraph);
+  });
+
+  it("uses only the final validated streamed safety object for local staged mutations", async () => {
+    staged();
+    vi.stubEnv("MUTATION_STRUCTURED_STREAM", "true");
+    const owner = "/projects/owner.md";
+    const paragraph = "This complete owner paragraph has a distinctive beginning and a distinctive ending.";
+    await kb.writeConcept(owner, { type: "Project", title: "Owner" },
+      `Before.\n\n${paragraph}\n\nAfter.`, "seed");
+    streamObjectMock.mockReturnValueOnce({ object: Promise.resolve({ safe: true }), finishReason: Promise.resolve("stop") });
+    const instruction = `In \`${owner}\`, remove ONLY the exact paragraph beginning \`This complete owner paragraph\` and ending \`a distinctive ending.\`.`;
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    expect(streamObjectMock).toHaveBeenCalledOnce();
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a capped streamed decision before applying a mutation", async () => {
+    staged();
+    vi.stubEnv("MUTATION_STRUCTURED_STREAM", "true");
+    const owner = "/projects/owner.md";
+    const paragraph = "This complete owner paragraph has a distinctive beginning and a distinctive ending.";
+    await kb.writeConcept(owner, { type: "Project", title: "Owner" },
+      `Before.\n\n${paragraph}\n\nAfter.`, "seed");
+    streamObjectMock.mockReturnValueOnce({ object: Promise.resolve({ safe: true }), finishReason: Promise.resolve("length") });
+    const instruction = `In \`${owner}\`, remove ONLY the exact paragraph beginning \`This complete owner paragraph\` and ending \`a distinctive ending.\`.`;
+    expect(await runMutation(kb, instruction)).toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("output cap") });
     expect((await kb.readConcept(owner)).body).toContain(paragraph);
   });
 

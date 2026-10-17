@@ -2,6 +2,7 @@ import path from "node:path";
 import {
   generateText,
   generateObject as sdkGenerateObject,
+  streamObject as sdkStreamObject,
   wrapLanguageModel,
   modelMessageSchema,
   streamText,
@@ -41,13 +42,33 @@ import {
 
 // A syntactically complete JSON object can still be cut off after reaching a
 // generation cap. Never accept it as an independent safety decision or a write.
-const generateObject: typeof sdkGenerateObject = async (options) => {
+async function generateObject<S extends z.ZodTypeAny>(options: {
+  model: LanguageModel;
+  schema: S;
+  temperature: number;
+  abortSignal?: AbortSignal;
+  prompt: string;
+}): Promise<{ object: z.infer<S>; finishReason?: string }> {
+  const baseURL = process.env.LLM_API_BASE_URL;
+  if (process.env.MUTATION_STAGED === "true" &&
+      process.env.MUTATION_STRUCTURED_STREAM !== "false" &&
+      baseURL && isLocalModelEndpoint(baseURL)) {
+    // Local thinking models can take longer than the HTTP headers deadline to
+    // finish an entire JSON object. Stream deltas to keep the transport alive,
+    // but expose ONLY the final validated object to the safety checks.
+    const streamed = sdkStreamObject(options);
+    const [object, finishReason] = await Promise.all([streamed.object, streamed.finishReason]);
+    if (finishReason === "length") {
+      throw new Error("Mutation generation hit its output cap; result is incomplete");
+    }
+    return { object, finishReason };
+  }
   const result = await sdkGenerateObject(options);
   if (result.finishReason === "length") {
     throw new Error("Mutation generation hit its output cap; result is incomplete");
   }
   return result;
-};
+}
 
 export interface AgentOptions {
   model?: string;
@@ -114,7 +135,8 @@ export async function resolveAgentModel(
       // retain their configured behavior. Explicit max_tokens always wins.
       const extraBody = config.extraBody ?? {};
       if (extraBody.max_tokens === undefined) {
-        config = { ...config, extraBody: { ...extraBody, max_tokens: 4096 } };
+        config = { ...config, extraBody: { ...extraBody,
+          max_tokens: env.MUTATION_STAGED === "true" && env.MUTATION_STRUCTURED_STREAM !== "false" ? 8192 : 4096 } };
       }
     }
     const disableThinking =

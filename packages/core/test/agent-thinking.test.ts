@@ -79,6 +79,16 @@ describe("deep-query thinking configuration", () => {
     ]);
   });
 
+  it("budgets more output for streamed staged local mutations", async () => {
+    createModelMock.mockResolvedValue({});
+    await resolveAgentModel({}, "mutate", {
+      LLM_API_BASE_URL: "http://host.docker.internal:8080/v1",
+      LLM_MODEL: "local-model",
+      MUTATION_STAGED: "true",
+    });
+    expect(createModelMock.mock.calls[0][0].extraBody).toEqual({ max_tokens: 8192 });
+  });
+
   it("preserves explicit mutation caps and leaves local query and hosted mutations uncapped by default", async () => {
     createModelMock.mockResolvedValue({});
     await resolveAgentModel({}, "mutate", {
