@@ -5227,7 +5227,7 @@ describe("mutation owner preflight", () => {
       `The runbook currently owns this PR #2234 review record: ${euroevalResolvedThreadsInstruction}`, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { exampleOnly: false } });
     expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("queue peer asserts a competing") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("peer asserts competing review-thread status") });
     expect(generateObjectMock).toHaveBeenCalledOnce();
     expect((await kb.readConcept(euroevalThreadsOwner)).body).not.toContain("review-thread resolution at checked head");
   });
@@ -5265,7 +5265,7 @@ describe("mutation owner preflight", () => {
       euroevalFollowup, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
     expect(await runMutation(kb, euroevalResolvedThreadsInstruction, { preflightInput: euroevalResolvedThreadsInstruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent EuroEval review-thread check declined") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent review-thread check declined") });
     expect((await kb.readConcept(euroevalThreadsOwner)).body.trim()).toBe(euroevalFollowup);
   });
 

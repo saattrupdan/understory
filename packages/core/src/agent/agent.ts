@@ -1551,27 +1551,27 @@ async function runStagedMutation(
           for (const paragraph of candidate.body.split(/\n\s*\n/)) {
             if (paragraph.trimEnd() === note) continue;
             if (!hasIdentity(paragraph) && !paragraph.toLowerCase().includes(head)) continue;
-            if (paragraph.toLowerCase().includes(head) && hasIdentity(paragraph) &&
-                /\b(?:follow[- ]?up|requested changes|changes_requested)\b/i.test(paragraph)) {
-              candidates.push({ path: candidate.path, paragraph });
-            }
             const duplicate = hasIdentity(paragraph) && /\bthreads?\b/i.test(paragraph) &&
               /\b(?:resolv|resolved)\w*\b/i.test(paragraph);
             if (!duplicate) {
               if (paragraph.length > 4_000) throw new Error("Staged mutation deferred: review-thread peer passage exceeds evidence limit.");
+              if (paragraph.toLowerCase().includes(head) && hasIdentity(paragraph) &&
+                  /\b(?:changes_requested|approved|commented|requested changes)\b/i.test(paragraph)) {
+                candidates.push({ path: candidate.path, paragraph });
+              }
               peers.push(`${candidate.path}: ${paragraph}`);
               continue;
             }
             // Queue examples are the only peer exception, adjudicated from the
             // peer alone so the proposed mutation cannot bias classification.
-            if (candidates.some((candidate) => candidate.path === candidatePath)) {
+            if (candidates.some((entry) => entry.path === candidatePath)) {
               throw new Error("Staged mutation deferred: review-thread checkpoint is partial or conflicting.");
             }
             const queueContext = /\b(?:queue|queued|async request|memory_update|failed request|request example|runbook)\b/i.test(paragraph);
             if (!queueContext) {
               throw new Error(`Staged mutation deferred: review-thread resolution has another owner (${candidate.path}).`);
             }
-            const at = paragraph.search(new RegExp(`\\\\bPR\\\\s*#?${pr}\\\\b`, "i"));
+            const at = paragraph.search(new RegExp(`\\bPR\\s*#?${pr}\\b`, "i"));
             const excerpt = paragraph.slice(Math.max(0, at - 900), Math.min(paragraph.length, at + 2_300));
             resolved ??= await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
             modelChain = resolved.modelChain;
@@ -1612,7 +1612,7 @@ async function runStagedMutation(
               /\bthreads?\b/i.test(paragraph) && /\b(?:resolv|resolved)\w*\b/i.test(paragraph))) {
           throw new Error("Staged mutation deferred: review-thread checkpoint is partial or conflicting.");
         }
-        if (candidates.length !== 1 || !/\b(?:changes_requested|requested changes)\b/i.test(candidates[0].paragraph)) {
+        if (candidates.length !== 1 || !/\b(?:changes_requested|approved|commented|requested changes)\b/i.test(candidates[0].paragraph)) {
           throw new Error("Staged mutation deferred: independent prior review decision is not established.");
         }
         const proposed = `${owner.body.trimEnd()}\n\n${note}\n`;
