@@ -1297,10 +1297,20 @@ async function runStagedMutation(
           if (peerPath !== ownerPath &&
               /(?:rebuild_test_baseline\.py|regenerate_parsed\.py)/i.test(paragraph) &&
               /(?:parsed\/|baseline|Godkendt|source-only)/i.test(paragraph)) {
+            let excerpt = paragraph;
             if (paragraph.length > 2_500) {
-              throw new Error("Staged mutation deferred: FS baseline peer warning exceeds evidence limit.");
+              const mentions = [...paragraph.matchAll(/(?:rebuild_test_baseline\.py|regenerate_parsed\.py)/gi)];
+              if (mentions.length > 3) {
+                throw new Error("Staged mutation deferred: FS baseline peer has too many script mentions for bounded evidence.");
+              }
+              excerpt = `${paragraph.slice(0, 250)}\n[... omitted peer context ...]\n${mentions.map((mention) =>
+                paragraph.slice(Math.max(0, mention.index - 450), Math.min(paragraph.length, mention.index + 700)))
+                .join("\n[... omitted peer context ...]\n")}\n[... omitted peer context ...]\n${paragraph.slice(-250)}`;
+              if (excerpt.length > 4_000) {
+                throw new Error("Staged mutation deferred: FS baseline peer warning exceeds evidence limit.");
+              }
             }
-            peerEvidence.push(`${peerPath}: ${paragraph}`);
+            peerEvidence.push(`${peerPath}: ${excerpt}`);
           }
         }
       }
@@ -1331,8 +1341,8 @@ async function runStagedMutation(
           owner.body.split(old).length !== 2) {
         throw new Error("Staged mutation deferred: FS baseline old warning is not unique or complete.");
       }
-      const replacement = `${historical}${old}\n\n${update}`;
-      const proposed = owner.body.replace(old, replacement);
+      const replacement = `${historical}${old.trimEnd()}\n\n${update}`;
+      const proposed = owner.body.replace(old.trimEnd(), replacement);
       if (proposed.length > STAGED_MAX_OWNER_CHARS) {
         throw new Error("Staged mutation deferred: FS baseline replacement exceeds evidence limit.");
       }

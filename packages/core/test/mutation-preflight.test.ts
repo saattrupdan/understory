@@ -191,6 +191,22 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(fsBaselineOwner)).body).toBe(`${fsBaselineOld}\n`);
   });
 
+  it("presents bounded script context from a long FS peer paragraph", async () => {
+    staged();
+    await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" }, fsBaselineOld, "seed");
+    const peer = "/projects/fs-fotovalidering-continuation-long.md";
+    await kb.writeConcept(peer, { type: "Project", title: "FS long continuation" },
+      `Earlier details: ${"other private review observations. ".repeat(110)}The old src/scripts/rebuild_test_baseline.py cannot regenerate the reorganized parsed/ baseline until the Godkendt fix.${" Unrelated audit data. ".repeat(75)}`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`${peer}: Earlier details:`);
+      expect(prompt).toContain("old src/scripts/rebuild_test_baseline.py cannot regenerate");
+      expect(prompt).toContain("[... omitted peer context ...]");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsBaselineOwner] } });
+  });
+
   it("defers an FS baseline update when the independent check declines or the owner changes", async () => {
     staged();
     await kb.writeConcept(fsBaselineOwner, { type: "Project", title: "FS Phase 1 continuation" }, fsBaselineOld, "seed");
