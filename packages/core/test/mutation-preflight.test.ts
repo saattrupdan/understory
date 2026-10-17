@@ -5441,7 +5441,7 @@ describe("mutation owner preflight", () => {
       .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
     const body = (await kb.readConcept(owner)).body;
     expect(body).not.toContain(provisionalDeploy);
-    expect(body).toContain("both changes were committed as `e7159f328f1d54bf6c789b625429b1591e264381`");
+    expect(body).toContain("those changes were committed as `e7159f328f1d54bf6c789b625429b1591e264381`");
     expect(body).toContain("`dpl_6Q5jrRuUwBbkABbSHwqUhahUQDb8` from that exact commit reached READY");
     expect(body).toContain("dpl_F6vAFevPgFPEwLrD7YX9CDtjms4L");
     expect(body).toContain("`vercel --prod` returned Not authorized.");
@@ -5460,7 +5460,7 @@ describe("mutation owner preflight", () => {
       "release changes were committed as 0123456789abcdef0123456789abcdef01234567 and pushed to origin/main on 2026-11-03. " +
       "Git-triggered production deployment dpl_Example123 from that exact SHA reached READY, GitHub deployment status success, and www.example.test aliases the deployment. Working tree clean.";
     await kb.writeConcept(owner, { type: "Repository", title: "Example website" },
-      `# Deployment Policy\\n\\nPrior deployment dpl_Previous123 was Ready.\\n\\n${old}\\n\\n# Vercel CLI\\n\\nvercel --prod returned Not authorized.`, "seed");
+      `# Deployment Policy\n\nPrior deployment dpl_Previous123 was Ready.\n\n${old}\n\n# Vercel CLI\n\nvercel --prod returned Not authorized.`, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
       .toMatchObject({ ok: true, result: { filesChanged: [owner] } });

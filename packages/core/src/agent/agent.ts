@@ -1872,7 +1872,8 @@ async function runStagedMutation(
       const deploymentId = /\b(dpl_[A-Za-z0-9]+)\b/.exec(raw)?.[1];
       const date = /\b(20\d{2}-\d{2}-\d{2})\b/.exec(raw)?.[1];
       const branch = /\b(origin\/[A-Za-z0-9._/-]+)\b/.exec(raw)?.[1];
-      const alias = /\b(?:aliased to|aliases(?: to)?)\s+((?:www\.)?[a-z0-9.-]+\.[a-z]{2,})\b/i.exec(raw)?.[1];
+      const alias = /\b((?:www\.)?[a-z0-9.-]+\.[a-z]{2,})\s+aliases\b/i.exec(raw)?.[1] ??
+        /\b(?:aliased to|aliases to)\s+((?:www\.)?[a-z0-9.-]+\.[a-z]{2,})\b/i.exec(raw)?.[1];
       if (!sha || !deploymentId || !date || !branch || !alias || !new RegExp(`\\b${site.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(raw) ||
           !/READY/i.test(raw) || !/working tree clean/i.test(raw) ||
           !/committed/i.test(raw) || !/pushed/i.test(raw)) {
@@ -1883,25 +1884,23 @@ async function runStagedMutation(
       }
       const owner = await kb.readConcept(ownerPath);
       recorder.record("read_concept", owner.path, [owner.path]);
-      const headings = [...owner.body.matchAll(/^#{1,6}\s+Deployment Policy\s*$/gim)];
+      const headings = [...owner.body.matchAll(/^#{1,6}\s+Deployment(?: Policy)?\s*$/gim)];
       const sectionStart = headings[0]?.index;
       const nextHeading = /^#{1,6}\s+[^\n]+$/gm;
       nextHeading.lastIndex = sectionStart === undefined ? 0 : sectionStart + headings[0][0].length;
       const sectionEnd = nextHeading.exec(owner.body)?.index ?? owner.body.length;
       const section = sectionStart === undefined ? "" : owner.body.slice(sectionStart, sectionEnd);
-      const provisional = section.split(/(?<=[.!?])\s+(?=[A-Z`])/).filter((sentence) =>
+      const provisional = section.split(/(?<=[.!?])\s+(?=[A-Z`])/).map((sentence) => sentence.trim()).filter((sentence) =>
         /not yet committed or pushed/i.test(sentence) && /deploy/i.test(sentence));
       const old = provisional.length === 1 ? provisional[0] : "";
-      const priorDeployment = [...section.matchAll(/\bdpl_[A-Za-z0-9]+\b/g)].map((match) => match[0]).find((id) => id !== deploymentId);
       const updated = old ? old.replace(/; those changes were not yet committed or pushed in that session\.?$/i,
-        `; both changes were committed as \`${sha}\` and pushed to \`${branch}\` on ${date}.`) +
+        `; those changes were committed as \`${sha}\` and pushed to \`${branch}\` on ${date}.`) +
         ` The subsequent Git-triggered production deployment \`${deploymentId}\` from that exact commit reached READY, the Git hosting deployment status was success, and \`${alias}\` aliases the new deployment. The working tree was clean.` : "";
       const oldCount = old ? owner.body.split(old).length - 1 : 0;
       const updatedCount = updated ? owner.body.split(updated).length - 1 : 0;
       const completed = section.split(/\\n\\s*\\n/).filter((paragraph) =>
         paragraph.includes(sha) && paragraph.includes(deploymentId) && /READY/i.test(paragraph));
-      if (owner.body.length > STAGED_MAX_OWNER_CHARS || headings.length !== 1 || !priorDeployment ||
-          !section.includes("vercel --prod") ||
+      if (owner.body.length > STAGED_MAX_OWNER_CHARS || headings.length !== 1 ||
           (oldCount === 1 && (provisional.length !== 1 || section.split(old).length !== 2)) ||
           (oldCount === 0 && (provisional.length !== 0 || completed.length !== 1)) ||
           (oldCount !== 1 && oldCount !== 0) ||
@@ -1909,7 +1908,7 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: provisional deployment claim is absent or ambiguous.");
       }
       const peerPaths = (await kb.bundle.listConceptPaths()).filter((candidate) =>
-        candidate !== ownerPath && new RegExp(`^/(?:repos|projects)/${slug}(?:[/-]|\.md$)`, "i").test(candidate));
+        candidate !== ownerPath && new RegExp(`^/(?:repos|projects)/${slug}(?:[/-]|\\.md$)`, "i").test(candidate));
       if (peerPaths.length > 100) throw new Error("Staged mutation deferred: deployment peer inventory exceeds limit.");
       const peerEvidence: string[] = [];
       for (const peerPath of peerPaths) {
@@ -1917,7 +1916,7 @@ async function runStagedMutation(
         const peer = await kb.readConcept(peerPath);
         recorder.record("read_concept", peer.path, [peer.path]);
         if (peer.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: deployment peer exceeds evidence limit.");
-        if (peer.body.includes(old) || (peer.body.includes(sha) && peer.body.includes(deploymentId))) {
+        if ((old && peer.body.includes(old)) || (peer.body.includes(sha) && peer.body.includes(deploymentId))) {
           throw new Error("Staged mutation deferred: deployment correction has a competing owner.");
         }
         for (const paragraph of peer.body.split(/\n\s*\n/)) {
