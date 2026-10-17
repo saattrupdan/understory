@@ -339,7 +339,7 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, fsBaselineInstruction, { preflightInput: fsBaselineInstruction }))
       .toMatchObject({ ok: true, result: { filesChanged: [fsBaselineOwner] } });
     const body = (await kb.readConcept(fsBaselineOwner)).body;
-    expect(body).toContain(`Historical FS Fotovalidering 2026-10-14 baseline deletion warning (superseded by source-only rebuild; old generator only): ${fsBaselineOld}`);
+    expect(body).toContain(`Historical FS Fotovalidering 2026-10-14 baseline deletion warning (superseded by the later source-only rebuild; old generator limitation only): ${fsBaselineOld}`);
     expect(body).not.toMatch(/^FS Fotovalidering 2026-10-14 baseline deletion warning/m);
     expect(body).toContain("Earlier independent review finding.\n\n");
     expect(body).toContain("\n\nLater independent note.");

@@ -2143,7 +2143,10 @@ async function runStagedMutation(
       if (paths.length > 200 || paths.length === 0) {
         throw new Error("Staged mutation deferred: dated warning peer inventory is incomplete.");
       }
-      const oldPrefix = `${project} ${date} ${subject.replace(/\s+warning$/i, "")} warning`;
+      // Slash-separated subjects can name both the obsolete limitation and its
+      // new remedy. Anchor the old paragraph on the observed first alternative.
+      const oldSubject = subject.replace(/\/[^/ ]+(?=\s+warning$)/, "");
+      const oldPrefix = `${project} ${date} ${oldSubject}`;
       const historical = `Historical ${oldPrefix} (superseded by the later source-only rebuild; old generator limitation only): `;
       const heading = `${project} source-only ${subject.replace(/\s+warning$/i, "")} rebuild (after dated warning):`;
       const update = `${heading} ${facts.trim()}`;
@@ -2164,7 +2167,13 @@ async function runStagedMutation(
           if (/(?:rebuild|regenerat)[^\n]{0,100}(?:script|generator)|(?:script|generator)[^\n]{0,100}(?:rebuild|regenerat)/i.test(paragraph) &&
               /(?:source-only|parsed|baseline|workbook)/i.test(paragraph)) {
             let excerpt = paragraph;
-            if (excerpt.length > 4_000) throw new Error("Staged mutation deferred: dated warning peer exceeds evidence limit.");
+            if (excerpt.length > 4_000) {
+              const mentions = [...paragraph.matchAll(/(?:rebuild|regenerat|script|generator)/gi)];
+              if (mentions.length > 8) throw new Error("Staged mutation deferred: dated warning peer exceeds evidence limit.");
+              excerpt = `${paragraph.slice(0, 250)}\n[... omitted peer context ...]\n${mentions.map((mention) =>
+                paragraph.slice(Math.max(0, mention.index - 160), Math.min(paragraph.length, mention.index + 240))).join("\n[... omitted peer context ...]\n")}`;
+              if (excerpt.length > 4_000) throw new Error("Staged mutation deferred: dated warning peer exceeds evidence limit.");
+            }
             peerEvidence.push(`${peerPath}: ${excerpt}`);
           }
         }
@@ -2173,17 +2182,25 @@ async function runStagedMutation(
       if (peerEvidence.length > 20 || peerEvidence.join("\n\n").length > 24_000) {
         throw new Error("Staged mutation deferred: dated warning peer evidence exceeds limit.");
       }
+      // A new artifact already asserted by another owner is not an absent
+      // correction, even if the peer never copied the old warning text.
+      const newFingerprint = facts.match(/\b(?:SHA(?:-?256)?|hash)\s+(?:is\s+)?([a-f0-9]{64})\s+versus\b/i)?.[1];
+      if (newFingerprint && oldOwners.length === 1) {
+        for (const peerPath of paths) {
+          if (peerPath !== oldOwners[0].path && (await kb.readConcept(peerPath)).body.includes(newFingerprint)) {
+            throw new Error(`Staged mutation deferred: dated warning has a competing owner (${peerPath}).`);
+          }
+        }
+      }
       if (!owner || (options.ownerHint && options.ownerHint !== owner.path)) {
         throw new Error("Staged mutation deferred: dated warning owner is missing or conflicts with owner hint.");
       }
       const archived = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(historical));
       const historicalOld = archived.length === 1 ? archived[0].slice(historical.length) : "";
-      const retainedCaveats = historicalOld.match(/[^.!?]+[.!?](?:\s|$)/g)?.filter((sentence) =>
-        /\b(?:preserv\w*|retain\w*|audit|review|historical)\b/i.test(sentence)).map((sentence) => sentence.trim()) ?? [];
       const ownUpdates = updates.filter((claim) => claim.path === owner.path);
       if (oldOwners.length === 0 && archived.length === 1 && ownUpdates.length === 1 &&
-          ownUpdates[0].paragraph.trimEnd() === update && updates.length === 1 &&
-          retainedCaveats.every((caveat) => owner.body.split(caveat).length === 3)) {
+          historicalOld.startsWith(oldPrefix) && ownUpdates[0].paragraph.trimEnd() === update &&
+          updates.length === 1) {
         const current = await kb.readConcept(owner.path);
         if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${owner.path}`);
         const summary = "No change needed; exact dated warning supersession and historical claim verified.";
@@ -2199,7 +2216,7 @@ async function runStagedMutation(
       if (old.length > 4_000 || update.length > 4_000 || owner.body.split(old).length !== 2) {
         throw new Error("Staged mutation deferred: dated warning is not unique or complete.");
       }
-      const replacement = `${historical}${old.trimEnd()}\n\n${update}${retainedCaveats.length ? `\n\n${retainedCaveats.join("\n\n")}` : ""}`;
+      const replacement = `${historical}${old.trimEnd()}\n\n${update}`;
       const proposed = owner.body.replace(old.trimEnd(), replacement);
       if (proposed.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: dated warning replacement exceeds evidence limit.");
       const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
