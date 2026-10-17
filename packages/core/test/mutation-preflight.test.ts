@@ -2832,6 +2832,37 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(playbook)).body).not.toContain(fact);
   });
 
+  it("uses complete evidence after selector abstention and rejects a quoted incidental owner", async () => {
+    staged();
+    const owner = "/notes/queue-recovery-operations.md";
+    const incidental = "/projects/failed-queue-demo.md";
+    await kb.writeConcept(owner, { type: "Note", title: "Queue Recovery Operations" },
+      "Queue recovery operational procedure. ".repeat(2_300), "seed");
+    await kb.writeConcept(incidental, { type: "Project", title: "Failed Queue Demo" },
+      "A demo repository mentioned in examples. ".repeat(2_300), "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, incidental].map((conceptPath) => ({
+      path: conceptPath, type: "Note", title: conceptPath === owner ? "Queue Recovery Operations" : "Failed Queue Demo",
+      score: 10, confidenceQualified: false,
+    })));
+    const fact = 'Queue Recovery Operations: retry transient deliveries. The quoted example repository "Failed Queue Demo" is incidental.';
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { path: owner } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
+      ok: true, result: { filesChanged: [owner] },
+    });
+    expect(generateObjectMock.mock.calls[1]?.[0].prompt).toContain("A demo repository mentioned in examples.");
+    expect((await kb.readConcept(owner)).body).toContain(fact);
+    expect((await kb.readConcept(incidental)).body).not.toContain(fact);
+
+    const competingFact = 'Queue Recovery Operations: retry transient deliveries. The quoted example repository "Failed Queue Demo" is incidental.';
+    generateObjectMock.mockResolvedValueOnce({ object: { path: "/projects/failed-queue-demo.md" } })
+      .mockResolvedValueOnce({ object: { safe: true } });
+    // A claimed competing owner cannot override the explicitly named primary subject.
+    expect(await runMutation(kb, competingFact, { preflightInput: competingFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed" });
+  });
+
   it.each([
     { ownerHasOldHash: true, peerHasOldHash: false, ownerHasItem: true, passesAnchor: true },
     { ownerHasOldHash: true, peerHasOldHash: false, ownerHasItem: true, strongerPeerTitle: true, passesAnchor: true },
