@@ -103,7 +103,9 @@ export function planMutationEvidence(
     const bodyFits = concept.body.length <= maxBodyChars;
     const oversizedMatch = !bodyFits && usableRequest.some((item) => normalize(concept.body).includes(normalize(item.value)));
     const bodyEvidence = bodyFits ? extract(concept.body) : [];
-    const shared = bodyEvidence.filter((item) => usableRequest.some((requestItem) => requestItem.kind === item.kind && normalize(requestItem.value) === normalize(item.value)));
+    // Quoted and negated assertions are context, not current ownership evidence.
+    const shared = bodyEvidence.filter((item) => item.status !== "quoted" && item.status !== "negated" &&
+      usableRequest.some((requestItem) => requestItem.kind === item.kind && normalize(requestItem.value) === normalize(item.value)));
     const oldClaim = bodyEvidence.filter((item) => item.kind === "claim" && requestNorm.includes(normalize(item.value)));
     // When the request identifies one artifact but the candidate attaches the
     // same item to a different artifact, generic identifiers cannot make that

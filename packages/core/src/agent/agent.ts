@@ -33,6 +33,7 @@ import {
 import { AgentRunContext, fitText } from "./run-context.js";
 import { isAbortError, throwIfAborted } from "../util/abort.js";
 import { sha256 } from "../util/hash.js";
+import { planMutationEvidence } from "./mutation-evidence.js";
 import { TraceRecorder, TraceStore, type TraceTiming, type TraceUsage } from "./trace.js";
 import {
   createProtocolLeakageGuard,
@@ -2579,6 +2580,48 @@ async function runStagedMutation(
     state.checkCancellation();
     let hits = (await kb.search(query)).slice(0, 5);
     recorder.record("search_knowledge", query, hits.map((hit) => hit.path));
+    // Evidence planning is a bounded locator fallback, not an authorization
+    // path. Run only for preflight update/add requests with no supplied owner
+    // when ordinary ranking has no clear single result. Read and discard one
+    // batch at a time; never retain the entire corpus or expose bodies to the
+    // later mutation verifier through this locator.
+    const evidenceLookup = !options.directAdd && !!options.preflightInput && !options.ownerHint &&
+      /^(?:update|add|correct|revise)\b/i.test(raw.trim()) &&
+      (hits.length !== 1 || !hits[0].confidenceQualified);
+    if (evidenceLookup) {
+      const paths = await kb.bundle.listConceptPaths();
+      if (paths.length > 10_000) {
+        throw new Error("Staged mutation deferred: evidence inventory exceeds its limit.");
+      }
+      const located = new Set<string>();
+      let rejected = false;
+      for (let offset = 0; offset < paths.length; offset += 32) {
+        state.checkCancellation();
+        const concepts = [];
+        for (const conceptPath of paths.slice(offset, offset + 32)) {
+          const concept = await kb.readConcept(conceptPath);
+          concepts.push({ path: concept.path, title: concept.frontmatter.title,
+            type: concept.frontmatter.type, body: concept.body });
+        }
+        const plan = planMutationEvidence(raw, concepts, { batchSize: 32, maxBodyChars: 64_000 });
+        for (const candidate of plan.candidates) {
+          if (candidate.rejected) rejected = true;
+          if (!candidate.rejected && candidate.compositeAnchors.length > 0) located.add(candidate.path);
+        }
+      }
+      if (rejected || located.size > 1) {
+        throw new Error("Staged mutation deferred: evidence inventory found oversized or competing candidates.");
+      }
+      if (located.size === 1) {
+        const candidatePath = [...located][0];
+        if (!hits.some((hit) => hit.path === candidatePath)) {
+          const metadata = await kb.readConcept(candidatePath);
+          hits.push({ path: metadata.path, type: metadata.frontmatter.type,
+            title: metadata.frontmatter.title, description: metadata.frontmatter.description,
+            score: 0, confidenceQualified: false });
+        }
+      }
+    }
     const namedSection = !options.directAdd && options.preflightInput ? stagedNamedSection(raw) : undefined;
     state.checkCancellation();
     // A correction can name its actual subject after an unrelated opening
