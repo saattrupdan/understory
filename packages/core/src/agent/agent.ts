@@ -2707,7 +2707,7 @@ async function runStagedMutation(
     }
     let sectionOwnerPath: string | undefined = prReviewOwnerPath;
     if (namedSection) {
-      // A dated FS retrain status can be copied into sibling continuations
+      // A dated retrain status can be copied into sibling continuations
       // absent from ranked search. Check the bounded project inventory before
       // letting a heading identify its owner; a locator is not write permission.
       const datedStatus = /^update .{1,160}? status recorded on (?:[A-Za-z]{3,9} \d{1,2}|\d{1,2} [A-Za-z]{3,9}) \d{4}\s*:/i.test(raw.trim());
@@ -3050,7 +3050,7 @@ async function runStagedMutation(
             /\bkeyboard-first controls\b/i.test(concept.body)) matchingOwners.push(concept.path);
       }
       if (matchingOwners.length !== 1) {
-        throw new Error("Staged mutation deferred: 25-class keyboard-controls owner is missing or duplicated.");
+        throw new Error("Staged mutation deferred: annotation keyboard-controls owner is missing or duplicated.");
       }
       uiKeyboardOwnerPath = matchingOwners[0];
     }
@@ -3863,11 +3863,17 @@ async function runStagedMutation(
         if (peers.some((peer) => peer.body.includes(section.trim()))) {
           throw new Error("Staged mutation deferred: deployment policy has a competing owner.");
         }
-        const requestedFacts = raw.split(/(?<=[.!?])\s+/).filter((sentence) =>
+        const requestedFacts = raw.trim().replace(/^(?:update|correct) the .{1,160}? deployment workflow knowledge:\s*/i, "")
+          .split(/(?<=[.!?])\s+/).filter((sentence) =>
           /(?:Vercel project|production deployment|Git-triggered|GitHub .*status|Vite build|deploy target was removed|push to [\w./-]+ is the intended deployment mechanism)/i.test(sentence) &&
           !/replace obsolete guidance|retain note/i.test(sentence));
         if (!requestedFacts.length) throw new Error("Staged mutation deferred: deployment correction lacks caller-supported facts.");
-        const revisedSection = `${headings[0][0]}\n\n${requestedFacts.join("\n\n")}\n\n`;
+        const retainedSafety = [
+          section.match(/(?:^|\n)\d+\. (Only after deployment succeeds[^\n]*)/i)?.[1],
+          section.match(/(?:^|\n)(Never delete the feature branch before confirming deployment has succeeded[^\n]*)/i)?.[1],
+        ].filter((claim): claim is string => !!claim);
+        if (retainedSafety.length !== 2) throw new Error("Staged mutation deferred: deployment cleanup safeguards are incomplete.");
+        const revisedSection = `${headings[0][0]}\n\n${requestedFacts.join("\n\n")}\n\n${retainedSafety.join("\n\n")}\n\n`;
         const replacement = target.body.slice(0, start) + revisedSection + target.body.slice(end);
         if (!replacement.includes("vercel --prod") || !replacement.includes("Not authorized") ||
             replacement.length > STAGED_MAX_OWNER_CHARS) {
@@ -3886,6 +3892,7 @@ async function runStagedMutation(
         if (current.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
         await kb.patchConcept(target.path, { replaceBody: replacement }, "Staged mutation: correct deployment policy", sha256(target.body), options.signal,
           (writtenPath) => { changed = [writtenPath]; });
+        if ((await kb.readConcept(target.path)).body !== replacement) throw new Error("Deployment policy failed CAS read-back verification.");
         const summary = `Staged mutation changed ${changed.join(", ")}.`;
         const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain,
           undefined, undefined, undefined, { providerCalls, generationMs: Date.now() - started });

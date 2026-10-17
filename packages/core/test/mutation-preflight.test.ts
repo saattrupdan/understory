@@ -5706,7 +5706,9 @@ describe("mutation owner preflight", () => {
     expect(body).toContain("3dd02f09300a208f9addf936cc273a216ea449f9");
     expect(body).toContain("dist/atom.xml");
     expect(body).toContain("dist/sitemap.xml");
-    expect(body).toContain("not yet committed or pushed in that session");
+    expect(body).toContain("not yet committed/pushed in that session");
+    expect(body).toContain("Only after deployment succeeds, clean up (delete) the feature branch.");
+    expect(body).toContain("Never delete the feature branch before confirming deployment has succeeded");
     expect((await kb.readConcept(related)).body).toContain("Git-connected Vercel deployment");
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
