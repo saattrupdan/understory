@@ -2696,6 +2696,44 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
+  it("canonicalizes extensionless owner hints and independently vets the existing owner", async () => {
+    await billingFixture(); staged();
+    const path = "/playbooks/oncall-billing.md";
+    const fact = "Billing on-call responders check the charge request ID before escalation.";
+    generateObjectMock.mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`OWNER ${path}`);
+      return { object: { safe: true, reason: "The existing on-call runbook is the correct owner." } };
+    }).mockImplementationOnce(async (request: { prompt: string }) => {
+      expect(request.prompt).toContain(`OWNER ${path}`);
+      return { object: { safe: false, reason: "This proposed fact is not safe to add." } };
+    });
+    const accepted = await runMutation(kb, `Remember that ${fact}`, {
+      ownerHint: "/playbooks/oncall-billing", preflightInput: fact, directAdd: true,
+    });
+    expect(accepted).toMatchObject({ ok: true, result: { filesChanged: [path] } });
+    const vetoed = await runMutation(kb, "Remember an unrelated billing incident response fact.", {
+      ownerHint: "/playbooks/oncall-billing", preflightInput: "Remember an unrelated billing incident response fact.", directAdd: true,
+    });
+    expect(vetoed).toMatchObject({ ok: false, status: "failed" });
+    expect((await kb.readConcept(path)).body).toContain(fact);
+    expect((await kb.readConcept(path)).body).not.toContain("unrelated billing incident");
+  });
+
+  it("rejects malformed owner hints and treats missing normalized paths as missing", async () => {
+    await billingFixture(); staged();
+    for (const ownerHint of ["playbooks/oncall-billing", "/playbooks//oncall-billing", "/playbooks/../oncall-billing", "/playbooks/./oncall-billing", "https://example.com/oncall-billing", "/playbooks/oncall-billing.json"]) {
+      expect(await runMutation(kb, "Remember a billing fact.", {
+        ownerHint, preflightInput: "Remember a billing fact.", directAdd: true,
+      })).toMatchObject({ ok: false, status: "failed" });
+    }
+    const missing = "/playbooks/missing-billing-owner.md";
+    expect(await runMutation(kb, "Remember a billing fact.", {
+      ownerHint: "/playbooks/missing-billing-owner", preflightInput: "Remember a billing fact.", directAdd: true,
+    })).toMatchObject({ ok: false, status: "failed" });
+    expect(await kb.bundle.exists(missing)).toBe(false);
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
   it("appends to a relevant existing hinted owner even when broad search ranks another", async () => {
     await billingFixture(); staged();
     const newFact = "Billing on-call responders check the charge request ID before escalation.";
