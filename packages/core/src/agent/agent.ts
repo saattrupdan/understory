@@ -2125,98 +2125,83 @@ async function runStagedMutation(
       await traceStore(kb).save(trace);
       return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
     }
-    // A later source-only rebuild supersedes the old baseline deletion warning,
-    // but neither the original generator limitation nor private audit history
-    // should be erased by a broad paragraph replacement.
-    if (!options.directAdd && options.preflightInput &&
-        /^Update the FS Fotovalidering 2026-10-14 baseline deletion\/regeneration warning:/i.test(raw.trim()) &&
-        ["src/scripts/rebuild_test_baseline.py", "ONLY six PPTX", "258 image hashes",
-          "godkendt_id20 byte_size", "ea58999a498cffdc9d311600a3e168991c3e3f743d7ab2cee82e2e75869d77c5",
-          "3d27505b085a9506a11a87855fa782031500248ea288d48700da44619976ccb6",
-          "owner-24-review historical exports", "33 parser/synthetic tests passed"]
-          .every((anchor) => raw.includes(anchor))) {
-      const ownerPath = "/projects/fs-fotovalidering-continuation-d2fd99e3dfc67efb.md";
-      if (options.ownerHint && options.ownerHint !== ownerPath) {
-        throw new Error("Staged mutation deferred: FS baseline owner hint conflicts with observed warning.");
-      }
+    // Supersede a dated source-generation warning only after identifying its
+    // project, subject, exact current paragraph, and every bounded sibling peer.
+    // Preserve the old claim as history; audit caveats and unrelated paragraphs
+    // remain current and untouched.
+    const datedWarning = !options.directAdd && options.preflightInput
+      ? raw.trim().match(/^Update the (.+?) (\d{4}-\d{2}-\d{2}) (.+? warning):\s*([\s\S]+)$/i)
+      : null;
+    if (datedWarning && /source-only/i.test(datedWarning[4]) &&
+        /(?:rebuild|regenerat)/i.test(datedWarning[4]) &&
+        /(?:script|generator)/i.test(datedWarning[4])) {
+      const [, project, date, subject, facts] = datedWarning;
+      const projectSlug = project.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
       const paths = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
-        /^\/projects\/fs-fotovalidering(?:[/-]|\.md$)/.test(candidate));
-      if (paths.length > 200 || !paths.includes(ownerPath)) {
-        throw new Error("Staged mutation deferred: FS baseline peer inventory is incomplete.");
+        candidate.startsWith(`/projects/${projectSlug}`) &&
+        (candidate === `/projects/${projectSlug}.md` || /^[/-]/.test(candidate.slice(`/projects/${projectSlug}`.length))));
+      if (paths.length > 200 || paths.length === 0) {
+        throw new Error("Staged mutation deferred: dated warning peer inventory is incomplete.");
       }
-      const oldPrefix = "FS Fotovalidering 2026-10-14 baseline deletion warning";
-      const historical = "Historical FS Fotovalidering 2026-10-14 baseline deletion warning (superseded by source-only rebuild; old generator only): ";
-      const heading = "FS Fotovalidering source-only baseline rebuild (after 2026-10-14 warning):";
-      const update = `${heading} ${raw.trim().replace(/^Update the FS Fotovalidering 2026-10-14 baseline deletion\/regeneration warning:\s*/i, "")}`;
+      const oldPrefix = `${project} ${date} ${subject.replace(/\s+warning$/i, "")} warning`;
+      const historical = `Historical ${oldPrefix} (superseded by the later source-only rebuild; old generator limitation only): `;
+      const heading = `${project} source-only ${subject.replace(/\s+warning$/i, "")} rebuild (after dated warning):`;
+      const update = `${heading} ${facts.trim()}`;
       const oldOwners: Array<{ path: string; paragraph: string }> = [];
       const peerEvidence: string[] = [];
+      const updates: Array<{ path: string; paragraph: string }> = [];
       let owner: Awaited<ReturnType<KnowledgeBase["readConcept"]>> | undefined;
       for (const peerPath of paths) {
         state.checkCancellation();
         const peer = await kb.readConcept(peerPath);
         recorder.record("read_concept", peer.path, [peer.path]);
         if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
-          throw new Error("Staged mutation deferred: FS baseline owner or peer exceeds evidence limit.");
+          throw new Error("Staged mutation deferred: dated warning owner or peer exceeds evidence limit.");
         }
-        if (peerPath === ownerPath) owner = peer;
         for (const paragraph of peer.body.split(/\n\s*\n/)) {
           if (paragraph.startsWith(oldPrefix)) oldOwners.push({ path: peerPath, paragraph });
-          if (peerPath !== ownerPath && paragraph.includes("rebuild_test_baseline.py") &&
-              paragraph.includes("ea58999a498cffdc9d311600a3e168991c3e3f743d7ab2cee82e2e75869d77c5")) {
-            throw new Error("Staged mutation deferred: FS baseline rebuild has a competing owner.");
-          }
-          if (peerPath !== ownerPath &&
-              /(?:rebuild_test_baseline\.py|regenerate_parsed\.py)/i.test(paragraph) &&
-              /(?:parsed\/|baseline|Godkendt|source-only)/i.test(paragraph)) {
+          if (paragraph.startsWith(heading)) updates.push({ path: peerPath, paragraph });
+          if (/(?:rebuild|regenerat)[^\n]{0,100}(?:script|generator)|(?:script|generator)[^\n]{0,100}(?:rebuild|regenerat)/i.test(paragraph) &&
+              /(?:source-only|parsed|baseline|workbook)/i.test(paragraph)) {
             let excerpt = paragraph;
-            if (paragraph.length > 2_500) {
-              const mentions = [...paragraph.matchAll(/(?:rebuild_test_baseline\.py|regenerate_parsed\.py)/gi)];
-              if (mentions.length > 3) {
-                throw new Error("Staged mutation deferred: FS baseline peer has too many script mentions for bounded evidence.");
-              }
-              excerpt = `${paragraph.slice(0, 250)}\n[... omitted peer context ...]\n${mentions.map((mention) =>
-                paragraph.slice(Math.max(0, mention.index - 450), Math.min(paragraph.length, mention.index + 700)))
-                .join("\n[... omitted peer context ...]\n")}\n[... omitted peer context ...]\n${paragraph.slice(-250)}`;
-              if (excerpt.length > 4_000) {
-                throw new Error("Staged mutation deferred: FS baseline peer warning exceeds evidence limit.");
-              }
-            }
+            if (excerpt.length > 4_000) throw new Error("Staged mutation deferred: dated warning peer exceeds evidence limit.");
             peerEvidence.push(`${peerPath}: ${excerpt}`);
           }
         }
+        if (oldOwners.some((claim) => claim.path === peerPath) || updates.some((claim) => claim.path === peerPath)) owner = peer;
       }
       if (peerEvidence.length > 20 || peerEvidence.join("\n\n").length > 24_000) {
-        throw new Error("Staged mutation deferred: FS baseline peer warnings exceed evidence limit.");
+        throw new Error("Staged mutation deferred: dated warning peer evidence exceeds limit.");
       }
-      if (!owner) throw new Error("Staged mutation deferred: FS baseline warning owner is missing.");
-      const archived = owner.body.split(/\n\s*\n/).filter((part) =>
-        part.startsWith(`${historical}${oldPrefix}`) &&
-        part.includes("regenerate_parsed.py") && part.includes("258-photo"));
-      const updates = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
-      if (oldOwners.length === 0 && archived.length === 1 && updates.length === 1 && updates[0].trimEnd() === update) {
-        const current = await kb.readConcept(ownerPath);
-        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
-        const summary = "No change needed; exact FS source-only baseline status and historical warning verified.";
+      if (!owner || (options.ownerHint && options.ownerHint !== owner.path)) {
+        throw new Error("Staged mutation deferred: dated warning owner is missing or conflicts with owner hint.");
+      }
+      const archived = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(historical));
+      const historicalOld = archived.length === 1 ? archived[0].slice(historical.length) : "";
+      const retainedCaveats = historicalOld.match(/[^.!?]+[.!?](?:\s|$)/g)?.filter((sentence) =>
+        /\b(?:preserv\w*|retain\w*|audit|review|historical)\b/i.test(sentence)).map((sentence) => sentence.trim()) ?? [];
+      const ownUpdates = updates.filter((claim) => claim.path === owner.path);
+      if (oldOwners.length === 0 && archived.length === 1 && ownUpdates.length === 1 &&
+          ownUpdates[0].paragraph.trimEnd() === update && updates.length === 1 &&
+          retainedCaveats.every((caveat) => owner.body.split(caveat).length === 3)) {
+        const current = await kb.readConcept(owner.path);
+        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${owner.path}`);
+        const summary = "No change needed; exact dated warning supersession and historical claim verified.";
         const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
           { providerCalls, generationMs: Date.now() - started });
         await traceStore(kb).save(trace);
         return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
       }
-      if (oldOwners.length !== 1 || oldOwners[0].path !== ownerPath || archived.length !== 0 || updates.length !== 0) {
-        throw new Error("Staged mutation deferred: FS baseline warning is absent, duplicated, or partially updated.");
+      if (oldOwners.length !== 1 || oldOwners[0].path !== owner.path || archived.length !== 0 || updates.length !== 0) {
+        throw new Error("Staged mutation deferred: dated warning is absent, duplicated, or partially updated.");
       }
       const old = oldOwners[0].paragraph;
-      if (old.length > 4_000 || update.length > 4_000 ||
-          !old.includes("Do NOT delete everything except the PPTX and source XLSX") ||
-          !old.includes("regenerate_parsed.py") || !old.includes("258-photo") ||
-          owner.body.split(old).length !== 2) {
-        throw new Error("Staged mutation deferred: FS baseline old warning is not unique or complete.");
+      if (old.length > 4_000 || update.length > 4_000 || owner.body.split(old).length !== 2) {
+        throw new Error("Staged mutation deferred: dated warning is not unique or complete.");
       }
-      const replacement = `${historical}${old.trimEnd()}\n\n${update}`;
+      const replacement = `${historical}${old.trimEnd()}\n\n${update}${retainedCaveats.length ? `\n\n${retainedCaveats.join("\n\n")}` : ""}`;
       const proposed = owner.body.replace(old.trimEnd(), replacement);
-      if (proposed.length > STAGED_MAX_OWNER_CHARS) {
-        throw new Error("Staged mutation deferred: FS baseline replacement exceeds evidence limit.");
-      }
+      if (proposed.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: dated warning replacement exceeds evidence limit.");
       const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
       const judgement = await generateObject({
@@ -2224,18 +2209,18 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent FS baseline correction check: Does this uniquely observed old warning describe only the old generator, while the new, later source-only rebuild qualifies it without claiming identical manifest bytes or recoverable owner-24-review audit history? Check ALL relevant peer passages for conflicting newer status or another owner: distinguish an earlier script's inability to handle a reorganized workbook from a subsequent fix, but decline if that order is not supported by the passages and instruction. Does the replacement preserve the complete prior warning and all other owner paragraphs, and reproduce ONLY the caller's facts? Reject contradiction, duplicate update, unrelated owners, or uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT FS PEER PASSAGES:\n${peerEvidence.join("\n\n")}\nOBSERVED OLD PARAGRAPH:\n${old}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
+        prompt: `Independent dated warning supersession check. Derive the project and subject from the instruction and complete observed owner. Does the old paragraph describe the prior generator only, and do the caller's facts support superseding that warning with a later source-only rebuild? Check every bounded sibling peer for another owner or conflicting newer status; decline ambiguity. Archive only the superseded current claim, keep still-current audit caveats and all other paragraphs verbatim, and append only supported caller facts. Reject unsupported chronology, broader deletion permission, or uncertainty. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT SIBLING PEERS:\n${peerEvidence.join("\n\n")}\nOBSERVED OLD PARAGRAPH:\n${old}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
       });
       state.checkCancellation();
-      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent FS baseline correction check declined.");
-      const current = await kb.readConcept(ownerPath);
-      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent dated warning check declined.");
+      const current = await kb.readConcept(owner.path);
+      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${owner.path}`);
       state.checkCancellation();
-      await kb.patchConcept(ownerPath, { replaceBody: proposed }, "Staged mutation: supersede FS baseline warning", sha256(owner.body), options.signal,
+      await kb.patchConcept(owner.path, { replaceBody: proposed }, "Staged mutation: supersede dated source warning", sha256(owner.body), options.signal,
         (writtenPath) => { changed = [writtenPath]; });
-      const readBack = await kb.readConcept(ownerPath);
-      if (readBack.body !== proposed) throw new Error("FS baseline correction failed CAS read-back verification.");
-      const summary = `Staged mutation changed ${ownerPath}.`;
+      const readBack = await kb.readConcept(owner.path);
+      if (readBack.body !== proposed) throw new Error("Dated warning correction failed CAS read-back verification.");
+      const summary = `Staged mutation changed ${owner.path}.`;
       const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
         { providerCalls, generationMs: Date.now() - started });
       await traceStore(kb).save(trace);
