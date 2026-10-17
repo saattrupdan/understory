@@ -1659,7 +1659,7 @@ async function runStagedMutation(
           !/\b(?:inline )?comments?\b/i.test(raw)) {
         throw new Error("Staged mutation deferred: review instruction lacks explicit prior and submitted status facts.");
       }
-      const ownerPattern = repository.toLowerCase().replace(/[^a-z0-9-]/g, "");
+      const ownerPattern = repository.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
       const ownerPaths = (await kb.bundle.listConceptPaths()).filter((candidate) =>
         new RegExp(`^/(?:repos|projects)/${ownerPattern}(?:[-/]|\\.md$)`, "i").test(candidate));
       const ownerCandidates = new Set([...ownerPaths]);
@@ -1688,23 +1688,50 @@ async function runStagedMutation(
           }
         }
       }
-      const selected = ownerMatches.length === 1 ? ownerMatches[0] : undefined;
-      const ownerPath = selected?.path;
-      if (!selected || !ownerPath || (ownerPathHint && ownerPathHint !== ownerPath)) {
+      const selected = ownerMatches.filter((match) => ownerPaths.includes(match.path));
+      if (selected.length > 1) {
+        throw new Error(selected.some((match) => match.path !== selected[0].path)
+          ? "Staged mutation deferred: review has a competing owner."
+          : "Staged mutation deferred: review has another stale owner passage.");
+      }
+      const ownerPath = selected.length === 1 ? selected[0].path : undefined;
+      if (!ownerPath || (ownerPathHint && ownerPathHint !== ownerPath)) {
         throw new Error("Staged mutation deferred: exact prior review paragraph is absent, duplicated, or conflicts with owner hint.");
       }
       const owner = peerDocs.get(ownerPath)!;
-      const observedParagraph = selected.old;
+      const observedParagraph = selected[0].old;
       const alreadyUpdated = !matchingOld.test(observedParagraph);
       const old = alreadyUpdated ? "" : observedParagraph;
-      const updated = (old || observedParagraph)
-        .replace(/created\s+unsubmitted\s+PENDING\s+review\s+/i, "submitted review ")
-        .replace(/\bPENDING\b/i, "CHANGES_REQUESTED")
-        .replace(/\b(?:two|2) inline comments\b/i, "four inline comments")
-        .replace(/\s*Review was intentionally NOT submitted\.?/i, "")
-        .replace(/\s*No longer describe it as unsubmitted\.?/i, "").trim();
+      const commentCount = raw.match(/\b([a-z]+|\d+) inline comments\b/i)?.[1];
+      const priorCommentCount = observedParagraph.match(/\b([a-z]+|\d+) inline comments\b/i)?.[1];
+      const cardinal = (count: string | undefined): number | undefined => {
+        if (!count) return undefined;
+        const names = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+        return /^\d+$/.test(count) ? Number(count) : names.indexOf(count.toLowerCase()) < 0
+          ? undefined : names.indexOf(count.toLowerCase());
+      };
+      const readabilityNotes = raw.match(/\btwo readability\/style comments in\s+([\w.-]+)\s+and\s+([\w.-]+)/i);
+      const additionalComments = (cardinal(commentCount) ?? -1) - (cardinal(priorCommentCount) ?? -1);
+      if (!alreadyUpdated && (!Number.isInteger(additionalComments) || additionalComments < 0 ||
+          (additionalComments > 0 && !(additionalComments === 2 && readabilityNotes)))) {
+        throw new Error("Staged mutation deferred: new review comments lack complete caller-supported detail.");
+      }
+      let updated = observedParagraph;
+      if (!alreadyUpdated && commentCount) {
+        updated = updated.replace(/\bcreated\s+unsubmitted\s+PENDING\s+review\s+/i, "submitted review ")
+          .replace(/\bPENDING\b/i, "CHANGES_REQUESTED")
+          .replace(/\bon head ([a-f0-9]{7,40}) with (?:[a-z]+|\d+) inline comments\b/i,
+            (_match, head: string) => `on head ${head} with state CHANGES_REQUESTED and ${commentCount} inline comments`)
+          .replace(/\s*Review was intentionally NOT submitted\.?/i, "");
+        if (readabilityNotes && !updated.includes(readabilityNotes[1])) {
+          updated = updated.replace(/\. Comment IDs\b/i,
+            `; (3) a readability/style comment in ${readabilityNotes[1]}; (4) a readability/style comment in ${readabilityNotes[2]}. Comment IDs`);
+        }
+      }
       if ((!alreadyUpdated && updated === old) || (headMatch && !observedParagraph.includes(headMatch[1])) ||
-          !/\bCHANGES_REQUESTED\b/.test(updated) || !/\bfour inline comments\b/i.test(updated)) {
+          !/\bCHANGES_REQUESTED\b/.test(updated) || !commentCount ||
+          !new RegExp(`\\b${commentCount} inline comments\\b`, "i").test(updated) ||
+          (readabilityNotes && (!updated.includes(readabilityNotes[1]) || !updated.includes(readabilityNotes[2])))) {
         throw new Error("Staged mutation deferred: old review paragraph cannot be safely reconciled with caller facts.");
       }
       const oldCount = old ? owner.body.split(old).length - 1 : 0;
@@ -1725,7 +1752,7 @@ async function runStagedMutation(
       // A second stale assertion makes even an already-updated paragraph
       // insufficient to complete this correction.
       if (owner.body.replace(oldCount ? old : updated, "").split(/\n\s*\n/).some(staleReviewClaim)) {
-        throw new Error("Staged mutation deferred: EuroEval review has another stale owner passage.");
+        throw new Error("Staged mutation deferred: review has another stale owner passage.");
       }
       const peerEvidence: string[] = [];
       let resolved: Awaited<ReturnType<typeof resolveAgentModel>> | undefined;
@@ -1736,7 +1763,7 @@ async function runStagedMutation(
         const peer = await kb.readConcept(peerPath);
         recorder.record("read_concept", peer.path, [peer.path]);
         if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
-          throw new Error("Staged mutation deferred: EuroEval review peer exceeds evidence limit.");
+          throw new Error("Staged mutation deferred: review peer exceeds evidence limit.");
         }
         const paragraphs = peer.body.split(/\n\s*\n/);
         let adjudicatedExcerpt: string | undefined;
@@ -1749,7 +1776,7 @@ async function runStagedMutation(
           // Require a separate, bounded adjudication; other paths still fail
           // closed on a substantive competing claim.
           if (!/async|queue/i.test(peer.path) || conflicting.length > 4) {
-            throw new Error(`Staged mutation deferred: EuroEval review has a competing owner (${peer.path}; ${conflicting.length} review passages).`);
+            throw new Error(`Staged mutation deferred: review has a competing owner (${peer.path}; ${conflicting.length} review passages).`);
           }
           const excerpt = conflicting.map((paragraph) => {
             const id = paragraph.indexOf(reviewId);
@@ -1758,7 +1785,7 @@ async function runStagedMutation(
             return paragraph.slice(Math.max(0, at - 900), Math.min(paragraph.length, at + 2_500));
           }).join("\n\n");
           if (excerpt.length > 12_000) {
-            throw new Error("Staged mutation deferred: EuroEval review peer passage exceeds limit.");
+            throw new Error("Staged mutation deferred: review peer passage exceeds limit.");
           }
           resolved ??= await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
           modelChain = resolved.modelChain;
@@ -1771,7 +1798,7 @@ async function runStagedMutation(
           });
           state.checkCancellation();
           if (!ownership.object.exampleOnly) {
-            throw new Error(`Staged mutation deferred: EuroEval queue example adjudication declined (${peer.path}: ${ownership.object.reason.slice(0, 160)}).`);
+            throw new Error(`Staged mutation deferred: queue example adjudication declined (${peer.path}: ${ownership.object.reason.slice(0, 160)}).`);
           }
           adjudicatedExcerpt = excerpt;
         }
@@ -1780,7 +1807,7 @@ async function runStagedMutation(
               (new RegExp(`\\bPR\\s*#?${prId}\\b`, "i").test(paragraph) && /\breview\b/i.test(paragraph))) {
             if (paragraph.length > 4_000) {
               if (!adjudicatedExcerpt || !conflicting.includes(paragraph)) {
-                throw new Error("Staged mutation deferred: EuroEval review peer passage exceeds limit.");
+                throw new Error("Staged mutation deferred: review peer passage exceeds limit.");
               }
               peerEvidence.push(`${peer.path} (independently classified as a queue example): ${adjudicatedExcerpt}`);
             } else {
@@ -1790,12 +1817,12 @@ async function runStagedMutation(
         }
       }
       if (peerEvidence.join("\n\n").length > 12_000) {
-        throw new Error("Staged mutation deferred: EuroEval review peer evidence exceeds limit.");
+        throw new Error("Staged mutation deferred: review peer evidence exceeds limit.");
       }
       if (oldCount === 0) {
         const current = await kb.readConcept(ownerPath);
         if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
-        const summary = "No change needed; submitted EuroEval review status verified.";
+        const summary = "No change needed; submitted review status verified.";
         const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
           { providerCalls, generationMs: Date.now() - started });
         await traceStore(kb).save(trace);
@@ -1803,7 +1830,7 @@ async function runStagedMutation(
       }
       const replacement = owner.body.replace(old, updated);
       if (replacement.length > STAGED_MAX_OWNER_CHARS || replacement.includes(old)) {
-        throw new Error("Staged mutation deferred: EuroEval review replacement is not local.");
+        throw new Error("Staged mutation deferred: review replacement is not local.");
       }
       resolved ??= await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
       modelChain = resolved.modelChain;
@@ -1816,17 +1843,17 @@ async function runStagedMutation(
       });
       state.checkCancellation();
       if (!judgement.object.safe) {
-        throw new Error("Staged mutation deferred: EuroEval review independent check declined.");
+        throw new Error("Staged mutation deferred: review independent check declined.");
       }
       const current = await kb.readConcept(ownerPath);
       if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
       state.checkCancellation();
       await kb.patchConcept(ownerPath, { replaceBody: replacement },
-        "Staged mutation: confirm EuroEval review submission", sha256(owner.body), options.signal,
+        "Staged mutation: confirm review submission", sha256(owner.body), options.signal,
         (writtenPath) => { changed = [writtenPath]; });
       const readBack = await kb.readConcept(ownerPath);
       if (readBack.body !== replacement) {
-        throw new Error("EuroEval review failed CAS read-back verification.");
+        throw new Error("review failed CAS read-back verification.");
       }
       const summary = `Staged mutation changed ${ownerPath}.`;
       const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,

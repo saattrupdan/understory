@@ -5269,6 +5269,25 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(euroevalThreadsOwner)).body.trim()).toBe(euroevalFollowup);
   });
 
+  it("updates a renamed repository's submitted review without changing another PR", async () => {
+    staged();
+    const owner = "/repos/cedar-reports.md";
+    const oldReview = "On 17 Oct Casey created unsubmitted PENDING review 312485 on head abcdef1234567890 with two inline comments: (1) clarify totals; (2) fix sorting. Comment IDs 91001 and 91002. Review was intentionally NOT submitted.";
+    const instruction = "Update Cedar Reports PR #73 review status: review ID 312485 by Casey, previously PENDING, was submitted with state CHANGES_REQUESTED. It contains two inline comments. No longer describe it as unsubmitted.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Cedar Reports" },
+      `${oldReview}\n\nPR #74 remains PENDING for a different review.`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const current = (await kb.readConcept(owner)).body;
+    expect(current).toContain("review 312485 on head abcdef1234567890 with state CHANGES_REQUESTED and two inline comments");
+    expect(current).toContain("Comment IDs 91001 and 91002");
+    expect(current).toContain("PR #74 remains PENDING");
+    expect(current).not.toContain("Review was intentionally NOT submitted");
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+  });
+
   const euroevalSubmittedInstruction = "Update EuroEval PR #2234 review status: review ID 5518245608 by saattrupdan, previously PENDING, was submitted on 14 Oct 2026 with state CHANGES_REQUESTED. It contains four inline comments: two substantive findings on multilingual ranking refresh and invalid-marker display, plus Dan's two readability/style comments in task_metadata.py and invalid_results.py. No longer describe it as unsubmitted.";
   const euroevalOldReview = "On 14 Oct 2026 Dan's GitHub account saattrupdan created unsubmitted PENDING review 5518245608 on head 0f255b1278c47a2051d348cd222ed0f2f862bdce with two inline comments: (1) leaderboard_generation.py:252 compares only overall ranked membership, so a per-language rank change for an overall-unranked model leaves multilingual CSVs stale on non-force runs; (2) leaderboard_generation.py:841 appends '(invalid)' to orthogonal percentage scores but LeaderboardTable.vue percent formatter and scatter tooltip drop the suffix (and interval). Comment IDs 4271055779 and 4271055802. Review was intentionally NOT submitted.";
 
