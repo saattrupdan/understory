@@ -264,8 +264,8 @@ describe("mutation owner preflight", () => {
       "TONO/ONOT compares unrelated passport evaluation categories.", "seed");
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain(annotationHandoffCompletion);
-      expect(prompt).toContain("Before Dan's decisions:");
-      expect(prompt).toContain("43 '?' cells were replaced (1 yes as x, 42 no as blank)");
+      expect(prompt).toContain("Before later completion:");
+      expect(prompt).toContain("all 43 '?' cells were replaced, yes as x and 42 no as blank");
       return { object: { safe: true } };
     });
     expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
@@ -275,7 +275,7 @@ describe("mutation owner preflight", () => {
     expect(body).toContain("Independent later note.");
     expect(body).toContain("Historical FS Fotovalidering baseline annotation handoff (pending at request time; completed later):");
     expect(body).toContain("Workbook has not been altered pending Dan's JSON decisions");
-    expect(body).toContain("zero '?' remained in the source workbook, and the photo-bearing HTML was deleted.");
+    expect(body).toContain("validation found zero remaining '?' across the workbook.");
     expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
       .toMatchObject({ ok: true, result: { filesChanged: [] } });
     expect((await kb.readConcept(annotationHandoffOwner)).body).toBe(body);

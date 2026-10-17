@@ -2354,7 +2354,7 @@ async function runStagedMutation(
     // comes from the request and complete sibling bodies, never fixture data.
     if (options.directAdd && options.preflightInput && /\bhandoff\b/i.test(raw) &&
         /\b(?:pending|awaiting|not yet|has not been)\b/i.test(raw)) {
-      const lead = raw.trim().match(/^(.{3,100}?)\s+(?:baseline\s+)?(?:annotation\s+)?handoff\b/i)?.[1]?.trim();
+      const lead = raw.trim().match(/^(.{3,100}?)\s+handoff\b/i)?.[1]?.trim();
       const identityWords = stagedWords(lead ?? raw).filter((word) => !["before", "later", "historical"].includes(word));
       const requestWords = stagedWords(raw).filter((word) => !["before", "later", "historical"].includes(word));
       if (!lead || identityWords.length < 1) {
@@ -2362,7 +2362,6 @@ async function runStagedMutation(
       }
       const projectPaths = await kb.bundle.listConceptPaths("/projects");
       if (projectPaths.length > 200) throw new Error("Staged mutation deferred: handoff sibling inventory exceeds limit.");
-      const projectKey = lead.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
       const candidates = projectPaths.filter((candidate) => {
         const pathWords = stagedWords(candidate.replace(/^\/projects\//, "").replace(/\.md$/, ""));
         return identityWords.filter((word) => pathWords.includes(word)).length >= 1;
@@ -2383,7 +2382,8 @@ async function runStagedMutation(
         recorder.record("read_concept", peer.path, [peer.path]);
         if (peer.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: handoff peer exceeds evidence limit.");
         docs.set(peer.path, peer);
-        const completion = peer.body.split(/\n\s*\n/).filter((part) => completed(part) && overlap(part) >= 0.12);
+        const completion = peer.body.split(/\n\s*\n/).filter((part) =>
+          !/^Historical\b/i.test(part) && completed(part) && overlap(part) >= 0.12);
         if (completion.length && candidates.includes(peer.path)) {
           for (const part of completion) owners.push({ path: peer.path, body: peer.body, completion: part });
         } else if (peer.path !== candidates[0]) {
@@ -2398,14 +2398,18 @@ async function runStagedMutation(
       if (owners.length !== 1) throw new Error("Staged mutation deferred: handoff completion owner lacks unique observed completion or is ambiguous.");
       const owner = docs.get(owners[0].path)!;
       const stalePending = owner.body.split(/\n\s*\n/).filter((part) =>
-        !/^Historical\b/i.test(part) && overlap(part) >= 0.12 &&
+        !/^Historical\b/i.test(part) && overlap(part) >= 0.03 &&
         /\b(?:currently|still|awaiting|pending|not yet|has not been)\b/i.test(part));
       if (stalePending.length) throw new Error("Staged mutation deferred: owner still has unqualified pending guidance.");
       if (options.ownerHint && options.ownerHint !== owner.path) throw new Error("Staged mutation deferred: handoff owner conflicts with owner hint.");
       if (peerEvidence.length > 20 || peerEvidence.join("\n\n").length > 24_000) {
         throw new Error("Staged mutation deferred: handoff peer evidence exceeds limit.");
       }
-      if (peerEvidence.length) throw new Error("Staged mutation deferred: handoff has a competing detailed owner.");
+      const artifacts = [...raw.matchAll(/\b[\w-]+\.(?:html|json|xlsx|csv|py)\b/gi)].map((match) => match[0]);
+      if ([...docs.values()].some((peer) => peer.path !== owner.path &&
+          artifacts.some((artifact) => peer.body.includes(artifact)) && overlap(peer.body) >= 0.12)) {
+        throw new Error("Staged mutation deferred: handoff has a competing detailed owner.");
+      }
       const heading = `Historical ${lead} handoff (pending at request time; completed later):`;
       const update = `${heading} Before later completion: ${raw.trim()} Later completion recorded in this owner: ${owners[0].completion}`;
       const prior = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
