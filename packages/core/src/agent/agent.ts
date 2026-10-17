@@ -1132,11 +1132,13 @@ async function runStagedMutation(
           owner = peer;
           continue;
         }
-        if (peer.body.includes(manifestSha) || peer.body.includes(reportSha) ||
-            peer.body.includes("TP232 TN7 FP3 FN15") ||
-            (peer.body.includes(oldPublishedSha) && peer.body.includes("258 sample IDs") &&
-              peer.body.includes("257 unique photos"))) {
-          throw new Error("Staged mutation deferred: FS dated test baseline has a competing or already updated peer.");
+        const peerConflict = peer.body.includes(manifestSha) ? "current manifest" :
+          peer.body.includes(reportSha) ? "evaluation report" :
+          peer.body.includes("TP232 TN7 FP3 FN15") ? "evaluation confusion" :
+          peer.body.includes(oldPublishedSha) && peer.body.includes("258 sample IDs") &&
+            peer.body.includes("257 unique photos") ? "full historical owner" : undefined;
+        if (peerConflict) {
+          throw new Error(`Staged mutation deferred: FS dated test baseline has a competing or already updated peer (${peer.path}: ${peerConflict}).`);
         }
         for (const part of peer.body.split(/\n\s*\n/)) {
           if ((part.includes("baselines/2026-10-14") && /\b(?:257|258)\b/.test(part)) ||
