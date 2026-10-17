@@ -1147,22 +1147,54 @@ async function runStagedMutation(
         throw new Error("Staged mutation deferred: FS review-page peer evidence exceeds limit.");
       }
       const completed = [...observed.values()].filter((peer) =>
-        peer.body.split(/\n\s*\n/).some((part) => part.startsWith(historical) &&
-          completePrior(part)));
-      if (owners.length === 0 && completed.length === 1 &&
-          (!options.ownerHint || options.ownerHint === completed[0].path)) {
-        const prior = completed[0].body.split(/\n\s*\n/).filter((part) => part.startsWith(historical));
-        const current = completed[0].body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
-        if (prior.length === 1 && completePrior(prior[0]) && current.length === 1 &&
-            current[0].trimEnd() === update && completed[0].body.split(currentSha).length === 2 &&
-            [...observed.values()].every((peer) => peer.path === completed[0].path || !peer.body.includes(currentSha))) {
-          const fresh = await kb.readConcept(completed[0].path);
-          if (fresh.body !== completed[0].body) throw new Error(`Concept changed while it was being read: ${completed[0].path}`);
-          const summary = "No change needed; FS review-page priority and prior snapshot verified.";
-          const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
-            { providerCalls, generationMs: Date.now() - started });
-          await traceStore(kb).save(trace);
-          return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
+        peer.body.split(/\n\s*\n/).some((part) => part.startsWith(heading)));
+      if (completed.length === 1 && (!options.ownerHint || options.ownerHint === completed[0].path)) {
+        const target = completed[0];
+        const paragraphs = target.body.split(/\n\s*\n/);
+        const current = paragraphs.filter((part) => part.startsWith(heading));
+        const archived = paragraphs.filter((part) => part.startsWith(historical));
+        const original = paragraphs.filter((part) => !part.startsWith(historical) && completePrior(part));
+        if (current.length === 1 && current[0].trimEnd() === update &&
+            current[0].split(currentSha).length === 2 && target.body.split(currentSha).length === 2 &&
+            [...observed.values()].every((peer) => peer.path === target.path || !peer.body.includes(currentSha))) {
+          // A previous release labelled a mixed page-and-training-policy paragraph
+          // entirely superseded. Remove only that label; policy stays current.
+          if (archived.length === 1 && completePrior(archived[0]) && original.length === 0 &&
+              target.body.split(historical).length === 2) {
+            const proposed = target.body.replace(historical, "");
+            const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
+            modelChain = resolved.modelChain;
+            const judgement = await generateObject({
+              model: resolved.model,
+              schema: z.object({ safe: z.boolean() }).strict(),
+              temperature: 0,
+              abortSignal: options.signal,
+              prompt: `Independent FS historical-label correction. The prior mixed paragraph contains current training-data policy alongside the dated earlier review page. Does removing ONLY the broad 'superseded' prefix preserve every owner fact and the complete new four-bucket current-status paragraph without making the old page current again? Check relevant peers for another owner. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${target.path}:\n${target.body}\nRELEVANT PEERS:\n${peerEvidence.filter((item) => !item.startsWith(`${target.path}:`)).join("\n\n")}\nPROPOSED OWNER:\n${proposed}`,
+            });
+            state.checkCancellation();
+            if (!judgement.object.safe) throw new Error("Staged mutation deferred: FS mixed-policy label correction declined.");
+            const fresh = await kb.readConcept(target.path);
+            if (fresh.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+            await kb.patchConcept(target.path, { replaceBody: proposed },
+              "Staged mutation: preserve current FS policy while dating review page", sha256(target.body), options.signal,
+              (writtenPath) => { changed = [writtenPath]; });
+            const readBack = await kb.readConcept(target.path);
+            if (readBack.body !== proposed) throw new Error("FS mixed-policy label correction failed CAS read-back verification.");
+            const summary = `Staged mutation changed ${target.path}.`;
+            const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+              { providerCalls, generationMs: Date.now() - started });
+            await traceStore(kb).save(trace);
+            return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+          }
+          if (archived.length === 0 && original.length === 1) {
+            const fresh = await kb.readConcept(target.path);
+            if (fresh.body !== target.body) throw new Error(`Concept changed while it was being read: ${target.path}`);
+            const summary = "No change needed; FS review-page priority and preceding dated record verified.";
+            const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+              { providerCalls, generationMs: Date.now() - started });
+            await traceStore(kb).save(trace);
+            return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
+          }
         }
       }
       const ownerPath = owners.length === 1 ? owners[0].path : undefined;
@@ -1181,7 +1213,7 @@ async function runStagedMutation(
       if (prior.length > 4_000 || owner.body.split(prior).length !== 2 || !completePrior(prior)) {
         throw new Error("Staged mutation deferred: FS review-page prior snapshot is not unique or complete.");
       }
-      const replacement = `${historical}${prior}\n\n${update}`;
+      const replacement = `${prior}\n\n${update}`;
       const proposed = owner.body.replace(prior, replacement);
       if (proposed.length > STAGED_MAX_OWNER_CHARS || update.length > 3_000) {
         throw new Error("Staged mutation deferred: FS review-page replacement exceeds evidence limit.");
@@ -1193,7 +1225,7 @@ async function runStagedMutation(
         schema: z.object({ safe: z.boolean() }).strict(),
         temperature: 0,
         abortSignal: options.signal,
-        prompt: `Independent FS review-page ownership and temporal check. Is this the unique full owner of the retrained 5,441-card synthetic page (not the test images or older 4,096-card page)? Does the replacement preserve EVERY old assertion as an explicitly earlier snapshot, leave unrelated paragraphs untouched, and accurately record the requested four buckets in order, all 5,441 IDs, original category display order, same annotations/storage key/server and immutable queues, new and old hashes, without claiming test photos entered annotation? Check EVERY relevant peer for an equivalent current status, contradiction, or better owner. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.filter((item) => !item.startsWith(`${owner.path}:`)).join("\n\n")}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
+        prompt: `Independent FS review-page ownership and temporal check. Is this the unique full owner of the retrained 5,441-card synthetic page (not the test images or older 4,096-card page)? Does the replacement preserve EVERY old assertion in the preceding dated paragraph without labelling the whole mixed paragraph superseded, leave unrelated paragraphs untouched, and accurately record the requested four buckets in order, all 5,441 IDs, original category display order, same annotations/storage key/server and immutable queues, new and old hashes, without claiming test photos entered annotation? Check EVERY relevant peer for an equivalent current status, contradiction, or better owner. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.filter((item) => !item.startsWith(`${owner.path}:`)).join("\n\n")}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
       });
       state.checkCancellation();
       if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent FS review-page check declined.");

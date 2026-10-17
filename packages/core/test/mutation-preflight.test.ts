@@ -4883,7 +4883,8 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
       .toMatchObject({ ok: true, result: { filesChanged: [fsPriorityOwner] } });
     const body = (await kb.readConcept(fsPriorityOwner)).body;
-    expect(body).toContain(`Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority): ${fsPriorPage}`);
+    expect(body).toContain(fsPriorPage);
+    expect(body).not.toContain("Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority):");
     for (const anchor of ["657", "1,483", "504", "2,797", "image_blurred", "background_not_uniform",
       "eyes_not_looking_straight", "79828fca", "31bf0568", "f478b3d1", "127.0.0.1:8782"])
       expect(body).toContain(anchor);
@@ -4891,6 +4892,24 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
       .toMatchObject({ ok: true, result: { filesChanged: [] } });
     expect((await kb.readConcept(fsPriorityOwner)).body).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("corrects a broad superseded label without retracting current FS training policy", async () => {
+    staged();
+    const mixed = `FS Fotovalidering 14 Oct 2026 owner-confirmed source policy: every image in the current train/validation corpus is synthetic; only the separate test sets are excluded. ${fsPriorPage}`;
+    const current = `Current FS retrained synthetic review-page priority (15 Oct 2026): ${fsPriorityInstruction.replace(/^Update FS Fotovalidering 15 Oct 2026 retrained 5,441-card synthetic annotation-page order at /i, "The 5,441-card synthetic annotation page at ")}`;
+    await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "FS retrained annotation" },
+      `Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority): ${mixed}\n\n${current}`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsPriorityOwner] } });
+    const body = (await kb.readConcept(fsPriorityOwner)).body;
+    expect(body).toContain(mixed);
+    expect(body).toContain(current);
+    expect(body).not.toContain("Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority):");
+    expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
