@@ -5451,6 +5451,26 @@ describe("mutation owner preflight", () => {
     expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
+  it("derives a renamed repository deployment identity from the request and observed provisional sentence", async () => {
+    staged();
+    const site = "example.test";
+    const owner = "/repos/example-test.md";
+    const old = "On 2026-11-02, deploy changes were made locally; those changes were not yet committed or pushed in that session.";
+    const instruction = "For example.test deployment knowledge, correct the prior provisional state: " +
+      "release changes were committed as 0123456789abcdef0123456789abcdef01234567 and pushed to origin/main on 2026-11-03. " +
+      "Git-triggered production deployment dpl_Example123 from that exact SHA reached READY, GitHub deployment status success, and www.example.test aliases the deployment. Working tree clean.";
+    await kb.writeConcept(owner, { type: "Repository", title: "Example website" },
+      `# Deployment Policy\\n\\nPrior deployment dpl_Previous123 was Ready.\\n\\n${old}\\n\\n# Vercel CLI\\n\\nvercel --prod returned Not authorized.`, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).not.toContain(old);
+    expect(body).toContain("0123456789abcdef0123456789abcdef01234567");
+    expect(body).toContain("dpl_Previous123");
+    expect(body).toContain("vercel --prod returned Not authorized");
+  });
+
   it("defers the confirmed website deployment when a peer owns it or independent review declines", async () => {
     staged();
     const owner = "/repos/saattrupdan-com.md";
