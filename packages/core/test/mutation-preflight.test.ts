@@ -4983,6 +4983,46 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(paper)).body).toContain("reports exist");
   });
 
+  it("passes complete single-owner evidence over the focused selection budget to proposal and safety review", async () => {
+    staged();
+    const owner = "/projects/focused-ledger.md";
+    const old = "The Focused Ledger retains every verified record.";
+    const body = `${old} ${"Complete owner evidence remains available. ".repeat(800)}`;
+    const instruction = "Correct the Focused Ledger: verified records are retained, not removed.";
+    await kb.writeConcept(owner, { type: "Project", title: "Focused Ledger" }, body, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", title: "Focused Ledger",
+      score: 10, confidenceQualified: false }]);
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Propose exactly one safe knowledge-base mutation")) {
+        expect(prompt).toContain(body);
+        return { object: { ...baseProposal, action: "replace", path: owner, old_text: old,
+          new_text: "The Focused Ledger retains verified records." } };
+      }
+      if (prompt.includes("Independent safety check.")) {
+        expect(prompt).toContain(body);
+        return { object: { safe: false, reason: "Test veto." } };
+      }
+      throw new Error(`Unexpected mutation check: ${prompt.slice(0, 100)}`);
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect((await kb.readConcept(owner)).body).toContain(body);
+  });
+
+  it("still defers a single focused owner whose complete evidence exceeds the global budget", async () => {
+    staged();
+    const owner = "/projects/focused-ledger.md";
+    await kb.writeConcept(owner, { type: "Project", title: "Focused Ledger" },
+      "Complete owner evidence remains bounded.", "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", title: "Focused Ledger",
+      score: 10, confidenceQualified: false }]);
+    const instruction = `Correct the Focused Ledger: ${"verified records are retained. ".repeat(4_000)}`;
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("evidence exceeds prompt budget") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
   it("selects from metadata before a focused correction overfills the proposer", async () => {
     staged();
     const paper = "/papers/dfm-mimir-v1.md";

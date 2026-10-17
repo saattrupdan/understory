@@ -3153,7 +3153,9 @@ async function runStagedMutation(
     // Select by metadata sooner when multiple focused matches would force a
     // large correction prompt. Selection remains a locator; the chosen owner
     // is always re-read in full for the independent write check.
-    const selectionBudget = focused.length && !sectionOwnerPath ? 24_000 : STAGED_MAX_EVIDENCE_CHARS;
+    const selectionBudget = candidates.length <= 1
+      ? STAGED_MAX_EVIDENCE_CHARS
+      : focused.length && !sectionOwnerPath ? 24_000 : STAGED_MAX_EVIDENCE_CHARS;
     let selectedPath: string | undefined;
     let verifiedMetadataOwner = false;
     let historicalProvenanceOwner: string | undefined;
