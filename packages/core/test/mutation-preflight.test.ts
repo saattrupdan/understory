@@ -157,7 +157,7 @@ describe("mutation owner preflight", () => {
 
   const fs577Owner = "/projects/fs-fotovalidering-continuation-faa257ccc4eab983.md";
   const fs577Old = "FS Fotovalidering baseline 2026-10-14: The source PPTX/XLSX were reorganized on 14 Oct 2026: 23 previously Godkendt-marked photos moved into matching Motiv/Billedekvalitet sections, Godkendt now has exactly three rows and eleven approved photo columns. Baseline slide media hashes were preserved and parser.extract_images found 258 unique photo IDs. The user's specified scope was PPTX and source XLSX only; parsed/ remains stale, 2026-10-14/regenerate_parsed.py was deleted. Important gotcha: src/scripts/rebuild_test_baseline.py and baseline-local regenerate_parsed.py still assume the old 34-column/31-row Godkendt layout, so they cannot regenerate the reorganized baseline without adapting the builder. Do not interpret parsed/ as up-to-date with the new Office sources.";
-  const fs577Instruction = "Correct FS Fotovalidering baseline 2026-10-14 status: the repository source-only builder src/scripts/rebuild_test_baseline.py was FIXED and committed on main (HEAD 5779826, feature merged 14 Oct 2026) to accept 257 extracted photos and exactly 10 contiguous explicitly x-marked Godkendt IDs 1–10 in a three-row worksheet (no old godkendt_id21 rejection row). Keep 50 workbook-only exclusions and 24 active classifier labels. The 2026-10-14 parsed/ was regenerated from the six PPTX and single XLSX using `uv run python src/scripts/rebuild_test_baseline.py <source-folder> --output-dir <new-output-dir>` and published after private staging validation: 257 unique photo SHA-256s, 10 accept / 247 reject, 24 labels per record, 50 workbook-only exclusions, source file hashes recorded in parsed/source-hashes.json. This supersedes prior memory stating parsed/ is absent/stale or the builder cannot regenerate it. Baseline images were processed automatically without surfacing content to the agent. Targeted rebuild/parser tests 41 passed; make check passed; frontend tests 258 passed. Full make test under Python 3.12 yielded 491 passed, 1 skipped, 3 existing unrelated API/preprocess content-gate failures; Python 3.14 also lacked native _pillow_heif, so use `uv run --python 3.12` when testing in clean worktrees.";
+  const fs577Instruction = "Record the FS Fotovalidering baseline milestone 2026-10-14: the repository source-only builder src/scripts/rebuild_test_baseline.py was FIXED and committed on main (HEAD 5779826, feature merged 14 Oct 2026) to accept 257 extracted photos and exactly 10 contiguous explicitly x-marked Godkendt IDs 1–10 in a three-row worksheet (no old godkendt_id21 rejection row). Keep 50 workbook-only exclusions and 24 active classifier labels. The 2026-10-14 parsed/ was regenerated from the six PPTX and single XLSX using `uv run python src/scripts/rebuild_test_baseline.py <source-folder> --output-dir <new-output-dir>` and published after private staging validation: 257 unique photo SHA-256s, 10 accept / 247 reject, 24 labels per record, 50 workbook-only exclusions, source file hashes recorded in parsed/source-hashes.json. This supersedes prior memory stating parsed/ is absent/stale or the builder cannot regenerate it. Baseline images were processed automatically without surfacing content to the agent. Targeted rebuild/parser tests 41 passed; make check passed; frontend tests 258 passed. Full make test under Python 3.12 yielded 491 passed, 1 skipped, 3 existing unrelated API/preprocess content-gate failures; Python 3.14 also lacked native _pillow_heif, so use `uv run --python 3.12` when testing in clean worktrees.";
 
   it("archives the 258/11 reorganization snapshot before adding the dated 5779826 milestone", async () => {
     staged();
@@ -168,15 +168,15 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(later, { type: "Project Continuation", title: "Later FS correction" }, laterStatus, "seed");
     generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain(`${later}: ${laterStatus}`);
-      expect(prompt).toContain("5779826 state as a dated milestone");
+      expect(prompt).toContain("dated milestone");
       expect(prompt).toContain(fs577Old);
       return { object: { safe: true } };
     });
     expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
       .toMatchObject({ ok: true, result: { filesChanged: [fs577Owner] } });
     const body = (await kb.readConcept(fs577Owner)).body;
-    expect(body).toContain(`Historical FS Fotovalidering baseline reorganization snapshot (before ID 30 removal and source-only rebuild; not current guidance): ${fs577Old}`);
-    expect(body).toContain("FS Fotovalidering source-only baseline milestone (14 Oct 2026; 5779826; later owner corrections may change marks):");
+    expect(body).toContain(`Historical FS Fotovalidering baseline snapshot (superseded by the dated source-only rebuild; not current guidance): ${fs577Old}`);
+    expect(body).toContain("FS Fotovalidering source-only baseline milestone (2026-10-14; later corrections may change results):");
     expect(body).toContain("parsed/source-hashes.json");
     expect(body).toContain("Other owner context remains.");
     expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
@@ -196,7 +196,7 @@ describe("mutation owner preflight", () => {
       return { object: { safe: false } };
     });
     expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS 5779826") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent baseline milestone") });
     expect((await kb.readConcept(fs577Owner)).body).toBe(`${fs577Old}\n`);
   });
 
@@ -221,7 +221,7 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(fs577Owner, { type: "Project Continuation", title: "FS reorganization" }, fs577Old, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
     expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS 5779826") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent baseline milestone") });
     generateObjectMock.mockImplementationOnce(async () => {
       await kb.writeConcept(fs577Owner, { type: "Project Continuation", title: "FS reorganization" },
         `${fs577Old}\n\nConcurrent owner update.`, "external");
@@ -230,6 +230,26 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
       .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("Concept changed") });
     expect((await kb.readConcept(fs577Owner)).body).toContain("Concurrent owner update.");
+  });
+
+  it("handles a renamed synthetic dated source-only baseline milestone", async () => {
+    staged();
+    const owner = "/projects/amber-lantern.md";
+    const old = "Amber Lantern baseline 2026-04-03: the prior builder script assumed the retired 12-column layout, so generated artifacts remain stale.";
+    const instruction = "Record the Amber Lantern baseline milestone 2026-04-03: source-only baseline regenerated by tools/build-baseline.py, commit HEAD abcdef1234567, 31 records passed validation, with source hashes recorded.";
+    await kb.writeConcept(owner, { type: "Project", title: "Amber Lantern" }, `${old}\n\nUnrelated provenance remains.`, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(old);
+      expect(prompt).toContain("Amber Lantern");
+      expect(prompt).toContain("abcdef1234567");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(`Historical Amber Lantern baseline snapshot (superseded by the dated source-only rebuild; not current guidance): ${old}`);
+    expect(body).toContain("31 records passed validation");
+    expect(body).toContain("Unrelated provenance remains.");
   });
 
   const annotationHandoffOwner = "/projects/fs-fotovalidering-continuation-257a96e360815542.md";
