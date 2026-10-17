@@ -5013,11 +5013,11 @@ describe("mutation owner preflight", () => {
   it("still defers a single focused owner whose complete evidence exceeds the global budget", async () => {
     staged();
     const owner = "/projects/focused-ledger.md";
-    await kb.writeConcept(owner, { type: "Project", title: "Focused Ledger" },
-      "Complete owner evidence remains bounded.", "seed");
+    const body = "Complete owner evidence remains bounded. ".repeat(1_500);
+    await kb.writeConcept(owner, { type: "Project", title: "Focused Ledger" }, body, "seed");
     vi.spyOn(kb, "search").mockResolvedValue([{ path: owner, type: "Project", title: "Focused Ledger",
       score: 10, confidenceQualified: false }]);
-    const instruction = `Correct the Focused Ledger: ${"verified records are retained. ".repeat(4_000)}`;
+    const instruction = `Correct the Focused Ledger: ${"verified records are retained. ".repeat(700)}`;
     expect(await runMutation(kb, instruction, { preflightInput: instruction }))
       .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("evidence exceeds prompt budget") });
     expect(generateObjectMock).not.toHaveBeenCalled();
