@@ -3260,7 +3260,7 @@ async function runStagedMutation(
             const oldHash = stagedContrastedOldHash(raw);
             const peerCopies = oldHash ? evidenceCandidates.filter((candidate) =>
               candidate.path !== selectedPath && candidate.body.includes(oldHash)).length : 0;
-            throw new Error(`Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor (selected=${selectedPath}, contrasted_hash=${!!oldHash}, selected_has_old=${!!oldHash && selected.body.includes(oldHash)}, peer_copies=${peerCopies}, grounding=${grounding}).`);
+            throw new Error(`Staged mutation deferred: metadata-selected owner lacks a positive discriminative anchor (grounding=${grounding}, selected=${selectedPath}, contrasted_hash=${!!oldHash}, selected_has_old=${!!oldHash && selected.body.includes(oldHash)}, peer_copies=${peerCopies}).`);
           };
           // Only an explicit correction of earlier guidance may use semantic
           // old-claim matching. Metadata ranking and new facts are not anchors.
