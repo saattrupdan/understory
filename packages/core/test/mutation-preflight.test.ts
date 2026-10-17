@@ -85,7 +85,7 @@ describe("mutation owner preflight", () => {
   };
 
   const claesSeedlessOwner = "/projects/claes-jev-diagnostics.md";
-  const claesSeedlessInstruction = "Update Claes design/preference: Dan explicitly does not want reproducibility seeds set anywhere in remaining repository code for this dataset. He chose to REMOVE all archived pilot workflows (scripts/modules/tests and runnable workflow docs), but preserve historical data artifacts. On feat/laya-taxonomy-sampler at 942642e, remaining task-first Laya sampler/collector and benchmark have no --seed parameters, derived seeds, or seed fields in new manifests; local draws use fresh system entropy. Resume uses source-bound manifest + append-only checkpoint for completed row identities, tasks validated against pool and persisted informal row-index schedule; a seed-bearing legacy manifest is rejected rather than migrated. Generic Jev question-answering and task-first Luna generation/review remain. Historic docs/samples/seed-* data artifacts and old ignored data/ outputs were preserved. make check and 81 tests pass; independent reviewer LGTM. Seedless throughput should be benchmarked anew when needed; previous 32-worker ~5.22 assignments/s measurement was from seeded implementation, though Laya transport/concurrency otherwise unchanged.";
+  const claesSeedlessInstruction = "Update Claes design/preference: Dan explicitly says the old workflow guidance is superseded. Dan explicitly does not want reproducibility seeds set anywhere in remaining repository code for this dataset. He chose to REMOVE all archived pilot workflows (scripts/modules/tests and runnable workflow docs), but preserve historical data artifacts. On feat/laya-taxonomy-sampler at 942642e, remaining task-first Laya sampler/collector and benchmark have no --seed parameters, derived seeds, or seed fields in new manifests; local draws use fresh system entropy. Resume uses source-bound manifest + append-only checkpoint for completed row identities, tasks validated against pool and persisted informal row-index schedule; a seed-bearing legacy manifest is rejected rather than migrated. Generic Jev question-answering and task-first Luna generation/review remain. Historic docs/samples/seed-* data artifacts and old ignored data/ outputs were preserved. make check and 81 tests pass; independent reviewer LGTM. Seedless throughput should be benchmarked anew when needed; previous 32-worker ~5.22 assignments/s measurement was from seeded implementation, though Laya transport/concurrency otherwise unchanged.";
   const claesSeedlessHistory = "Claes Laya throughput knowledge: the task-first pipeline update uses a seed-spread Informal pilot; historical seed20261013 benchmark files measured 5.223 assignments/s with 32 workers. Pilot observations and data artifacts remain.";
 
   it("supersedes Claes seed guidance without erasing historical artifacts and verifies a repeat", async () => {
@@ -95,13 +95,13 @@ describe("mutation owner preflight", () => {
     generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
       expect(prompt).toContain(claesSeedlessHistory);
       expect(prompt).toContain("942642e");
-      expect(prompt).toContain("supersedes earlier seeded workflow and pilot guidance");
+      expect(prompt).toContain("supersede old guidance");
       return { object: { safe: true, reason: "Later status is complete and historical measurements retained." } };
     });
     expect(await runMutation(kb, claesSeedlessInstruction, { preflightInput: claesSeedlessInstruction }))
       .toMatchObject({ ok: true, result: { filesChanged: [claesSeedlessOwner] } });
     const body = (await kb.readConcept(claesSeedlessOwner)).body;
-    expect(body).toContain(`Historical Claes workflow snapshot (superseded by seedless 942642e; earlier pilot and seeded benchmark advice is not current guidance): ${claesSeedlessHistory}`);
+    expect(body).toContain(`Historical workflow guidance (superseded): ${claesSeedlessHistory}`);
     expect(body).not.toMatch(/^Claes Laya throughput knowledge:/m);
     expect(body).toContain("Unrelated Jev answer history remains intact.");
     expect(body).toContain("REMOVE all archived pilot workflows");
@@ -117,9 +117,9 @@ describe("mutation owner preflight", () => {
     staged();
     await kb.writeConcept(claesSeedlessOwner, { type: "Project", title: "Claes Jev Diagnostics" }, claesSeedlessHistory, "seed");
     await kb.writeConcept("/projects/claes/workflow-copy.md", { type: "Project", title: "Claes Workflow" },
-      "At 942642e the seedless workflow rejected legacy manifests.", "seed");
+      "Claes Laya workflow status at 942642e: the seedless workflow rejected legacy manifests.", "seed");
     expect(await runMutation(kb, claesSeedlessInstruction, { preflightInput: claesSeedlessInstruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing owner") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("duplicated") });
     expect((await kb.readConcept(claesSeedlessOwner)).body).not.toContain("REMOVE all archived pilot workflows");
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
@@ -129,8 +129,30 @@ describe("mutation owner preflight", () => {
     await kb.writeConcept(claesSeedlessOwner, { type: "Project", title: "Claes Jev Diagnostics" }, claesSeedlessHistory, "seed");
     generateObjectMock.mockResolvedValueOnce({ object: { safe: false, reason: "Unresolved contradiction" } });
     expect(await runMutation(kb, claesSeedlessInstruction, { preflightInput: claesSeedlessInstruction }))
-      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent Claes seedless") });
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent workflow status") });
     expect((await kb.readConcept(claesSeedlessOwner)).body).toContain(claesSeedlessHistory);
+  });
+
+  it("supersedes a renamed synthetic workflow while preserving provenance and is repeatable", async () => {
+    staged();
+    const owner = "/projects/amber-circuit.md";
+    const old = "Amber Circuit workflow guidance: use a fixed replay token for every sampler run; the archived comparison recorded 17 batches.";
+    await kb.writeConcept(owner, { type: "Project", title: "Amber Circuit" }, `${old}\n\nThe archived comparison data remains available.`, "seed");
+    const instruction = "Update Amber Circuit design/preference: The prior workflow guidance is superseded. Current runs use fresh entropy, while archived comparisons remain historical provenance.";
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(old);
+      expect(prompt).toContain("Current runs use fresh entropy");
+      return { object: { safe: true, reason: "Unique owner and caller-supported update." } };
+    });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [owner] } });
+    const body = (await kb.readConcept(owner)).body;
+    expect(body).toContain(`Historical workflow guidance (superseded): ${old}`);
+    expect(body).toContain("The archived comparison data remains available.");
+    expect(body).toContain("Current Amber Circuit design/preference: The prior workflow guidance is superseded. Current runs use fresh entropy, while archived comparisons remain historical provenance.");
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept(owner)).body).toBe(body);
   });
 
   const fs577Owner = "/projects/fs-fotovalidering-continuation-faa257ccc4eab983.md";
