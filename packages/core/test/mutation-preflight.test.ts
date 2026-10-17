@@ -2964,6 +2964,69 @@ describe("mutation owner preflight", () => {
       expect((await kb.readConcept(owner)).body).toBe(`${ownerBody}\n`);
     });
 
+  it("uses exact model-located old advice only as an anchor, then runs independent safety", async () => {
+    staged();
+    const owner = "/notes/label-guidance.md";
+    const peer = "/notes/other-history.md";
+    const old = "Unknown labels should be inferred from nearby context before recording a result.";
+    const instruction = "Correct the current label-handling guidance: supersedes earlier advice to infer unknown labels from nearby context; preserve unknown labels as unknown.";
+    await kb.writeConcept(owner, { type: "Note", title: "Label Guidance" }, `${old} ${"Additional neutral guidance. ".repeat(1_400)}`, "seed");
+    await kb.writeConcept(peer, { type: "Note", title: "Other History" }, `Separate history. ${"Additional unrelated notes. ".repeat(1_400)}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((path) => ({
+      path, type: "Note", title: path === owner ? "Label Guidance" : "Other History", score: 10, confidenceQualified: false,
+    })));
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("CANDIDATE METADATA:")) return { object: { path: owner } };
+      if (prompt.includes("Read-only passage locator")) return { object: {
+        observedOldPassage: old,
+        requestOldClause: "infer unknown labels from nearby context",
+        sameOldClaim: true, currentlyActive: true, peerConflict: false,
+        quotedOrHistorical: false, negated: false, selectorApproval: false,
+      } };
+      if (prompt.includes("Propose exactly one safe knowledge-base mutation")) return { object: {
+        ...baseProposal, action: "replace", path: owner, old_text: old,
+        new_text: "Unknown labels should remain unknown rather than being inferred from nearby context.",
+      } };
+      if (prompt.includes("Independent safety check.")) {
+        expect(prompt).toContain("supersedes earlier advice");
+        return { object: { safe: false, reason: "The proposed change is not supported." } };
+      }
+      throw new Error(`Unexpected mutation check: ${prompt.slice(0, 100)}`);
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock.mock.calls.some(([request]) => request.prompt.includes("Independent safety check."))).toBe(true);
+    expect((await kb.readConcept(owner)).body).toContain(old);
+  });
+
+  it.each(["duplicate", "unrelated"])("does not write when metadata old-passage selection is %s", async (mode) => {
+    staged();
+    const owner = "/notes/label-guidance.md";
+    const peer = "/notes/other-history.md";
+    const old = "Unknown labels should be inferred from nearby context before recording a result.";
+    const instruction = "Correct the current label-handling guidance: supersedes earlier advice to infer unknown labels from nearby context; preserve unknown labels as unknown.";
+    const duplicate = mode === "duplicate";
+    await kb.writeConcept(owner, { type: "Note", title: "Label Guidance" }, `${old} ${"Additional neutral guidance. ".repeat(1_400)}`, "seed");
+    await kb.writeConcept(peer, { type: "Note", title: "Other History" }, `${duplicate ? old : "Different historical passage."} ${"Additional unrelated notes. ".repeat(1_400)}`, "seed");
+    vi.spyOn(kb, "search").mockResolvedValue([owner, peer].map((path) => ({
+      path, type: "Note", title: path === owner ? "Label Guidance" : "Other History", score: 10, confidenceQualified: false,
+    })));
+    generateObjectMock.mockImplementation(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes("CANDIDATE METADATA:")) return { object: { path: owner } };
+      if (prompt.includes("Read-only passage locator")) return { object: {
+        observedOldPassage: old, requestOldClause: "infer unknown labels from nearby context",
+        sameOldClaim: true, currentlyActive: true, peerConflict: duplicate,
+        quotedOrHistorical: false, negated: false, selectorApproval: false,
+      } };
+      throw new Error("Unanchored owner must not reach mutation proposal.");
+    });
+    const result = await runMutation(kb, instruction, { preflightInput: instruction });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect((await kb.readConcept(owner)).body).toContain(old);
+    expect((await kb.readConcept(peer)).body).toContain(duplicate ? old : "Different historical passage.");
+  });
+
   it("does not accept a hash-only replacement for a requested current-cell clearing", async () => {
     staged();
     const owner = "/projects/fs-fotovalidering.md";
