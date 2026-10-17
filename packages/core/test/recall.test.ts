@@ -254,6 +254,52 @@ describe("runRecall", () => {
     expect(result.paths).toContain("/facts/backup.md");
   });
 
+  it("includes a matching fact appended after the default excerpt prefix", async () => {
+    const fact = "Never mention personal names in PR titles, descriptions, or PR commentary. This is PR #2229.";
+    await kb.writeConcept(
+      "/users/dan-smart.md",
+      { type: "Note", title: "Dan Smart preferences" },
+      `${"Unrelated profile background. ".repeat(300)}\n\n${fact}`,
+      "add"
+    );
+    const generate = vi.fn(async (_system: string, prompt: string) => ({
+      text: prompt.includes(fact)
+        ? "SUFFICIENT\\nPRs must not mention personal names. Sources: /users/dan-smart.md"
+        : "UNKNOWN",
+      finishReason: "stop" as const,
+    }));
+
+    const result = await runRecall(
+      kb,
+      "What does PR #2229 say about mentioning personal names in PR titles, descriptions, or PR commentary?",
+      {},
+      generate
+    );
+
+    expect(result.answer).toContain("must not mention personal names");
+    expect(generate.mock.calls[0][1]).toContain(fact);
+  });
+
+  it("declines when a requested fact is absent instead of inventing it", async () => {
+    await kb.writeConcept(
+      "/users/dan-smart.md",
+      { type: "Note", title: "Dan Smart preferences" },
+      `${"Unrelated profile background. ".repeat(300)}\n\nA preference about meeting schedules.`,
+      "add"
+    );
+    const generate = vi.fn(async () => ({ text: "UNKNOWN", finishReason: "stop" as const }));
+
+    const result = await runRecall(
+      kb,
+      "What does PR #2229 say about mentioning personal names in PR titles, descriptions, or PR commentary?",
+      {},
+      generate
+    );
+
+    expect(result.answer).toBeNull();
+    expect(generate.mock.calls[0][1]).not.toContain("Never mention personal names");
+  });
+
   it("shares the accelerated excerpt budget across late selected candidates", async () => {
     vi.stubEnv("RECALL_ACCELERATED", "true");
     vi.stubEnv("RECALL_CANDIDATES", "12");

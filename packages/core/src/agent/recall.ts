@@ -106,6 +106,45 @@ function intEnv(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+/** Select one bounded body window with the strongest query-term relevance. */
+function relevantExcerpt(body: string, question: string, limit: number): string {
+  if (body.length <= limit) return body;
+  if (limit <= 0) return "";
+
+  const terms = [...new Set(question.match(EXPANSION_TOKEN_PATTERN) ?? [])]
+    .map((term) => term.toLocaleLowerCase())
+    .filter((term) => term.length >= 2);
+  if (terms.length === 0) return body.slice(0, limit);
+
+  const normalizedBody = body.toLocaleLowerCase();
+  const termWeights = new Map(terms.map((term) => [term, 1 / Math.sqrt(Math.max(1, normalizedBody.split(term).length - 1))]));
+  const candidates = new Set<number>([0, body.length - limit]);
+  for (const term of terms) {
+    let from = 0;
+    while (from < normalizedBody.length) {
+      const index = normalizedBody.indexOf(term, from);
+      if (index < 0) break;
+      candidates.add(Math.max(0, Math.min(body.length - limit, index - Math.floor(limit / 2))));
+      from = index + term.length;
+    }
+  }
+
+  let bestStart = 0;
+  let bestScore = -1;
+  for (const start of candidates) {
+    const excerpt = normalizedBody.slice(start, start + limit);
+    let score = 0;
+    for (const [term, weight] of termWeights) {
+      if (excerpt.includes(term)) score += weight;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestStart = start;
+    }
+  }
+  return body.slice(bestStart, bestStart + limit);
+}
+
 const MAX_RECALL_VARIANTS = 4;
 const MAX_RECALL_ANCHORS = 2;
 const MAX_RECALL_INTENTS = 3;
@@ -665,7 +704,7 @@ export async function runRecall(
     try {
       const c = await kb.readConcept(p); // fresh read — never stale
       const fm = c.frontmatter;
-      const body = c.body.slice(0, Math.min(excerptChars, perCandidateBudget));
+      const body = relevantExcerpt(c.body, question, Math.min(excerptChars, perCandidateBudget));
       concepts.push({ path: c.path, title: fm.title ?? "", body: c.body });
       sections.push(
         `CONCEPT ${c.path}${fm.title ? ` — ${fm.title}` : ""}${fm.description ? ` (${fm.description})` : ""}\n` +
