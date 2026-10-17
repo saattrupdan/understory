@@ -2971,9 +2971,20 @@ async function runStagedMutation(
         .filter((term) => !generic.has(term)));
       const factTerms = new Set(stagedWords(raw));
       const distinctiveOverlap = [...pathTerms].filter((term) => factTerms.has(term));
+      // Version labels are meaningful only when explicitly stated as standalone
+      // tokens in the exact fact (v4 must not match v40). They can supplement,
+      // but never replace, a distinctive entity anchor from the suggested slug.
+      const slug = path.posix.basename(requestedPath!, ".md");
+      const versionTokens = slug.match(/\bv\d+(?:\.\d+)*\b/gi) ?? [];
+      const factVersions = raw.match(/\bv\d+(?:\.\d+)*\b/gi) ?? [];
+      const hasExplicitVersionAnchor = versionTokens.some((version) =>
+        factVersions.some((factVersion) => factVersion.toLowerCase() === version.toLowerCase()));
       // The proposed new concept must be specifically named by the exact fact;
       // generic search overlap is not evidence that an arbitrary path belongs.
-      if (distinctiveOverlap.length < ((leadingPullRequest && namedApplication === leadingPullRequest) || leadingTool ? 1 : 2) || hits.length === 0) {
+      const ordinaryAnchor = distinctiveOverlap.length >=
+        ((leadingPullRequest && namedApplication === leadingPullRequest) || leadingTool ? 1 : 2);
+      const versionedEntityAnchor = hasExplicitVersionAnchor && distinctiveOverlap.length >= 1;
+      if ((!ordinaryAnchor && !versionedEntityAnchor) || hits.length === 0) {
         throw new Error("Staged mutation deferred: missing suggested path lacks a positive fact-topic anchor.");
       }
       const evidence = [];
