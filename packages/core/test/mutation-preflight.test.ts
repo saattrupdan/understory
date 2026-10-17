@@ -132,6 +132,96 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(claesSeedlessOwner)).body).toContain(claesSeedlessHistory);
   });
 
+  const annotationHandoffOwner = "/projects/fs-fotovalidering-continuation-257a96e360815542.md";
+  const annotationHandoffCompletion = "The derived parsed/ contains 258 test photos: motiv3_id6 and motiv8_id12 have only three positives each. The temporary photo-bearing /tmp/fs-baseline-uncertain-labels.html was deleted after use; downloaded fs-baseline-uncertain-labels.json (43 binary decisions: 1 yes, 42 no) was kept. On 14 Oct 2026 all 43 '?' cells were replaced, yes as x and 42 no as blank; validation found zero remaining '?' across the workbook.";
+  const annotationHandoffFact = "FS Fotovalidering baseline annotation handoff (14 Oct 2026): Dan does not want question-mark annotations in the Excel workbook; uncertain category labels must be decided by him from a local image-annotation HTML, not silently converted to blanks/negatives. Current 2026-10-14 source workbook has 43 '?' cells, all on two photos, motiv3_id6 and motiv8_id12 in the Motiv sheet. A private single-file HTML was created and opened at file:///tmp/fs-baseline-uncertain-labels.html with both baseline photos embedded for Dan, 43 binary category prompts, keyboard arrows, local autosave, and JSON export fs-baseline-uncertain-labels.json. Agent did not inspect/render photos; only a synthetic UI fixture was tested. Workbook has not been altered pending Dan's JSON decisions; when received, map yes to x and no to blank, preserving existing positives and the other sheets, then delete temporary photo-bearing HTML once finished.";
+
+  it("records the pending annotation handoff as history beside completed decisions", async () => {
+    staged();
+    await kb.writeConcept(annotationHandoffOwner, { type: "Project Continuation", title: "FS Fotovalidering — baseline decisions" },
+      `${annotationHandoffCompletion}\n\nIndependent later note.`, "seed");
+    await kb.writeConcept("/projects/fs-fotovalidering-tono-onot.md", { type: "Project", title: "FS TONO/ONOT experiment" },
+      "TONO/ONOT compares unrelated passport evaluation categories.", "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(annotationHandoffCompletion);
+      expect(prompt).toContain("Before Dan's decisions:");
+      expect(prompt).toContain("43 '?' cells were replaced (1 yes as x, 42 no as blank)");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [annotationHandoffOwner] } });
+    const body = (await kb.readConcept(annotationHandoffOwner)).body;
+    expect(body).toContain(annotationHandoffCompletion);
+    expect(body).toContain("Independent later note.");
+    expect(body).toContain("Historical FS baseline annotation handoff (14 Oct 2026; decisions completed later that day):");
+    expect(body).toContain("Workbook has not been altered pending Dan's JSON decisions");
+    expect(body).toContain("zero '?' remained in the source workbook, and the photo-bearing HTML was deleted.");
+    expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept(annotationHandoffOwner)).body).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+    expect((await kb.readConcept("/projects/fs-fotovalidering-tono-onot.md")).body).not.toContain(annotationHandoffFact);
+  });
+
+  it("defers an annotation handoff with a competing detailed owner or missing completion", async () => {
+    staged();
+    await kb.writeConcept(annotationHandoffOwner, { type: "Project Continuation", title: "FS baseline decisions" },
+      annotationHandoffCompletion, "seed");
+    const peer = "/projects/fs-fotovalidering-other.md";
+    await kb.writeConcept(peer, { type: "Project", title: "FS other" },
+      "fs-baseline-uncertain-labels.html contains 43 prompts for motiv3_id6 and motiv8_id12.", "seed");
+    expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("competing detailed owner") });
+    await kb.writeConcept(peer, { type: "Project", title: "FS other" }, "Unrelated note.", "replace");
+    await kb.writeConcept(annotationHandoffOwner, { type: "Project Continuation", title: "FS baseline decisions" },
+      "The workbook still has 43 question marks. The HTML remains open.", "replace");
+    expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("completion owner lacks") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("checks a paraphrased competing FS handoff even without the HTML filename", async () => {
+    staged();
+    await kb.writeConcept(annotationHandoffOwner, { type: "Project Continuation", title: "FS baseline decisions" },
+      annotationHandoffCompletion, "seed");
+    const peer = "/projects/fs-fotovalidering-other.md";
+    const competing = "Dan used an image annotation UI for 43 binary category decisions on motiv3_id6 and motiv8_id12; the pending workbook was not changed yet.";
+    await kb.writeConcept(peer, { type: "Project", title: "FS other" }, competing, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`${peer}: ${competing}`);
+      return { object: { safe: false } };
+    });
+    expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS annotation handoff") });
+    expect((await kb.readConcept(annotationHandoffOwner)).body).toBe(`${annotationHandoffCompletion}\n`);
+  });
+
+  it("defers a completed owner that also asserts a current pending workbook", async () => {
+    staged();
+    await kb.writeConcept(annotationHandoffOwner, { type: "Project Continuation", title: "FS baseline decisions" },
+      `${annotationHandoffCompletion}\n\nThe workbook still has 43 '?' cells awaiting Dan; the HTML remains open.`, "seed");
+    expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("unqualified pending guidance") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("defers a historical annotation handoff on independent veto or concurrent change", async () => {
+    staged();
+    await kb.writeConcept(annotationHandoffOwner, { type: "Project Continuation", title: "FS baseline decisions" },
+      annotationHandoffCompletion, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS annotation handoff") });
+    generateObjectMock.mockImplementationOnce(async () => {
+      await kb.writeConcept(annotationHandoffOwner, { type: "Project Continuation", title: "FS baseline decisions" },
+        `${annotationHandoffCompletion}\n\nA concurrent note.`, "external");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, annotationHandoffFact, { preflightInput: annotationHandoffFact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("Concept changed") });
+    expect((await kb.readConcept(annotationHandoffOwner)).body).toContain("A concurrent note.");
+  });
+
   const fsBaselineOwner = "/projects/fs-fotovalidering-continuation-d2fd99e3dfc67efb.md";
   const fsBaselineOld = "FS Fotovalidering 2026-10-14 baseline deletion warning — Do NOT delete everything except the PPTX and source XLSX. The current private baselines/2026-10-14/regenerate_parsed.py is NOT a clean PPTX+XLSX-only parser: it reads parsed/manifest.jsonl, parsed/labels.xlsx, parsed/images/ and parsed/exclusions.json as prior metadata/images, plus generation-provenance.json for six PPTX SHA pins. The repository parse_test_set.py cannot currently regenerate the corrected 258-photo baseline from those PPTX and XLSX alone. Preserve review exports.";
   const fsBaselineInstruction = "Update the FS Fotovalidering 2026-10-14 baseline deletion/regeneration warning: it was correct for the old generator but is now superseded. A durable project script at src/scripts/rebuild_test_baseline.py regenerates the complete 258-photo current test dataset using ONLY six PPTX and the authoritative XLSX as data inputs; it never reads parsed/, generation-provenance.json or owner-24-review. The baseline-local regenerate_parsed.py was replaced by a wrapper invoking uv run --project <repo> on that script, tested successfully from the baseline directory outside the repo. A clean /tmp input directory containing exactly those seven source files produced all 258 image hashes, 24-category labels (including unknowns), roles, paths, both sheets of labels.xlsx and exclusions matching current published parsed/ exactly; only godkendt_id20 byte_size JSON type is normalised from string to int (numeric value unchanged), so regenerated manifest SHA-256 is ea58999a498cffdc9d311600a3e168991c3e3f743d7ab2cee82e2e75869d77c5 versus currently published 3d27505b085a9506a11a87855fa782031500248ea288d48700da44619976ccb6. Private baseline generation-provenance.json records this check; prior parsed/ was deliberately left intact so the active review page/autosave hash remains unchanged. 33 parser/synthetic tests passed; source-only /tmp copies of private photos and decks were removed after validation. It is now safe to delete/rebuild parsed/ from only the PPTX+XLSX via the repository script, but owner-24-review historical exports, old workbook copies, and audit provenance cannot be recreated from those sources and should be retained if the user wants audit history.";

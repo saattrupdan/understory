@@ -1370,6 +1370,106 @@ async function runStagedMutation(
       await traceStore(kb).save(trace);
       return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
     }
+    // The baseline annotation handoff preceded Dan's completed decisions on
+    // the same day. Record it beside that completed state as history rather
+    // than reviving the old "workbook unchanged / HTML open" instructions.
+    if (options.directAdd && options.preflightInput &&
+        /^FS Fotovalidering baseline annotation handoff \(14 Oct 2026\):/i.test(raw.trim()) &&
+        ["43 '?' cells", "motiv3_id6", "motiv8_id12", "file:///tmp/fs-baseline-uncertain-labels.html",
+          "fs-baseline-uncertain-labels.json", "when received, map yes to x and no to blank"]
+          .every((anchor) => raw.includes(anchor))) {
+      const ownerPath = "/projects/fs-fotovalidering-continuation-257a96e360815542.md";
+      if (options.ownerHint && options.ownerHint !== ownerPath) {
+        throw new Error("Staged mutation deferred: FS annotation handoff conflicts with owner hint.");
+      }
+      const paths = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
+        /^\/projects\/fs-fotovalidering(?:[/-]|\.md$)/.test(candidate));
+      if (paths.length > 200 || !paths.includes(ownerPath)) {
+        throw new Error("Staged mutation deferred: FS annotation handoff owner inventory is incomplete.");
+      }
+      const heading = "Historical FS baseline annotation handoff (14 Oct 2026; decisions completed later that day):";
+      const update = `${heading} Before Dan's decisions: ${raw.trim()} Subsequent completion recorded in this owner: the 43 '?' cells were replaced (1 yes as x, 42 no as blank), zero '?' remained in the source workbook, and the photo-bearing HTML was deleted.`;
+      const peerEvidence: string[] = [];
+      let owner: Awaited<ReturnType<KnowledgeBase["readConcept"]>> | undefined;
+      for (const peerPath of paths) {
+        state.checkCancellation();
+        const peer = await kb.readConcept(peerPath);
+        recorder.record("read_concept", peer.path, [peer.path]);
+        if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: FS annotation handoff peer exceeds evidence limit.");
+        }
+        if (peerPath === ownerPath) owner = peer;
+        else {
+          if (peer.body.includes("fs-baseline-uncertain-labels.html") &&
+              peer.body.includes("43") && peer.body.includes("motiv3_id6") && peer.body.includes("motiv8_id12")) {
+            throw new Error("Staged mutation deferred: FS annotation handoff has a competing detailed owner.");
+          }
+          for (const part of peer.body.split(/\n\s*\n/)) {
+            if (/\b43\b/.test(part) &&
+                /(?:motiv3_id6|motiv8_id12|uncertain-labels|uncertain categor|question-mark|annotation handoff)/i.test(part)) {
+              if (part.length > 4_000) {
+                throw new Error("Staged mutation deferred: FS annotation handoff peer passage exceeds evidence limit.");
+              }
+              peerEvidence.push(`${peerPath}: ${part}`);
+            }
+          }
+        }
+      }
+      if (peerEvidence.length > 20 || peerEvidence.join("\n\n").length > 24_000) {
+        throw new Error("Staged mutation deferred: FS annotation handoff peer evidence exceeds limit.");
+      }
+      if (!owner || !owner.body.includes("/tmp/fs-baseline-uncertain-labels.html") ||
+          !owner.body.includes("motiv3_id6") || !owner.body.includes("motiv8_id12") ||
+          !/43 binary decisions: 1 yes, 42 no/i.test(owner.body) ||
+          !/zero remaining '\?'/i.test(owner.body) ||
+          !/photo-bearing .*html was deleted after use/i.test(owner.body)) {
+        throw new Error("Staged mutation deferred: FS annotation handoff completion owner lacks observed anchors.");
+      }
+      const stale = owner.body.split(/\n\s*\n/).filter((part) =>
+        !/^(?:Historical|Before Dan's decisions:)/i.test(part) &&
+        /(?:\b(?:currently|still|now)\b.{0,120}\b43\b.{0,20}'\?'|(?:workbook|XLSX).{0,100}\bhas 43 '\?' cells|(?:HTML|html).{0,100}\b(?:remains open|is still open))/i.test(part));
+      if (stale.length) throw new Error("Staged mutation deferred: FS annotation handoff owner still has unqualified pending guidance.");
+      const prior = owner.body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
+      if (prior.length > 1 || (prior.length === 1 && prior[0].trimEnd() !== update)) {
+        throw new Error("Staged mutation deferred: FS annotation handoff is partially or ambiguously recorded.");
+      }
+      if (prior.length === 1) {
+        const current = await kb.readConcept(ownerPath);
+        if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+        const summary = "No change needed; exact historical FS annotation handoff verified.";
+        const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+          { providerCalls, generationMs: Date.now() - started });
+        await traceStore(kb).save(trace);
+        return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
+      }
+      const replacement = `${owner.body.trimEnd()}\n\n${update}\n`;
+      if (replacement.length > STAGED_MAX_OWNER_CHARS || update.length > 4_000) {
+        throw new Error("Staged mutation deferred: FS annotation handoff exceeds evidence limit.");
+      }
+      const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
+      modelChain = resolved.modelChain;
+      const judgement = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent historical FS annotation handoff check. Does this exact prior handoff belong in the owner documenting Dan's later completed 43 decisions? Does the proposed historical paragraph preserve the fact that the workbook was subsequently updated and the private HTML subsequently deleted, without representing the old pending state as current or inventing a decision? Check every relevant peer passage for equivalent ownership, duplicates or contradictions; shared project and partial label counts alone do not make a complete duplicate. Does the owner contain any equivalent full handoff already? Decline on uncertainty, conflicting owner, or unsupported fact. JSON only.\nORIGINAL FACT:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT FS PEER PASSAGES:\n${peerEvidence.join("\n\n")}\nPROPOSED HISTORICAL PARAGRAPH:\n${update}`,
+      });
+      state.checkCancellation();
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent FS annotation handoff check declined.");
+      const current = await kb.readConcept(ownerPath);
+      if (current.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+      state.checkCancellation();
+      await kb.patchConcept(ownerPath, { replaceBody: replacement }, "Staged mutation: retain historical FS annotation handoff", sha256(owner.body), options.signal,
+        (writtenPath) => { changed = [writtenPath]; });
+      const readBack = await kb.readConcept(ownerPath);
+      if (readBack.body !== replacement) throw new Error("FS annotation handoff failed CAS read-back verification.");
+      const summary = `Staged mutation changed ${ownerPath}.`;
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+        { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+    }
     const correction = options.directAdd ? stagedCorrectionIntent(raw) : stagedCorrection(raw);
     if (options.ownerHint && (options.ownerHint.length > 512 ||
         !/^\/[a-z0-9_/-]+\.md$/.test(options.ownerHint) || options.ownerHint.split("/").includes(".."))) {
