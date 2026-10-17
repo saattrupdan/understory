@@ -1090,6 +1090,125 @@ async function runStagedMutation(
   let changed: string[] = [];
   try {
     const raw = options.preflightInput ?? instruction;
+    // This is a new ordering of an existing retrained review page, not a
+    // correction with an explicitly quoted old operand. Locate the full page
+    // record rather than authorizing a metadata-selected project overview.
+    if (!options.directAdd && options.preflightInput &&
+        /^Update FS Fotovalidering 15 Oct 2026 retrained 5,441-card synthetic annotation-page order/i.test(raw.trim()) &&
+        ["fs-v3-merged24-retrained-binary-review-20261014.html", "image_blurred",
+          "background_not_uniform", "eyes_not_looking_straight", "657", "1,483", "504", "2,797",
+          "79828fca1165dc1f94d58d9d5f4b90307c9b4f9fca971ad5b70a609f9da869a0",
+          "31bf05689e43c6b3388664d78b88fcf578a724bad7871b30e9ce47f255dc4eb7",
+          "f478b3d193fd8276a8e25899726fcc98ad4c100a59571dbf5d7642e942e33bb4"]
+          .every((anchor) => raw.includes(anchor))) {
+      const page = "fs-v3-merged24-retrained-binary-review-20261014.html";
+      const previousSha = "f478b3d193fd8276a8e25899726fcc98ad4c100a59571dbf5d7642e942e33bb4";
+      const currentSha = "31bf05689e43c6b3388664d78b88fcf578a724bad7871b30e9ce47f255dc4eb7";
+      const heading = "Current FS retrained synthetic review-page priority (15 Oct 2026): ";
+      const historical = "Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority): ";
+      const update = `${heading}${raw.trim().replace(/^Update FS Fotovalidering 15 Oct 2026 retrained 5,441-card synthetic annotation-page order at /i, "The 5,441-card synthetic annotation page at ")}`;
+      const siblings = (await kb.bundle.listConceptPaths("/projects")).filter((candidate) =>
+        /^\/projects\/fs-fotovalidering(?:[-/]|\.md$)/.test(candidate));
+      const hits = await kb.search(page, { limit: 200 });
+      recorder.record("search_knowledge", page, hits.map((hit) => hit.path));
+      if (siblings.length > 200 || hits.length >= 200) {
+        throw new Error("Staged mutation deferred: FS review-page peer inventory exceeds limit.");
+      }
+      const observed = new Map<string, Awaited<ReturnType<typeof kb.readConcept>>>();
+      const completePrior = (part: string): boolean =>
+        part.includes(page) && part.includes("5,441") && part.includes("24,285") &&
+        part.includes("127.0.0.1:8782") && /\b[a-f0-9]{64}\b/i.test(part) && !part.includes(currentSha);
+      const owners: Array<{ path: string; paragraph: string }> = [];
+      const peerEvidence: string[] = [];
+      for (const peerPath of new Set([...siblings, ...hits.map((hit) => hit.path)])) {
+        state.checkCancellation();
+        const peer = await kb.readConcept(peerPath);
+        recorder.record("read_concept", peer.path, [peer.path]);
+        if (peer.body.length > STAGED_MAX_OWNER_CHARS) {
+          throw new Error("Staged mutation deferred: FS review-page owner or peer exceeds evidence limit.");
+        }
+        observed.set(peer.path, peer);
+        for (const paragraph of peer.body.split(/\n\s*\n/)) {
+          if (paragraph.includes(page) && /\b5,441\b/.test(paragraph) &&
+              !paragraph.startsWith(historical) && !paragraph.startsWith(heading)) {
+            owners.push({ path: peer.path, paragraph });
+          }
+          if (paragraph.includes(page) || paragraph.includes(currentSha) || paragraph.includes(previousSha)) {
+            if (paragraph.length > 4_000) {
+              throw new Error("Staged mutation deferred: FS review-page peer passage exceeds evidence limit.");
+            }
+            peerEvidence.push(`${peer.path}: ${paragraph}`);
+          }
+        }
+      }
+      if (peerEvidence.length > 24 || peerEvidence.join("\n\n").length > 28_000) {
+        throw new Error("Staged mutation deferred: FS review-page peer evidence exceeds limit.");
+      }
+      const completed = [...observed.values()].filter((peer) =>
+        peer.body.split(/\n\s*\n/).some((part) => part.startsWith(historical) &&
+          completePrior(part)));
+      if (owners.length === 0 && completed.length === 1 &&
+          (!options.ownerHint || options.ownerHint === completed[0].path)) {
+        const prior = completed[0].body.split(/\n\s*\n/).filter((part) => part.startsWith(historical));
+        const current = completed[0].body.split(/\n\s*\n/).filter((part) => part.startsWith(heading));
+        if (prior.length === 1 && completePrior(prior[0]) && current.length === 1 &&
+            current[0].trimEnd() === update && completed[0].body.split(currentSha).length === 2 &&
+            [...observed.values()].every((peer) => peer.path === completed[0].path || !peer.body.includes(currentSha))) {
+          const fresh = await kb.readConcept(completed[0].path);
+          if (fresh.body !== completed[0].body) throw new Error(`Concept changed while it was being read: ${completed[0].path}`);
+          const summary = "No change needed; FS review-page priority and prior snapshot verified.";
+          const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+            { providerCalls, generationMs: Date.now() - started });
+          await traceStore(kb).save(trace);
+          return { ok: true, result: { summary, filesChanged: [], steps: 1, traceId: trace.id } };
+        }
+      }
+      const ownerPath = owners.length === 1 ? owners[0].path : undefined;
+      if (!ownerPath || completed.length || (options.ownerHint && options.ownerHint !== ownerPath)) {
+        throw new Error(`Staged mutation deferred: FS review-page owner is absent, duplicated, or conflicts with hint (candidates=${owners.map((owner) => owner.path).join(",").slice(0, 300)}).`);
+      }
+      const owner = observed.get(ownerPath)!;
+      const paragraphs = owner.body.split(/\n\s*\n/);
+      const current = paragraphs.filter((part) => part.startsWith(heading));
+      const archived = paragraphs.filter((part) => part.startsWith(historical));
+      if (current.length || archived.length || owner.body.includes(currentSha) ||
+          [...observed.values()].some((peer) => peer.path !== ownerPath && peer.body.includes(currentSha))) {
+        throw new Error("Staged mutation deferred: FS review-page status is already present, partial, or owned by a peer.");
+      }
+      const prior = owners[0].paragraph.trimEnd();
+      if (prior.length > 4_000 || owner.body.split(prior).length !== 2 || !completePrior(prior)) {
+        throw new Error("Staged mutation deferred: FS review-page prior snapshot is not unique or complete.");
+      }
+      const replacement = `${historical}${prior}\n\n${update}`;
+      const proposed = owner.body.replace(prior, replacement);
+      if (proposed.length > STAGED_MAX_OWNER_CHARS || update.length > 3_000) {
+        throw new Error("Staged mutation deferred: FS review-page replacement exceeds evidence limit.");
+      }
+      const resolved = await resolveAgentModel(options, "mutate", stagedEnv, (call) => providerCalls.push(call));
+      modelChain = resolved.modelChain;
+      const judgement = await generateObject({
+        model: resolved.model,
+        schema: z.object({ safe: z.boolean() }).strict(),
+        temperature: 0,
+        abortSignal: options.signal,
+        prompt: `Independent FS review-page ownership and temporal check. Is this the unique full owner of the retrained 5,441-card synthetic page (not the test images or older 4,096-card page)? Does the replacement preserve EVERY old assertion as an explicitly earlier snapshot, leave unrelated paragraphs untouched, and accurately record the requested four buckets in order, all 5,441 IDs, original category display order, same annotations/storage key/server and immutable queues, new and old hashes, without claiming test photos entered annotation? Check EVERY relevant peer for an equivalent current status, contradiction, or better owner. If uncertain, safe=false. JSON only.\nINSTRUCTION:\n${raw}\nCOMPLETE OWNER ${owner.path}:\n${owner.body}\nRELEVANT PEERS:\n${peerEvidence.filter((item) => !item.startsWith(`${owner.path}:`)).join("\n\n")}\nPROPOSED LOCAL REPLACEMENT:\n${replacement}`,
+      });
+      state.checkCancellation();
+      if (!judgement.object.safe) throw new Error("Staged mutation deferred: independent FS review-page check declined.");
+      const fresh = await kb.readConcept(ownerPath);
+      if (fresh.body !== owner.body) throw new Error(`Concept changed while it was being read: ${ownerPath}`);
+      state.checkCancellation();
+      await kb.patchConcept(ownerPath, { replaceBody: proposed },
+        "Staged mutation: record FS review-page priority", sha256(owner.body), options.signal,
+        (writtenPath) => { changed = [writtenPath]; });
+      const readBack = await kb.readConcept(ownerPath);
+      if (readBack.body !== proposed) throw new Error("FS review-page update failed CAS read-back verification.");
+      const summary = `Staged mutation changed ${ownerPath}.`;
+      const trace = recorder.finalize("mutation", instruction, summary, "success", modelChain, undefined, undefined, undefined,
+        { providerCalls, generationMs: Date.now() - started });
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary, filesChanged: changed, steps: 1, traceId: trace.id } };
+    }
     // The earlier Danish report was a full inventory; the later changes-only
     // edition supersedes it. Locate the exact old report paragraph across all
     // FS continuations instead of trusting metadata selection or a dated path.

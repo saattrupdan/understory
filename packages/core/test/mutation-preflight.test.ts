@@ -4865,6 +4865,78 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(owner)).body.trim()).toBe(oldText);
   });
 
+  const fsPriorityInstruction = "Update FS Fotovalidering 15 Oct 2026 retrained 5,441-card synthetic annotation-page order at file:///tmp/fs-v3-merged24-retrained-binary-review-20261014.html. Dan requested focus on the three 2026-10-14 test false-rejection trigger categories, without adding test photos to synthetic annotation: `image_blurred`, `background_not_uniform`, `eyes_not_looking_straight`. Current page uses four stable buckets in order: 657 fitting train/validation samples with a false-positive model flag at fixed0.50 in any target category; 1,483 other fitting samples; 504 excluded-from-fitting target-category false positives; 2,797 other excluded samples. Within each bucket, prior descending class-balanced BCE model-error priority, disagreement-count and stable-ID ties remain unchanged. All 5,441 IDs, category display order, annotations by ID, storage key, server 127.0.0.1:8782 and original immutable queues remain intact. New private queue: `.../retrained-sparkie-binary-exclude-review-20261014/next-review-queue-fit-first-target-fp.jsonl`, SHA `79828fca1165dc1f94d58d9d5f4b90307c9b4f9fca971ad5b70a609f9da869a0`; new page SHA `31bf05689e43c6b3388664d78b88fcf578a724bad7871b30e9ce47f255dc4eb7` supersedes old fit-first page SHA `f478b3d193fd8276a8e25899726fcc98ad4c100a59571dbf5d7642e942e33bb4`. `/tmp/recreate-fs-retrained-binary-review.py` updated to reconstruct current priority from frozen private queue; preserving same page path/key is critical for browser autosave.";
+  const fsPriorityOwner = "/projects/fs-fotovalidering/continuation-retrained.md";
+  const fsPriorPage = "Inference on all 24,285 synthetic images produced 5,441 class-balanced-BCE-prioritised cards at file:///tmp/fs-v3-merged24-retrained-binary-review-20261014.html, local-only server 127.0.0.1:8782 and page SHA f381c4ab888136d905d0db51bdc336f77ff7a45f68f6de229bbabe2e8daf3bda. The previous display order remains; owner reviews retain their annotations.";
+
+  it("records the retrained FS page's four priority buckets without discarding its earlier order", async () => {
+    staged();
+    await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "FS retrained annotation" },
+      `${fsPriorPage}\n\nUnrelated review history stays.`, "seed");
+    await kb.writeConcept("/projects/fs-fotovalidering.md", { type: "Project", title: "FS Fotovalidering" },
+      "The test baseline's three false rejections motivate prioritizing synthetic reviews.", "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(fsPriorPage);
+      expect(prompt).toContain("RELEVANT PEERS:");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fsPriorityOwner] } });
+    const body = (await kb.readConcept(fsPriorityOwner)).body;
+    expect(body).toContain(`Earlier FS retrained synthetic review-page snapshot (superseded by target-category priority): ${fsPriorPage}`);
+    for (const anchor of ["657", "1,483", "504", "2,797", "image_blurred", "background_not_uniform",
+      "eyes_not_looking_straight", "79828fca", "31bf0568", "f478b3d1", "127.0.0.1:8782"])
+      expect(body).toContain(anchor);
+    expect(body).toContain("Unrelated review history stays.");
+    expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept(fsPriorityOwner)).body).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not accept a truncated archived FS review page as a complete repeat", async () => {
+    staged();
+    await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "FS retrained annotation" }, fsPriorPage, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: true } });
+    expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
+      .toMatchObject({ ok: true });
+    const completed = (await kb.readConcept(fsPriorityOwner)).body;
+    await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "FS retrained annotation" },
+      completed.replace("24,285 synthetic images", "synthetic images"), "damage");
+    expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
+      .toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("refuses to duplicate a differently headed current FS page SHA", async () => {
+    staged();
+    const newSha = "31bf05689e43c6b3388664d78b88fcf578a724bad7871b30e9ce47f255dc4eb7";
+    await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "FS retrained annotation" },
+      `${fsPriorPage}\n\nAnother current page status uses ${newSha}.`, "seed");
+    expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("already present, partial") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("defers the FS page reorder when a peer also owns the current page", async () => {
+    staged();
+    await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "FS retrained annotation" }, fsPriorPage, "seed");
+    await kb.writeConcept("/projects/fs-fotovalidering.md", { type: "Project", title: "FS overview" },
+      `Separate snapshot: ${fsPriorPage}`, "seed");
+    expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("owner is absent, duplicated") });
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("defers the FS page reorder when independent ownership review declines", async () => {
+    staged();
+    await kb.writeConcept(fsPriorityOwner, { type: "Project", title: "FS retrained annotation" }, fsPriorPage, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fsPriorityInstruction, { preflightInput: fsPriorityInstruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS review-page check declined") });
+    expect((await kb.readConcept(fsPriorityOwner)).body).toContain(fsPriorPage);
+  });
+
   const fsChangesOwner = "/projects/fs-fotovalidering-continuation-c03a2624495c6bd5.md";
   const fsChangesOld = "Dan's FS Fotovalidering 2026-10-14 baseline change report should be in Danish. The Markdown and PDF at ~`Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes` and .pdf were translated from English on 2026-10-14; the Danish visible/PDF metadata title is 'Ændringer i baselinen fra 2026-10-14'. All 459 photo-ID mentions, 34 approved-photo ID mappings, category-change lists, and numerical claims were preserved. Keep the report ID-based, without hashes, and do not inspect baseline photos.";
   const fsChangesInstruction = "Update the FS Fotovalidering 2026-10-14 baseline change-report knowledge: Dan wants a Danish report focused strictly on differences from the 2026-10-09 baseline, not unchanged items, interim-review history, or a full current-state inventory. The existing ~/Jottacloud/syv-ai/faerdselsstyrelsen/baselines/2026-10-14/baseline_changes.md and .pdf were revised to use title 'Ændringer fra baselinen 2026-10-09 til 2026-10-14'. The current report includes only 30 changed approved-photo ID mappings (23 moved, seven renumbered), removal of godkendt_id30, two previously unlabelled existing photos now labelled, changed presentation counts, 264 added and 28 removed active category marks, new photo-of-a-photo marks / retired Hovedbeklædning 4, and 68 changed embedded photo files by ID. It excludes unchanged 50 workbook-only columns, unchanged approved IDs, and the 43 intermediate question-mark resolutions. Supersede any statement that the CURRENT report preserves 459 ID mentions or all 34 approved-photo mappings; those referred to the earlier non-focused Danish version. Keep it ID-based, no hashes, no inspecting baseline photos.";
