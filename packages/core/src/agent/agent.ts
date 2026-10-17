@@ -3835,10 +3835,17 @@ async function runStagedMutation(
           if (repo.body.length > STAGED_MAX_OWNER_CHARS) throw new Error("Staged mutation deferred: deployment policy peer exceeds evidence limit.");
           repositories.push({ path: repo.path, frontmatter: repo.frontmatter, body: repo.body });
         }
-        const eligible = repositories.filter((repo) => /^#{1,6}\s+Deployment Policy\s*$/im.test(repo.body) &&
-          /is the authoritative deployment command/i.test(repo.body) && /Run `[^`]+` to publish/i.test(repo.body));
+        const requestedSite = raw.match(/\b(?:for|about)\s+([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\b/i)?.[1]?.toLowerCase();
+        if (!requestedSite) throw new Error("Staged mutation deferred: deployment site identity is not explicit.");
+        const eligible = repositories.filter((repo) => {
+          const identityEvidence = `${repo.path} ${repo.frontmatter.title ?? ""} ${repo.body}`.toLowerCase();
+          return identityEvidence.includes(requestedSite) &&
+            /^#{1,6}\s+Deployment Policy\s*$/im.test(repo.body) &&
+            /is the authoritative deployment command/i.test(repo.body) && /Run `[^`]+` to publish/i.test(repo.body);
+        });
         if (eligible.length === 1) target = eligible[0];
         else if (eligible.length > 1) throw new Error("Staged mutation deferred: deployment policy has a competing owner.");
+        else throw new Error("Staged mutation deferred: deployment policy owner does not match the requested site.");
         if (!target || !repositories.some((repo) => repo.path === target?.path)) {
           throw new Error("Staged mutation deferred: deployment policy owner is not a repository.");
         }
@@ -3873,7 +3880,24 @@ async function runStagedMutation(
           section.match(/(?:^|\n)(Never delete the feature branch before confirming deployment has succeeded[^\n]*)/i)?.[1],
         ].filter((claim): claim is string => !!claim);
         if (retainedSafety.length !== 2) throw new Error("Staged mutation deferred: deployment cleanup safeguards are incomplete.");
-        const revisedSection = `${headings[0][0]}\n\n${requestedFacts.join("\n\n")}\n\n${retainedSafety.join("\n\n")}\n\n`;
+        let revisedSection = section;
+        // Remove only the obsolete command assertion and replace its execution
+        // step. Keep valid branch/merge steps and every unrelated policy
+        // paragraph exactly as written.
+        const authority = `**\`${command}\`** is the authoritative deployment command`;
+        const authorityParagraphs = revisedSection.split(/\n\s*\n/);
+        const withoutAuthority = authorityParagraphs.filter((paragraph) => !paragraph.includes(authority));
+        if (withoutAuthority.length === authorityParagraphs.length) {
+          throw new Error("Staged mutation deferred: obsolete deployment command paragraph is ambiguous.");
+        }
+        revisedSection = withoutAuthority.join("\n\n");
+        const obsoleteStep = `Run \`${command}\` to publish.`;
+        if (revisedSection.split(obsoleteStep).length !== 2) {
+          throw new Error("Staged mutation deferred: obsolete deployment step is ambiguous.");
+        }
+        revisedSection = revisedSection.replace(obsoleteStep, requestedFacts.join(" "));
+        // The newly observed facts are already represented in the replacement
+        // step; retain the existing section's other paragraphs and safeguards.
         const replacement = target.body.slice(0, start) + revisedSection + target.body.slice(end);
         if (!replacement.includes("vercel --prod") || !replacement.includes("Not authorized") ||
             replacement.length > STAGED_MAX_OWNER_CHARS) {

@@ -5719,7 +5719,8 @@ describe("mutation owner preflight", () => {
     const policy = "## Deployment Policy\n\n**`ship-it`** is the authoritative deployment command for bluebird.test.\n\n" +
       "The required workflow:\n1. Complete work on a feature branch.\n2. Merge into `trunk`.\n" +
       "3. Run `ship-it` to publish.\n4. Only after deployment succeeds, clean up (delete) the feature branch.\n\n" +
-      "Never delete the feature branch before confirming deployment has succeeded.\n\n";
+      "Never delete the feature branch before confirming deployment has succeeded.\n\n" +
+      "Production change windows must be announced to the operations channel.\n\n";
     const instruction = "Update the bluebird.test deployment workflow knowledge: Vercel project bluebird-prod is Git-connected to team/bluebird-site with trunk as production branch. " +
       "The 2026-11-03 production deployment dpl_Bluebird123 was Git-triggered from commit abcdef0123456789abcdef0123456789abcdef01, Ready, aliased to bluebird.test; GitHub deployment status success. " +
       "Replace obsolete guidance that `ship-it` is authoritative. Push to trunk is the intended deployment mechanism. " +
@@ -5734,7 +5735,31 @@ describe("mutation owner preflight", () => {
     expect(body).toContain("dpl_Bluebird123");
     expect(body).toContain("bluebird-prod");
     expect(body).toContain("vercel --prod returned Not authorized.");
+    expect(body).toContain("Complete work on a feature branch.");
+    expect(body).toContain("Merge into `trunk`.");
+    expect(body).toContain("Production change windows must be announced to the operations channel.");
     expect(body).not.toContain("ship-it` is the authoritative deployment command");
+  });
+
+  it("refuses a same-command policy belonging only to a different site", async () => {
+    staged();
+    const owner = "/repos/redbird-site.md";
+    const redbirdPolicy = "## Deployment Policy\n\n**`ship-it`** is the authoritative deployment command for redbird.test.\n\n" +
+      "The required workflow:\n1. Complete work on a feature branch.\n2. Merge into `trunk`.\n" +
+      "3. Run `ship-it` to publish.\n4. Only after deployment succeeds, clean up (delete) the feature branch.\n\n" +
+      "Never delete the feature branch before confirming deployment has succeeded.\n\n";
+    await kb.writeConcept(owner, { type: "Repository", title: "Redbird site" },
+      `${redbirdPolicy}## CLI observation\n\nvercel --prod returned Not authorized.`, "seed");
+    const instruction = "Update the bluebird.test deployment workflow knowledge: Vercel project bluebird-prod is Git-connected to team/bluebird-site with trunk as production branch. " +
+      "The 2026-11-03 production deployment dpl_Bluebird123 was Git-triggered from commit abcdef0123456789abcdef0123456789abcdef01, Ready, aliased to bluebird.test; GitHub deployment status success. " +
+      "Replace obsolete guidance that `ship-it` is authoritative. Push to trunk is the intended deployment mechanism. " +
+      "On 2026-11-03, the ship-it target was removed from project config. Retain note that Vercel CLI `vercel --prod` returns Not authorized.";
+    generateObjectMock.mockResolvedValueOnce({ object: { ...baseProposal, action: "replace", path: owner,
+      old_text: "`ship-it` is authoritative", new_text: "Push to trunk is the intended deployment mechanism." } });
+    expect(await runMutation(kb, instruction, { preflightInput: instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("does not match the requested site") });
+    expect((await kb.readConcept(owner)).body).toContain("redbird.test");
+    expect(generateObjectMock).toHaveBeenCalledOnce();
   });
 
   it("blocks a deployment policy correction when another owner contains the same policy", async () => {
