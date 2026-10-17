@@ -2801,13 +2801,14 @@ describe("mutation owner preflight", () => {
     })));
     const fact = "Billing logs request IDs for charges created by support tooling.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
-      .mockResolvedValueOnce({ object: { safe: false } });
-    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
-    expect(generateObjectMock).toHaveBeenCalledTimes(2);
-    generateObjectMock.mockResolvedValueOnce({ object: { path: playbook } })
-      .mockResolvedValueOnce({ object: { safe: false } });
-    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+      .mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { path: "" } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("selection is uncertain") });
     expect(generateObjectMock).toHaveBeenCalledTimes(3);
+    generateObjectMock.mockResolvedValueOnce({ object: { path: playbook } });
+    expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({ ok: false, status: "failed" });
+    expect(generateObjectMock).toHaveBeenCalledTimes(4);
     expect((await kb.readConcept(api)).body).not.toContain(fact);
     expect((await kb.readConcept(playbook)).body).not.toContain(fact);
   });
@@ -2852,7 +2853,7 @@ describe("mutation owner preflight", () => {
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
       ok: true, result: { filesChanged: [owner] },
     });
-    expect(generateObjectMock.mock.calls[1]?.[0].prompt).toContain("A demo repository mentioned in examples.");
+    expect(generateObjectMock.mock.calls[2]?.[0].prompt).toContain("A demo repository mentioned in examples.");
     expect((await kb.readConcept(owner)).body).toContain(fact);
     expect((await kb.readConcept(incidental)).body).not.toContain(fact);
 
@@ -4032,6 +4033,8 @@ describe("mutation owner preflight", () => {
     })));
     const fact = "Billing responders on call handle incidents, not Billing API.";
     generateObjectMock.mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { path: "" } })
+      .mockResolvedValueOnce({ object: { path: playbook } })
       .mockResolvedValueOnce({ object: { safe: true } });
     expect(await runMutation(kb, fact, { preflightInput: fact, directAdd: true })).toMatchObject({
       ok: true, result: { filesChanged: [playbook] },
