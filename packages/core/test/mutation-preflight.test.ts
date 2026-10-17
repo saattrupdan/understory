@@ -132,6 +132,67 @@ describe("mutation owner preflight", () => {
     expect((await kb.readConcept(claesSeedlessOwner)).body).toContain(claesSeedlessHistory);
   });
 
+  const fs577Owner = "/projects/fs-fotovalidering-continuation-faa257ccc4eab983.md";
+  const fs577Old = "FS Fotovalidering baseline 2026-10-14: The source PPTX/XLSX were reorganized on 14 Oct 2026: 23 previously Godkendt-marked photos moved into matching Motiv/Billedekvalitet sections, Godkendt now has exactly three rows and eleven approved photo columns. Baseline slide media hashes were preserved and parser.extract_images found 258 unique photo IDs. The user's specified scope was PPTX and source XLSX only; parsed/ remains stale, 2026-10-14/regenerate_parsed.py was deleted. Important gotcha: src/scripts/rebuild_test_baseline.py and baseline-local regenerate_parsed.py still assume the old 34-column/31-row Godkendt layout, so they cannot regenerate the reorganized baseline without adapting the builder. Do not interpret parsed/ as up-to-date with the new Office sources.";
+  const fs577Instruction = "Correct FS Fotovalidering baseline 2026-10-14 status: the repository source-only builder src/scripts/rebuild_test_baseline.py was FIXED and committed on main (HEAD 5779826, feature merged 14 Oct 2026) to accept 257 extracted photos and exactly 10 contiguous explicitly x-marked Godkendt IDs 1–10 in a three-row worksheet (no old godkendt_id21 rejection row). Keep 50 workbook-only exclusions and 24 active classifier labels. The 2026-10-14 parsed/ was regenerated from the six PPTX and single XLSX using `uv run python src/scripts/rebuild_test_baseline.py <source-folder> --output-dir <new-output-dir>` and published after private staging validation: 257 unique photo SHA-256s, 10 accept / 247 reject, 24 labels per record, 50 workbook-only exclusions, source file hashes recorded in parsed/source-hashes.json. This supersedes prior memory stating parsed/ is absent/stale or the builder cannot regenerate it. Baseline images were processed automatically without surfacing content to the agent. Targeted rebuild/parser tests 41 passed; make check passed; frontend tests 258 passed. Full make test under Python 3.12 yielded 491 passed, 1 skipped, 3 existing unrelated API/preprocess content-gate failures; Python 3.14 also lacked native _pillow_heif, so use `uv run --python 3.12` when testing in clean worktrees.";
+
+  it("archives the 258/11 reorganization snapshot before adding the dated 5779826 milestone", async () => {
+    staged();
+    await kb.writeConcept(fs577Owner, { type: "Project Continuation", title: "FS baseline reorganization" },
+      `${fs577Old}\n\nOther owner context remains.`, "seed");
+    const later = "/projects/fs-fotovalidering-continuation-later.md";
+    const laterStatus = "After 5779826, a later reviewer fixed src/scripts/rebuild_test_baseline.py for owner-corrected Godkendt on a 257-photo parsed/ with 50 workbook-only columns at a081a66.";
+    await kb.writeConcept(later, { type: "Project Continuation", title: "Later FS correction" }, laterStatus, "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain(`${later}: ${laterStatus}`);
+      expect(prompt).toContain("5779826 state as a dated milestone");
+      expect(prompt).toContain(fs577Old);
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [fs577Owner] } });
+    const body = (await kb.readConcept(fs577Owner)).body;
+    expect(body).toContain(`Historical FS Fotovalidering baseline reorganization snapshot (before ID 30 removal and source-only rebuild; not current guidance): ${fs577Old}`);
+    expect(body).toContain("FS Fotovalidering source-only baseline milestone (14 Oct 2026; 5779826; later owner corrections may change marks):");
+    expect(body).toContain("parsed/source-hashes.json");
+    expect(body).toContain("Other owner context remains.");
+    expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
+      .toMatchObject({ ok: true, result: { filesChanged: [] } });
+    expect((await kb.readConcept(fs577Owner)).body).toBe(body);
+    expect(generateObjectMock).toHaveBeenCalledOnce();
+  });
+
+  it("defers 5779826 status when another FS owner records the same commit", async () => {
+    staged();
+    await kb.writeConcept(fs577Owner, { type: "Project Continuation", title: "FS reorganization" }, fs577Old, "seed");
+    const peer = "/projects/fs-fotovalidering-other.md";
+    await kb.writeConcept(peer, { type: "Project", title: "FS other" },
+      "5779826 fixed src/scripts/rebuild_test_baseline.py for 257 source photos.", "seed");
+    generateObjectMock.mockImplementationOnce(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain("5779826 fixed src/scripts/rebuild_test_baseline.py");
+      return { object: { safe: false } };
+    });
+    expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS 5779826") });
+    expect((await kb.readConcept(fs577Owner)).body).toBe(`${fs577Old}\n`);
+  });
+
+  it("defers 5779826 status when independent review vetoes or the owner changes", async () => {
+    staged();
+    await kb.writeConcept(fs577Owner, { type: "Project Continuation", title: "FS reorganization" }, fs577Old, "seed");
+    generateObjectMock.mockResolvedValueOnce({ object: { safe: false } });
+    expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("independent FS 5779826") });
+    generateObjectMock.mockImplementationOnce(async () => {
+      await kb.writeConcept(fs577Owner, { type: "Project Continuation", title: "FS reorganization" },
+        `${fs577Old}\n\nConcurrent owner update.`, "external");
+      return { object: { safe: true } };
+    });
+    expect(await runMutation(kb, fs577Instruction, { preflightInput: fs577Instruction }))
+      .toMatchObject({ ok: false, status: "failed", error: expect.stringContaining("Concept changed") });
+    expect((await kb.readConcept(fs577Owner)).body).toContain("Concurrent owner update.");
+  });
+
   const annotationHandoffOwner = "/projects/fs-fotovalidering-continuation-257a96e360815542.md";
   const annotationHandoffCompletion = "The derived parsed/ contains 258 test photos: motiv3_id6 and motiv8_id12 have only three positives each. The temporary photo-bearing /tmp/fs-baseline-uncertain-labels.html was deleted after use; downloaded fs-baseline-uncertain-labels.json (43 binary decisions: 1 yes, 42 no) was kept. On 14 Oct 2026 all 43 '?' cells were replaced, yes as x and 42 no as blank; validation found zero remaining '?' across the workbook.";
   const annotationHandoffFact = "FS Fotovalidering baseline annotation handoff (14 Oct 2026): Dan does not want question-mark annotations in the Excel workbook; uncertain category labels must be decided by him from a local image-annotation HTML, not silently converted to blanks/negatives. Current 2026-10-14 source workbook has 43 '?' cells, all on two photos, motiv3_id6 and motiv8_id12 in the Motiv sheet. A private single-file HTML was created and opened at file:///tmp/fs-baseline-uncertain-labels.html with both baseline photos embedded for Dan, 43 binary category prompts, keyboard arrows, local autosave, and JSON export fs-baseline-uncertain-labels.json. Agent did not inspect/render photos; only a synthetic UI fixture was tested. Workbook has not been altered pending Dan's JSON decisions; when received, map yes to x and no to blank, preserving existing positives and the other sheets, then delete temporary photo-bearing HTML once finished.";
