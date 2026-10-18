@@ -70,7 +70,11 @@ shown device code. GET `/api/codex/login` reports account/backend status. Subseq
 need no restart, and successful login switches later MCP queries and mutations to Codex
 immediately. Credentials are persisted by the official Codex app-server under `CODEX_HOME`
 (or its standard default); Understory never accepts or exposes passwords/tokens or auth
-files. Login has no API fallback. Web chat explicitly rejects requests while Codex is
+files. In Docker, mount a private persistent volume at `/codex` to retain login across
+restarts (the image uses Debian slim for native Codex CLI compatibility). No host
+Codex credentials are mounted by default. API configuration may be omitted in this
+mode; API-backed requests will return a configuration error until an API provider is set.
+`DELETE /api/codex/login` cancels an in-progress device login. Login has no API fallback. Web chat explicitly rejects requests while Codex is
 selected. The read-only Codex sandbox prevents writes, but is **not** filesystem read
 isolation: Codex may read files accessible to the server's OS user, including the bundle.
 
