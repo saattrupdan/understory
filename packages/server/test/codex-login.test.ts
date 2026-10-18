@@ -19,9 +19,9 @@ afterEach(async () => {
   root = undefined;
 });
 
-async function serve(backend: CodexBackend, allowed = true) {
+async function serve(backend: CodexBackend, allowed = true, authToken: string | null = "private-token") {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-login-test-"));
-  const app = buildApp(singleMemoryHost(new KnowledgeBase(root), "private-token"), {
+  const app = buildApp(singleMemoryHost(new KnowledgeBase(root), authToken ?? undefined), {
     codexBackend: backend,
     codexLoginAllowed: allowed,
   });
@@ -41,7 +41,7 @@ type FakeChild = EventEmitter & {
   kill(): boolean;
 };
 
-function appServer(state: { loggedIn: boolean; startError?: boolean }) {
+function appServer(state: { loggedIn: boolean; startError?: boolean; delayStart?: boolean }) {
   const children: FakeChild[] = [];
   const spawnProcess = vi.fn((_executable: string, _args: string[], _options: { env?: NodeJS.ProcessEnv }) => {
     const child = Object.assign(new EventEmitter(), {
@@ -66,6 +66,7 @@ function appServer(state: { loggedIn: boolean; startError?: boolean }) {
           requiresOpenaiAuth: true,
         } });
         if (request.method === "account/login/start") {
+          if (state.delayStart) continue;
           if (state.startError) send({ id: request.id, error: { message: "private failure details" } });
           else send({ id: request.id, result: {
             type: "chatgptDeviceCode", loginId: "attempt-1",
@@ -165,5 +166,83 @@ describe("Codex login routes", () => {
     expect(backend.backend()).toBe("api");
     expect(fake.children.at(-1)!.killed).toBe(true);
     expect((await fetch(url, { method: "POST", headers: authorized })).status).toBe(502);
+  });
+
+  it("cancels a disconnected startup but not a login after delivering its code", async () => {
+    const state = { loggedIn: false, delayStart: true };
+    const fake = appServer(state);
+    const backend = new CodexBackend(fake.spawnProcess as never);
+    const controller = new AbortController();
+    const starting = backend.loginStart(controller.signal);
+    await vi.waitFor(() => expect(fake.children.length).toBe(1));
+    controller.abort();
+    await expect(starting).rejects.toThrow();
+    expect(fake.children[0]!.killed).toBe(true);
+    state.delayStart = false;
+    const afterChallenge = new AbortController();
+    expect(await backend.loginStart(afterChallenge.signal)).toMatchObject({ userCode: "ABCD-1234" });
+    afterChallenge.abort();
+    expect(fake.children.at(-1)!.killed).toBe(false);
+    fake.complete(true);
+    await vi.waitFor(() => expect(backend.backend()).toBe("codex"));
+  });
+
+  it("exposes the MCP login action only on the authenticated single-user server", async () => {
+    const backend = new CodexBackend(() => { throw new Error("listing must not spawn"); });
+    const url = await serve(backend);
+    const mcpUrl = url.replace("/api/codex/login", "/mcp");
+    const list = async (headers: Record<string, string>) => fetch(mcpUrl, {
+      method: "POST", headers: { ...headers, accept: "application/json, text/event-stream", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    expect((await list({})).status).toBe(401);
+    const response = await list(authorized);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { result?: { tools?: Array<{ name: string }> } };
+    expect(body.result?.tools?.map(tool => tool.name)).toContain("memory_codex_login");
+  });
+
+  it("allows the login tool on an explicitly local, token-free single-user server", async () => {
+    const backend = new CodexBackend(() => { throw new Error("listing must not spawn"); });
+    const url = await serve(backend, true, null);
+    const response = await fetch(url.replace("/api/codex/login", "/mcp"), {
+      method: "POST", headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { result?: { tools?: Array<{ name: string }> } };
+    expect(body.result?.tools?.map(tool => tool.name)).toContain("memory_codex_login");
+  });
+
+  it("hides the MCP login action when single-user login is disabled", async () => {
+    const backend = new CodexBackend(() => { throw new Error("listing must not spawn"); });
+    const url = await serve(backend, false);
+    const response = await fetch(url.replace("/api/codex/login", "/mcp"), {
+      method: "POST", headers: { ...authorized, accept: "application/json, text/event-stream", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { result?: { tools?: Array<{ name: string }> } };
+    expect(body.result?.tools?.map(tool => tool.name)).not.toContain("memory_codex_login");
+  });
+
+  it("starts login through MCP and switches the shared backend on completion", async () => {
+    const fake = appServer({ loggedIn: false });
+    const backend = new CodexBackend(fake.spawnProcess as never);
+    const url = await serve(backend);
+    const response = await fetch(url.replace("/api/codex/login", "/mcp"), {
+      method: "POST", headers: { ...authorized, accept: "application/json, text/event-stream", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: {
+        name: "memory_codex_login", arguments: { action: "start" },
+      } }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { result?: { content?: Array<{ text: string }> } };
+    expect(JSON.parse(body.result?.content?.[0]?.text ?? "null")).toEqual({
+      verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-1234",
+    });
+    expect(backend.backend()).toBe("api");
+    fake.complete(true);
+    await vi.waitFor(() => expect(backend.backend()).toBe("codex"));
   });
 });

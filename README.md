@@ -62,21 +62,25 @@ Set `LLM_API_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL` and leave `LLM_PROVIDER` un
 
 #### Opt-in Codex subscription login (query and mutation only)
 
-Codex subscription login is available only in private, authenticated single-user mode
-(`AUTH_TOKEN` set and no `PROFILES_ROOT`). OpenAI does not permit
+Codex subscription login is available in private single-user mode (no
+`PROFILES_ROOT`). The bundled Docker Compose binds port 3800 to `127.0.0.1` and sets
+`CODEX_LOCAL_LOGIN=true`, so Pi and apps on the same Mac can use it without an
+Understory bearer token. Keep the port local: other processes on this Mac can start
+login or access the memory. For a non-local private deployment, set `AUTH_TOKEN` and
+disable `CODEX_LOCAL_LOGIN`; never expose an unprotected login endpoint. OpenAI does
+not permit
 [app-server auth](https://developers.openai.com/codex/app-server/#auth-endpoints)
-for hosted or commercial services. After the first deployment containing this
-feature, restart once to install the app-server-enabled release. Then start login with
-an authenticated request:
+for hosted or commercial services. The first deployment containing this feature
+restarts the server once. Then start login via the `memory_codex_login` MCP tool
+(`action: "start"`) or with:
 
 ```bash
-curl -sS -X POST -H "Authorization: Bearer $AUTH_TOKEN" \
-  http://localhost:3800/api/codex/login
+curl -sS -X POST http://127.0.0.1:3800/api/codex/login
 ```
 
-Open the returned verification URL and enter the device code. Authenticated
-`GET /api/codex/login` reports account and backend status; `DELETE` cancels a
-pending login. Successful login switches later MCP queries and mutations to Codex
+Open the returned verification URL and enter the device code. The MCP tool's
+`status` and `cancel` actions (or HTTP `GET` and `DELETE`) check or cancel login.
+Successful login switches later MCP queries and mutations to Codex
 without a restart. It does not fall back to an API provider, and web chat rejects
 requests while Codex is selected.
 

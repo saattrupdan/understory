@@ -89,7 +89,7 @@ try {
     );
   }
 } catch (err) {
-  const codexLoginEnabled = !profilesRoot && Boolean(process.env.AUTH_TOKEN);
+  const codexLoginEnabled = !profilesRoot && (Boolean(process.env.AUTH_TOKEN) || process.env.CODEX_LOCAL_LOGIN === "true");
   if (!codexLoginEnabled) {
     console.error(`[understory] LLM configuration error: ${(err as Error).message}`);
     console.error("[understory] Set LLM_API_BASE_URL + LLM_API_KEY, or configure legacy env vars.");
@@ -108,8 +108,9 @@ console.log(`[understory] agent max steps: ${maxSteps.steps}`);
 
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
 const codexBackend = new CodexBackend();
-if (!profilesRoot && process.env.AUTH_TOKEN) await codexBackend.restore();
-const app = buildApp(host, { webDist, admin, codexBackend, codexLoginAllowed: !profilesRoot && Boolean(process.env.AUTH_TOKEN) });
+const codexLoginAllowed = !profilesRoot && (Boolean(process.env.AUTH_TOKEN) || process.env.CODEX_LOCAL_LOGIN === "true");
+if (codexLoginAllowed) await codexBackend.restore();
+const app = buildApp(host, { webDist, admin, codexBackend, codexLoginAllowed });
 
 const port = Number(process.env.PORT ?? 3800);
 app.listen(port, "0.0.0.0", () => {

@@ -32,12 +32,18 @@ export class CodexBackend {
     return { backend: this.selected, loggedIn, pending: Boolean(this.pending) };
   }
 
-  async loginStart(): Promise<{ verificationUrl: string; userCode: string; expiresAt?: string }> {
+  async loginStart(signal?: AbortSignal): Promise<{ verificationUrl: string; userCode: string; expiresAt?: string }> {
+    if (signal?.aborted) throw new Error("Codex login request cancelled.");
     if (this.pending) throw new Error("A Codex login is already in progress.");
     const pending = { controller: new AbortController() };
     this.pending = pending;
+    // The request owns startup only. Once the code has been delivered, login
+    // must keep running while the user completes verification in a browser.
+    const abortStartup = () => pending.controller.abort();
+    signal?.addEventListener("abort", abortStartup, { once: true });
     try {
       const session = await this.deviceLogin(pending.controller.signal);
+      if (pending.controller.signal.aborted) throw new Error("Codex login request cancelled.");
       void session.completed.then((account) => {
         if (!account?.account || !isJson(account.account) || account.account.type !== "chatgpt") throw new Error("Login did not return a ChatGPT account.");
         this.selected = "codex";
@@ -46,6 +52,8 @@ export class CodexBackend {
     } catch (error) {
       if (this.pending === pending) this.pending = undefined;
       throw error;
+    } finally {
+      signal?.removeEventListener("abort", abortStartup);
     }
   }
 

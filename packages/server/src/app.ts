@@ -53,7 +53,7 @@ export function buildApp(host: MemoryHost, options: AppOptions = {}): Express {
     if (!set) {
       const backend = options.codexBackend ? () => options.codexBackend!.backend() : undefined;
       set = {
-        mcp: mcpRouter(kb, backend, options.codexLoginAllowed === true ? options.codexBackend : undefined),
+        mcp: mcpRouter(kb, backend, host.mode === "single" && options.codexLoginAllowed === true ? options.codexBackend : undefined),
         api: express.Router().use(browseRouter(kb)).use(chatRouter(kb, backend)),
       };
       routers.set(kb, set);
@@ -66,7 +66,7 @@ export function buildApp(host: MemoryHost, options: AppOptions = {}): Express {
 
   app.use("/mcp", authenticate, (req, res, next) => routersFor(memoryOf(res).kb).mcp(req, res, next));
 
-  if (options.codexBackend) app.use("/api", authenticate, options.codexBackend.router(options.codexLoginAllowed === true));
+  if (options.codexBackend) app.use("/api", authenticate, options.codexBackend.router(host.mode === "single" && options.codexLoginAllowed === true));
 
   // Which memory this caller is talking to — lets the UI label the profile.
   app.get("/api/profile", authenticate, (_req, res) => {

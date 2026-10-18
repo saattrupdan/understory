@@ -107,10 +107,10 @@ export async function buildMcpServer(kb: KnowledgeBase, abortSignal?: AbortSigna
         description: "Start, check, or cancel Codex device login. Login uses the Codex CLI device flow; never provide passwords or tokens.",
         inputSchema: { action: z.enum(["start", "status", "cancel"]) },
       },
-      async ({ action }) => {
+      async ({ action }, extra) => {
         try {
           const result = action === "start"
-            ? (({ verificationUrl, userCode }) => ({ verificationUrl, userCode }))(await codexLogin.loginStart())
+            ? (({ verificationUrl, userCode }) => ({ verificationUrl, userCode }))(await codexLogin.loginStart(cancelOn(extra.signal)))
             : action === "status"
               ? await codexLogin.loginStatus()
               : { cancelled: codexLogin.loginCancel() };

@@ -1,8 +1,9 @@
 services:
   understory:
     build: .
+    # Codex local login trusts callers on this Mac; never publish this port remotely.
     ports:
-      - "3800:3800"
+      - "127.0.0.1:3800:3800"
     # Lets the container reach a llama.cpp server running on the host via
     # http://host.docker.internal:8080/v1 (see "Local llama.cpp" in the README).
     extra_hosts:
@@ -13,6 +14,7 @@ services:
     environment:
       BUNDLE_ROOT: /bundle
       AUTH_TOKEN: ${AUTH_TOKEN:-}
+      CODEX_LOCAL_LOGIN: ${CODEX_LOCAL_LOGIN:-true}
       # Profiles (several isolated memories, one API key each): mount a volume
       # at /profiles and uncomment. See "Profiles" in the README.
       #PROFILES_ROOT: /profiles
