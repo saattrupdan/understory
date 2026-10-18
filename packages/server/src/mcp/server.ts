@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { CodexBackend } from "../codex-login.js";
 import { KnowledgeBase, runMutation, runQueryCached, type MutationOutcome } from "@understory/core";
 import { buildSeedMemory, seedInstructions } from "./seed.js";
 
@@ -14,7 +15,7 @@ import { buildSeedMemory, seedInstructions } from "./seed.js";
  * fallback; every tool-calling client loads descriptions). Without it the
  * client model has no signal that memory might hold an answer.
  */
-export async function buildMcpServer(kb: KnowledgeBase, abortSignal?: AbortSignal, backend: () => "api" | "codex" = () => "api"): Promise<McpServer> {
+export async function buildMcpServer(kb: KnowledgeBase, abortSignal?: AbortSignal, backend: () => "api" | "codex" = () => "api", codexLogin?: CodexBackend): Promise<McpServer> {
   // Seed generation must never prevent the server from starting — a missing
   // or empty bundle root degrades to a minimal seed, not a crash.
   const seed = await buildSeedMemory(kb).catch((err: Error) => {
@@ -97,6 +98,29 @@ export async function buildMcpServer(kb: KnowledgeBase, abortSignal?: AbortSigna
       isError: true,
     };
   };
+
+  if (codexLogin) {
+    server.registerTool(
+      "memory_codex_login",
+      {
+        title: "Log in to Codex",
+        description: "Start, check, or cancel Codex device login. Login uses the Codex CLI device flow; never provide passwords or tokens.",
+        inputSchema: { action: z.enum(["start", "status", "cancel"]) },
+      },
+      async ({ action }) => {
+        try {
+          const result = action === "start"
+            ? (({ verificationUrl, userCode }) => ({ verificationUrl, userCode }))(await codexLogin.loginStart())
+            : action === "status"
+              ? await codexLogin.loginStatus()
+              : { cancelled: codexLogin.loginCancel() };
+          return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        } catch {
+          return { content: [{ type: "text", text: action === "start" ? "Could not start Codex device login." : "Codex account status unavailable." }], isError: true };
+        }
+      }
+    );
+  }
 
   server.registerTool(
     "memory_add",
