@@ -15,7 +15,7 @@ const require = createRequire(import.meta.url);
 /** Process-scoped backend selector. */
 export class CodexBackend {
   private selected: "api" | "codex" = "api";
-  private pending?: { controller: AbortController; loginId?: string };
+  private pending?: { controller: AbortController };
   constructor(private readonly spawnProcess: Spawn = spawn) {}
   backend(): "api" | "codex" { return this.selected; }
   async restore(): Promise<void> {
@@ -41,12 +41,17 @@ export class CodexBackend {
       if (!allowed) return denied(req, res);
       if (req.body && Object.keys(req.body).length) return res.status(400).json({ error: "Login takes no credentials or request body." });
       if (this.pending) return res.status(409).json({ error: "A Codex login is already in progress." });
-      const pending: { controller: AbortController; loginId?: string } = { controller: new AbortController() };
+      const pending = { controller: new AbortController() };
       this.pending = pending;
+      const onClose = () => {
+        if (!res.writableEnded) pending.controller.abort();
+      };
+      res.once("close", onClose);
       try {
         const session = await this.deviceLogin(pending.controller.signal);
-        pending.loginId = session.loginId;
+        if (pending.controller.signal.aborted) throw new Error("Login request disconnected.");
         res.json({ verificationUrl: session.verificationUrl, userCode: session.userCode, expiresAt: session.expiresAt });
+        res.off("close", onClose);
         void session.completed.then((account) => {
           if (!account?.account || !isJson(account.account) || account.account.type !== "chatgpt") throw new Error("Login did not return a ChatGPT account.");
           this.selected = "codex";
@@ -54,8 +59,9 @@ export class CodexBackend {
           if (this.pending === pending) this.pending = undefined;
         });
       } catch {
+        res.off("close", onClose);
         if (this.pending === pending) this.pending = undefined;
-        if (!res.headersSent) res.status(502).json({ error: "Could not start Codex device login." });
+        if (!res.headersSent && !res.destroyed) res.status(502).json({ error: "Could not start Codex device login." });
       }
     });
     router.delete("/codex/login", async (req, res) => {
@@ -63,7 +69,6 @@ export class CodexBackend {
       const pending = this.pending;
       if (!pending) return res.status(409).json({ error: "No Codex login is in progress." });
       pending.controller.abort();
-      if (pending.loginId) void this.cancelLogin(pending.loginId).catch(() => {});
       this.pending = undefined;
       res.json({ cancelled: true });
     });
@@ -78,6 +83,8 @@ export class CodexBackend {
   private async deviceLogin(signal: AbortSignal): Promise<{ verificationUrl: string; userCode: string; expiresAt?: string; loginId: string; completed: Promise<Json | null> }> {
     const rpc = await this.start(signal);
     const completed = rpc.notification("account/login/completed");
+    // A failed start can reject the waiter before the completion handler exists.
+    void completed.catch(() => {});
     try {
       const result = await rpc.call("account/login/start", { type: "chatgptDeviceCode" });
       if (!isJson(result)) throw new Error("bad login response");
@@ -86,23 +93,31 @@ export class CodexBackend {
       const code = typeof login.userCode === "string" ? login.userCode : "";
       const loginId = typeof login.loginId === "string" ? login.loginId : "";
       if (!url || !code || !loginId) throw new Error("incomplete login response");
+      const verification = new URL(url);
+      if (verification.protocol !== "https:" || verification.hostname !== "auth.openai.com" ||
+          verification.pathname !== "/codex/device" || verification.username || verification.password ||
+          !/^[A-Z0-9-]{4,64}$/.test(code) || loginId.length > 256) {
+        throw new Error("unexpected device authorization instructions");
+      }
       const finished = completed.then(async event => {
         if (event.loginId !== loginId || event.success !== true) throw new Error("device login failed");
         const account = await rpc.call("account/read", { refreshToken: false });
         return isJson(account) ? account : null;
       }).finally(() => rpc.close());
-      return { verificationUrl: url, userCode: code, loginId, expiresAt: typeof login.expiresAt === "string" ? login.expiresAt : undefined, completed: finished };
+      return { verificationUrl: verification.toString(), userCode: code, loginId, expiresAt: typeof login.expiresAt === "string" ? login.expiresAt : undefined, completed: finished };
     } catch (error) { rpc.close(); throw error; }
-  }
-  private async cancelLogin(loginId: string): Promise<void> {
-    const rpc = await this.start();
-    try { await rpc.call("account/login/cancel", { loginId }); } finally { rpc.close(); }
   }
   private async start(signal?: AbortSignal): Promise<Rpc> {
     const codexBin = require.resolve("@openai/codex/bin/codex.js");
-    const env = { ...process.env };
-    if (env.CODEX_HOME) { await mkdir(env.CODEX_HOME, { recursive: true, mode: 0o700 }); await chmod(env.CODEX_HOME, 0o700); }
-    else env.CODEX_HOME = path.join(os.homedir(), ".codex");
+    const env: NodeJS.ProcessEnv = {};
+    for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot"]) {
+      if (process.env[key]) env[key] = process.env[key];
+    }
+    env.CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+    if (process.env.CODEX_HOME) {
+      await mkdir(env.CODEX_HOME, { recursive: true, mode: 0o700 });
+      await chmod(env.CODEX_HOME, 0o700);
+    }
     const child = this.spawnProcess(process.execPath, [codexBin, "app-server"], { stdio: ["pipe", "pipe", "ignore"], env });
     const rpc = new Rpc(child, signal);
     try {
@@ -143,7 +158,16 @@ class Rpc {
   }
   notify(method: string, params: Json): void { this.write({ jsonrpc: "2.0", method, params }); }
   notification(method: string): Promise<Json> { return new Promise((resolve, reject) => this.notifications.set(method, { resolve, reject })); }
-  close(): void { if (this.closed) return; this.closed = true; clearTimeout(this.timer); if (this.child.exitCode === null && !this.child.killed) this.child.kill("SIGTERM"); }
+  close(reason: Error = new Error("Codex app-server closed.")): void {
+    if (this.closed) return;
+    this.closed = true;
+    clearTimeout(this.timer);
+    for (const item of this.replies.values()) item.reject(reason);
+    this.replies.clear();
+    for (const item of this.notifications.values()) item.reject(reason);
+    this.notifications.clear();
+    if (this.child.exitCode === null && !this.child.killed) this.child.kill("SIGTERM");
+  }
   private write(value: Json): void { if (this.closed || !this.child.stdin?.writable) throw new Error("closed"); this.child.stdin.write(`${JSON.stringify(value)}\n`, error => { if (error) this.fail(new Error("write failed")); }); }
   private message(message: Json): void {
     if (typeof message.id === "number") {
@@ -155,9 +179,5 @@ class Rpc {
       this.notifications.delete(message.method); pending.resolve(isJson(message.params) ? message.params : {});
     }
   }
-  private fail(error: Error): void {
-    if (this.closed) return;
-    for (const item of this.replies.values()) item.reject(error); this.replies.clear();
-    for (const item of this.notifications.values()) item.reject(error); this.notifications.clear(); this.close();
-  }
+  private fail(error: Error): void { this.close(error); }
 }

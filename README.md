@@ -63,20 +63,30 @@ Set `LLM_API_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL` and leave `LLM_PROVIDER` un
 #### Opt-in Codex subscription login (query and mutation only)
 
 Codex subscription login is available only in private, authenticated single-user mode
-(`AUTH_TOKEN` set and no `PROFILES_ROOT`). After the first deployment containing this
-feature, restart once to install the app-server-enabled release. Then POST `/api/codex/login`
-with the same bearer token used for MCP; open the returned verification URL and enter the
-shown device code. GET `/api/codex/login` reports account/backend status. Subsequent logins
-need no restart, and successful login switches later MCP queries and mutations to Codex
-immediately. Credentials are persisted by the official Codex app-server under `CODEX_HOME`
-(or its standard default); Understory never accepts or exposes passwords/tokens or auth
-files. In Docker, mount a private persistent volume at `/codex` to retain login across
-restarts (the image uses Debian slim for native Codex CLI compatibility). No host
-Codex credentials are mounted by default. API configuration may be omitted in this
-mode; API-backed requests will return a configuration error until an API provider is set.
-`DELETE /api/codex/login` cancels an in-progress device login. Login has no API fallback. Web chat explicitly rejects requests while Codex is
-selected. The read-only Codex sandbox prevents writes, but is **not** filesystem read
-isolation: Codex may read files accessible to the server's OS user, including the bundle.
+(`AUTH_TOKEN` set and no `PROFILES_ROOT`). OpenAI does not permit
+[app-server auth](https://developers.openai.com/codex/app-server/#auth-endpoints)
+for hosted or commercial services. After the first deployment containing this
+feature, restart once to install the app-server-enabled release. Then start login with
+an authenticated request:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $AUTH_TOKEN" \
+  http://localhost:3800/api/codex/login
+```
+
+Open the returned verification URL and enter the device code. Authenticated
+`GET /api/codex/login` reports account and backend status; `DELETE` cancels a
+pending login. Successful login switches later MCP queries and mutations to Codex
+without a restart. It does not fall back to an API provider, and web chat rejects
+requests while Codex is selected.
+
+The official Codex app-server stores credentials under `CODEX_HOME`; Understory
+never accepts or exposes passwords, tokens, or auth files. Docker Compose mounts a
+private named volume at `/codex` to retain login across container replacements. It
+does not mount host Codex credentials. API configuration may be omitted in this mode;
+API-backed requests fail until an API provider is configured. Codex's read-only
+sandbox prevents writes, but is **not** filesystem read isolation: Codex may read
+files accessible to the server's OS user, including the bundle.
 
 **DeepSeek:**
 ```bash

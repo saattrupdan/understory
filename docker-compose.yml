@@ -9,6 +9,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./sample-bundle:/bundle
+      - codex-auth:/codex
     environment:
       BUNDLE_ROOT: /bundle
       AUTH_TOKEN: ${AUTH_TOKEN:-}
@@ -37,3 +38,6 @@ services:
       LOCAL_API_KEY: ${LOCAL_API_KEY:-}
       GIT_AUTOCOMMIT: ${GIT_AUTOCOMMIT:-false}
     restart: unless-stopped
+
+volumes:
+  codex-auth:

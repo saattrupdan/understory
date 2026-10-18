@@ -11,8 +11,8 @@ RUN pnpm -r build
 RUN pnpm --filter @understory/server deploy --prod --legacy /deploy/server
 
 FROM node:22-slim AS runtime
-# GIT_AUTOCOMMIT shells out to git (issue #21). Alpine ships none, and a bare
-# container also lacks a committer identity and trips git's dubious-ownership
+# GIT_AUTOCOMMIT shells out to git (issue #21). A bare container lacks git
+# and a committer identity, and trips git's dubious-ownership
 # check on bind-mounted bundles — cover all three here. The wildcard
 # safe.directory is acceptable in a single-purpose container whose only
 # writable tree is the bundle.
@@ -29,6 +29,6 @@ ENV NODE_ENV=production BUNDLE_ROOT=/bundle PORT=3800 CODEX_HOME=/codex
 RUN mkdir -p /codex && chmod 700 /codex
 EXPOSE 3800
 VOLUME /bundle
-# Persist Codex credentials only when this opt-in volume is configured.
+# Mount a private named volume here to retain Codex sign-in across replacements.
 VOLUME /codex
 CMD ["node", "server/dist/index.js"]
