@@ -20,6 +20,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.0",
     "@ai-sdk/openai-compatible": "^1.0.58",
+    "@openai/codex-sdk": "^0.163.0",
     "ai": "^5.0.0",
     "gray-matter": "^4.0.3",
     "simple-git": "^3.27.0",

@@ -60,6 +60,22 @@ docker compose up -d
 The generic provider system supports any OpenAI-compatible or Anthropic-compatible API.
 Set `LLM_API_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL` and leave `LLM_PROVIDER` unset.
 
+#### Opt-in Codex subscription login (query and mutation only)
+
+For a local source checkout, set `LLM_BACKEND=codex` and run `codex login`
+interactively in the same OS user account that runs Understory. Understory uses the
+official `@openai/codex-sdk` and the Codex CLI's cached login; it does not read or copy
+Codex auth files. This backend is opt-in, does not fall back to an API provider, and
+cannot serve web chat (use `LLM_BACKEND=api` for chat). It uses a read-only Codex
+sandbox, disables web search/network access, and gives Codex an empty temporary working
+directory; only host-validated Understory knowledge tools can perform bundle actions.
+
+The Codex sandbox is the isolation boundary provided by Codex, not a guarantee that a
+model cannot read other host files. Do not use this mode if the installed Codex sandbox
+cannot constrain host-file access adequately for your environment. This option is not
+supported by the documented Docker setup: container users do not share the host's
+interactive Codex login unless you deliberately configure that separately.
+
 **DeepSeek:**
 ```bash
 LLM_API_BASE_URL=https://api.deepseek.com/v1 LLM_API_KEY=sk-... LLM_MODEL=deepseek-chat
