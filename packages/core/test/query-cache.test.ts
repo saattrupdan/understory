@@ -31,6 +31,7 @@ afterEach(async () => {
   delete process.env.QUERY_CACHE;
   delete process.env.QUERY_CACHE_TTL;
   delete process.env.HOT_MEMORY;
+  delete process.env.LLM_BACKEND;
 });
 
 describe("runQueryCached", () => {
@@ -42,6 +43,22 @@ describe("runQueryCached", () => {
     expect(second.cached).toBe(true);
     expect(second.answer).toBe("answer-1");
     expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips hot lookup for Codex and keeps backend answers in separate cache entries", async () => {
+    process.env.LLM_BACKEND = "codex";
+    const hot = vi.fn(async () => "hot answer");
+    const codexRunner = fakeRunner("codex answer");
+    const codexResult = await runQueryCached(kb, "same question", {}, codexRunner, hot);
+    expect(codexResult.answer).toBe("codex answer");
+    expect(hot).not.toHaveBeenCalled();
+
+    process.env.LLM_BACKEND = "api";
+    const apiRunner = fakeRunner("api answer");
+    const apiResult = await runQueryCached(kb, "same question", {}, apiRunner, hot);
+    expect(apiResult.answer).toBe("hot answer");
+    expect(hot).toHaveBeenCalledOnce();
+    expect(apiRunner).not.toHaveBeenCalled();
   });
 
   it("does not cache an answer from a run that hit the step limit", async () => {
