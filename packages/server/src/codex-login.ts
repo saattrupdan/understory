@@ -25,17 +25,45 @@ export class CodexBackend {
     } catch { /* app-server may be unavailable; API remains selected */ }
   }
 
+  async loginStatus(): Promise<{ backend: "api" | "codex"; loggedIn: boolean; pending: boolean }> {
+    const account = await this.accountRead();
+    const loggedIn = Boolean(account?.account && isJson(account.account) && account.account.type === "chatgpt");
+    if (loggedIn) this.selected = "codex";
+    return { backend: this.selected, loggedIn, pending: Boolean(this.pending) };
+  }
+
+  async loginStart(): Promise<{ verificationUrl: string; userCode: string; expiresAt?: string }> {
+    if (this.pending) throw new Error("A Codex login is already in progress.");
+    const pending = { controller: new AbortController() };
+    this.pending = pending;
+    try {
+      const session = await this.deviceLogin(pending.controller.signal);
+      void session.completed.then((account) => {
+        if (!account?.account || !isJson(account.account) || account.account.type !== "chatgpt") throw new Error("Login did not return a ChatGPT account.");
+        this.selected = "codex";
+      }).catch(() => {}).finally(() => { if (this.pending === pending) this.pending = undefined; });
+      return { verificationUrl: session.verificationUrl, userCode: session.userCode, ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}) };
+    } catch (error) {
+      if (this.pending === pending) this.pending = undefined;
+      throw error;
+    }
+  }
+
+  loginCancel(): boolean {
+    const pending = this.pending;
+    if (!pending) return false;
+    pending.controller.abort();
+    this.pending = undefined;
+    return true;
+  }
+
   router(allowed: boolean): Router {
     const router = express.Router();
     const denied = (_req: express.Request, res: express.Response) => res.status(403).json({ error: "Codex login requires authenticated single-user mode." });
     router.get("/codex/login", async (req, res) => {
       if (!allowed) return denied(req, res);
-      try {
-        const account = await this.accountRead();
-        const loggedIn = account?.account && isJson(account.account) && account.account.type === "chatgpt";
-        if (loggedIn) this.selected = "codex";
-        res.json({ backend: this.selected, loggedIn, pending: Boolean(this.pending) });
-      } catch { res.status(503).json({ error: "Codex account status unavailable." }); }
+      try { res.json(await this.loginStatus()); }
+      catch { res.status(503).json({ error: "Codex account status unavailable." }); }
     });
     router.post("/codex/login", async (req, res) => {
       if (!allowed) return denied(req, res);
@@ -43,9 +71,7 @@ export class CodexBackend {
       if (this.pending) return res.status(409).json({ error: "A Codex login is already in progress." });
       const pending = { controller: new AbortController() };
       this.pending = pending;
-      const onClose = () => {
-        if (!res.writableEnded) pending.controller.abort();
-      };
+      const onClose = () => { if (!res.writableEnded) pending.controller.abort(); };
       res.once("close", onClose);
       try {
         const session = await this.deviceLogin(pending.controller.signal);
@@ -55,9 +81,7 @@ export class CodexBackend {
         void session.completed.then((account) => {
           if (!account?.account || !isJson(account.account) || account.account.type !== "chatgpt") throw new Error("Login did not return a ChatGPT account.");
           this.selected = "codex";
-        }).catch(() => { /* status is observable; never leak app-server errors */ }).finally(() => {
-          if (this.pending === pending) this.pending = undefined;
-        });
+        }).catch(() => {}).finally(() => { if (this.pending === pending) this.pending = undefined; });
       } catch {
         res.off("close", onClose);
         if (this.pending === pending) this.pending = undefined;
@@ -66,10 +90,7 @@ export class CodexBackend {
     });
     router.delete("/codex/login", async (req, res) => {
       if (!allowed) return denied(req, res);
-      const pending = this.pending;
-      if (!pending) return res.status(409).json({ error: "No Codex login is in progress." });
-      pending.controller.abort();
-      this.pending = undefined;
+      if (!this.loginCancel()) return res.status(409).json({ error: "No Codex login is in progress." });
       res.json({ cancelled: true });
     });
     return router;

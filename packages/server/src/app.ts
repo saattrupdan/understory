@@ -53,7 +53,7 @@ export function buildApp(host: MemoryHost, options: AppOptions = {}): Express {
     if (!set) {
       const backend = options.codexBackend ? () => options.codexBackend!.backend() : undefined;
       set = {
-        mcp: mcpRouter(kb, backend),
+        mcp: mcpRouter(kb, backend, options.codexLoginAllowed === true ? options.codexBackend : undefined),
         api: express.Router().use(browseRouter(kb)).use(chatRouter(kb, backend)),
       };
       routers.set(kb, set);
