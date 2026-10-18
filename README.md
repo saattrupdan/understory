@@ -68,11 +68,12 @@ official `@openai/codex-sdk` and the Codex CLI's cached login; it does not read 
 Codex auth files. This backend is opt-in, does not fall back to an API provider, and
 cannot serve web chat (use `LLM_BACKEND=api` for chat). It uses a read-only Codex
 sandbox, disables web search/network access, and gives Codex an empty temporary working
-directory; only host-validated Understory knowledge tools can perform bundle actions.
-
-The Codex sandbox is the isolation boundary provided by Codex, not a guarantee that a
-model cannot read other host files. Do not use this mode if the installed Codex sandbox
-cannot constrain host-file access adequately for your environment. This option is not
+directory. The temporary directory is only Codex's working directory; it is **not** a
+filesystem read-isolation boundary. Read-only mode prevents writes through Codex, but
+Codex can still read files accessible to the same OS user, including the live bundle if
+its path is accessible. Understory host tools validate bundle operations, but they do
+not prevent Codex from reading other same-user files. Do not treat this mode as safe for
+secrets or files you would not want the Codex process to read. This option is not
 supported by the documented Docker setup: container users do not share the host's
 interactive Codex login unless you deliberately configure that separately.
 

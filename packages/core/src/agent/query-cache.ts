@@ -59,6 +59,7 @@ export async function runQueryCached(
   runner: typeof runQuery = runQuery,
   hot: (kb: KnowledgeBase, q: string, o: AgentOptions, g?: HotGenerate) => Promise<string | null> = hotLookup
 ): Promise<CachedQueryResult> {
+  const backend = process.env.LLM_BACKEND ?? "default";
   if (process.env.QUERY_CACHE === "false") {
     return { ...(await runner(kb, question, options)), cached: false, source: "deep" };
   }
@@ -67,7 +68,7 @@ export async function runQueryCached(
   // can share a fingerprint (two empty bundles do), and must never share answers.
   const fingerprint = await bundleFingerprint(kb);
   const key = createHash("sha256")
-    .update(`${kb.bundle.root}\n${fingerprint}\n${normalize(question)}\n${options.model ?? ""}`)
+    .update(`${backend}\n${kb.bundle.root}\n${fingerprint}\n${normalize(question)}\n${options.model ?? ""}`)
     .digest("hex");
 
   // Layer 1: exact cache — same question, unchanged bundle.
@@ -84,7 +85,7 @@ export async function runQueryCached(
   // Layer 2: hot working set — recently written concepts + recent answers,
   // one tool-free LLM call. A confident hot answer also lands in the exact
   // cache so identical repeats become instant.
-  const hotAnswer = await hot(kb, question, options);
+  const hotAnswer = backend === "codex" ? null : await hot(kb, question, options);
   if (hotAnswer !== null) {
     const result: QueryResult = { answer: hotAnswer, steps: 0, traceId: "" };
     store(key, result, ttl);
