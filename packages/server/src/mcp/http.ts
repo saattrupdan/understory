@@ -10,7 +10,7 @@ import { buildMcpServer } from "./server.js";
  * hands the SDK transport the raw Node req/res directly, so there is no
  * hijack/lifecycle glue and CORS is handled by the app-level cors() middleware.
  */
-export function mcpRouter(kb: KnowledgeBase): Router {
+export function mcpRouter(kb: KnowledgeBase, backend: () => "api" | "codex" = () => "api"): Router {
   const router = express.Router();
 
   const handle = async (req: Request, res: Response) => {
@@ -18,7 +18,7 @@ export function mcpRouter(kb: KnowledgeBase): Router {
     const abortRequest = () => requestAbort.abort();
     req.once("aborted", abortRequest);
 
-    const server = await buildMcpServer(kb, requestAbort.signal);
+    const server = await buildMcpServer(kb, requestAbort.signal, backend);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless
       enableJsonResponse: true, // one JSON reply per request — no long-lived SSE

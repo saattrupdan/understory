@@ -6,6 +6,7 @@ import { buildApp } from "./app.js";
 import { startDreamer } from "./dreamer.js";
 import { profileMemoryHost, singleMemoryHost, type MemoryHost } from "./host.js";
 import { ProfileRegistry } from "./profiles.js";
+import { CodexBackend } from "./codex-login.js";
 
 const gitAutocommit = process.env.GIT_AUTOCOMMIT === "true";
 // PROFILES_ROOT takes precedence: the Docker image always sets BUNDLE_ROOT.
@@ -102,7 +103,8 @@ if (maxSteps.warning) console.error(`[understory] ${maxSteps.warning}`);
 console.log(`[understory] agent max steps: ${maxSteps.steps}`);
 
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
-const app = buildApp(host, { webDist, admin });
+const codexBackend = new CodexBackend();
+const app = buildApp(host, { webDist, admin, codexBackend, codexLoginAllowed: !profilesRoot && Boolean(process.env.AUTH_TOKEN) });
 
 const port = Number(process.env.PORT ?? 3800);
 app.listen(port, "0.0.0.0", () => {

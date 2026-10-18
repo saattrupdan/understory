@@ -7,12 +7,15 @@ import { mcpRouter } from "./mcp/http.js";
 import { browseRouter } from "./api/browse.js";
 import { chatRouter } from "./api/chat.js";
 import type { MemoryHost, ResolvedMemory } from "./host.js";
+import { CodexBackend } from "./codex-login.js";
 
 export interface AppOptions {
   /** Built web UI to serve, when present. */
   webDist?: string;
   /** Profile-management routes, mounted at /admin. */
   admin?: Router;
+  codexBackend?: CodexBackend;
+  codexLoginAllowed?: boolean;
 }
 
 /**
@@ -48,7 +51,11 @@ export function buildApp(host: MemoryHost, options: AppOptions = {}): Express {
   const routersFor = (kb: KnowledgeBase) => {
     let set = routers.get(kb);
     if (!set) {
-      set = { mcp: mcpRouter(kb), api: express.Router().use(browseRouter(kb)).use(chatRouter(kb)) };
+      const backend = options.codexBackend ? () => options.codexBackend!.backend() : undefined;
+      set = {
+        mcp: mcpRouter(kb, backend),
+        api: express.Router().use(browseRouter(kb)).use(chatRouter(kb, backend)),
+      };
       routers.set(kb, set);
     }
     return set;
@@ -58,6 +65,8 @@ export function buildApp(host: MemoryHost, options: AppOptions = {}): Express {
   const authenticate: RequestHandler = (req, res, next) => host.authenticate(req, res, next);
 
   app.use("/mcp", authenticate, (req, res, next) => routersFor(memoryOf(res).kb).mcp(req, res, next));
+
+  if (options.codexBackend) app.use("/api", authenticate, options.codexBackend.router(options.codexLoginAllowed === true));
 
   // Which memory this caller is talking to — lets the UI label the profile.
   app.get("/api/profile", authenticate, (_req, res) => {

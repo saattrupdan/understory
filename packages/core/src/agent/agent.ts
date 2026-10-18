@@ -17,6 +17,8 @@ const DEFAULT_MAX_STEPS = 12;
 
 export interface AgentOptions {
   model?: string;
+  /** Backend snapshot for this request; avoids process-global backend mutation. */
+  backend?: "api" | "codex";
   /** Cancel the model run when the caller disconnects or explicitly aborts. */
   abortSignal?: AbortSignal;
   /** Total deadline for the model run. Defaults to LLM_TIMEOUT; no deadline when neither is set. */
@@ -58,8 +60,8 @@ async function resolveAgentModel(
   mode: "query" | "mutate" | "chat",
   env: NodeJS.ProcessEnv = process.env
 ): Promise<ResolvedAgentModel> {
-  if (env.LLM_BACKEND === "codex") throw new Error("Codex subscription backend does not support web chat; use query or mutation.");
-  if (env.LLM_BACKEND && env.LLM_BACKEND !== "api") throw new Error(`Unsupported LLM_BACKEND '${env.LLM_BACKEND}'. Supported values: api, codex.`);
+  if ((options.backend ?? env.LLM_BACKEND) === "codex") throw new Error("Codex subscription backend does not support web chat; use query or mutation.");
+  if ((options.backend ?? env.LLM_BACKEND) && (options.backend ?? env.LLM_BACKEND) !== "api") throw new Error(`Unsupported LLM_BACKEND '${options.backend ?? env.LLM_BACKEND}'. Supported values: api, codex.`);
   const primaryConfig = withModelOverride(resolveModelConfig(env), options.model);
   const primary = await createModel(primaryConfig);
   const fallbackConfig = resolveFallbackConfig(env);
@@ -205,9 +207,9 @@ export async function runQuery(
   const maxSteps = resolveMaxSteps().steps;
   let modelChain: string[] = [];
   try {
-    if (process.env.LLM_BACKEND === "codex") {
+    if ((options.backend ?? process.env.LLM_BACKEND) === "codex") {
       modelChain = [options.model ?? process.env.CODEX_MODEL ?? "codex-subscription"];
-      const result = await runCodexActions(`${buildSystemPrompt(ctx)}\n\nUser query:\n${question}`, buildReadTools(kb, recorder), maxSteps, modelAbortSignal(options), { model: options.model ?? process.env.CODEX_MODEL });
+      const result = await runCodexActions(`${buildSystemPrompt(ctx)}\n\nUser query:\n${question}`,  buildReadTools(kb, recorder), maxSteps, modelAbortSignal(options), { model: options.model ?? process.env.CODEX_MODEL });
       if (result.kind === "step-limit") {
         const answer = `The search used all ${maxSteps} steps without reaching an answer. Raise AGENT_MAX_STEPS to let it look further.`;
         const trace = recorder.finalize("query", question, answer, "step-limit", modelChain);
@@ -256,7 +258,7 @@ export async function runMutation(
   const maxSteps = resolveMaxSteps().steps;
   let modelChain: string[] = [];
   try {
-    if (process.env.LLM_BACKEND === "codex") {
+    if ((options.backend ?? process.env.LLM_BACKEND) === "codex") {
       modelChain = [options.model ?? process.env.CODEX_MODEL ?? "codex-subscription"];
       const result = await runCodexActions(`${buildSystemPrompt(ctx)}\n\nMutation instruction:\n${instruction}`, { ...buildReadTools(kb, recorder), ...buildWriteTools(kb, filesChanged, recorder) }, maxSteps, modelAbortSignal(options), { model: options.model ?? process.env.CODEX_MODEL });
       if (result.kind === "step-limit") {
@@ -335,8 +337,8 @@ export async function streamChat(
   messages: ModelMessage[],
   options: AgentOptions = {}
 ) {
-  if (process.env.LLM_BACKEND === "codex") throw new Error("Codex subscription backend does not support web chat; select LLM_BACKEND=api for web chat.");
-  if (process.env.LLM_BACKEND && process.env.LLM_BACKEND !== "api") throw new Error(`Unsupported LLM_BACKEND '${process.env.LLM_BACKEND}'. Supported values: api, codex.`);
+  if ((options.backend ?? process.env.LLM_BACKEND) === "codex") throw new Error("Codex subscription backend does not support web chat; select the API backend for web chat.");
+  if ((options.backend ?? process.env.LLM_BACKEND) && (options.backend ?? process.env.LLM_BACKEND) !== "api") throw new Error(`Unsupported LLM_BACKEND '${options.backend ?? process.env.LLM_BACKEND}'. Supported values: api, codex.`);
   const ctx = await promptContext(kb, "chat");
   const recorder = new TraceRecorder();
   const filesChanged = new Set<string>();

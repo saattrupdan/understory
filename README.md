@@ -62,20 +62,17 @@ Set `LLM_API_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL` and leave `LLM_PROVIDER` un
 
 #### Opt-in Codex subscription login (query and mutation only)
 
-For a local source checkout, set `LLM_BACKEND=codex` and run `codex login`
-interactively in the same OS user account that runs Understory. Understory uses the
-official `@openai/codex-sdk` and the Codex CLI's cached login; it does not read or copy
-Codex auth files. This backend is opt-in, does not fall back to an API provider, and
-cannot serve web chat (use `LLM_BACKEND=api` for chat). It uses a read-only Codex
-sandbox, disables web search/network access, and gives Codex an empty temporary working
-directory. The temporary directory is only Codex's working directory; it is **not** a
-filesystem read-isolation boundary. Read-only mode prevents writes through Codex, but
-Codex can still read files accessible to the same OS user, including the live bundle if
-its path is accessible. Understory host tools validate bundle operations, but they do
-not prevent Codex from reading other same-user files. Do not treat this mode as safe for
-secrets or files you would not want the Codex process to read. This option is not
-supported by the documented Docker setup: container users do not share the host's
-interactive Codex login unless you deliberately configure that separately.
+Codex subscription login is available only in private, authenticated single-user mode
+(`AUTH_TOKEN` set and no `PROFILES_ROOT`). After the first deployment containing this
+feature, restart once to install the app-server-enabled release. Then POST `/api/codex/login`
+with the same bearer token used for MCP; open the returned verification URL and enter the
+shown device code. GET `/api/codex/login` reports account/backend status. Subsequent logins
+need no restart, and successful login switches later MCP queries and mutations to Codex
+immediately. Credentials are persisted by the official Codex app-server under `CODEX_HOME`
+(or its standard default); Understory never accepts or exposes passwords/tokens or auth
+files. Login has no API fallback. Web chat explicitly rejects requests while Codex is
+selected. The read-only Codex sandbox prevents writes, but is **not** filesystem read
+isolation: Codex may read files accessible to the server's OS user, including the bundle.
 
 **DeepSeek:**
 ```bash
