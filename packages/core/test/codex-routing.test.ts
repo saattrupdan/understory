@@ -32,7 +32,10 @@ describe("Codex backend routing", () => {
   it("reports codex mutations as partial when a later model step fails", async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-partial-"));
     process.env.LLM_BACKEND = "codex";
-    run.mockResolvedValueOnce({ finalResponse: JSON.stringify({ kind: "action", tool: "write_concept", arguments: { path: "/facts/a.md", frontmatter: { type: "Fact", title: "A" }, body: "alpha", log_summary: "Added A." } }) }).mockRejectedValueOnce(new Error("model step failed"));
+    run.mockResolvedValueOnce({ finalResponse: JSON.stringify({
+      kind: "action", tool: "write_concept", text: "",
+      arguments: JSON.stringify({ path: "/facts/a.md", frontmatter: { type: "Fact", title: "A" }, body: "alpha", log_summary: "Added A." }),
+    }) }).mockRejectedValueOnce(new Error("model step failed"));
     startThread.mockReturnValue({ run });
     const result = await runMutation(new KnowledgeBase(root), "Record A");
     expect(result).toMatchObject({ ok: false, status: "partial", filesChanged: ["/facts/a.md"], error: "model step failed" });
