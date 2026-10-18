@@ -59,7 +59,7 @@ export async function runQueryCached(
   runner: typeof runQuery = runQuery,
   hot: (kb: KnowledgeBase, q: string, o: AgentOptions, g?: HotGenerate) => Promise<string | null> = hotLookup
 ): Promise<CachedQueryResult> {
-  const backend = process.env.LLM_BACKEND ?? "default";
+  const backend = options.backend ?? process.env.LLM_BACKEND ?? "default";
   if (process.env.QUERY_CACHE === "false") {
     return { ...(await runner(kb, question, options)), cached: false, source: "deep" };
   }

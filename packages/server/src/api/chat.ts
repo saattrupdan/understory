@@ -11,10 +11,11 @@ interface ChatBody {
  * Streaming chat endpoint for the web UI (`useChat`). Full agent toolset —
  * the chat exists to exercise the same agent the MCP server uses.
  */
-export function chatRouter(kb: KnowledgeBase): Router {
+export function chatRouter(kb: KnowledgeBase, backend: () => "api" | "codex" = () => "api"): Router {
   const router = express.Router();
 
   router.post("/chat", async (req, res) => {
+    if (backend() === "codex") return res.status(409).json({ error: "Web chat is unavailable while the Codex subscription backend is selected." });
     const { messages, model } = req.body as ChatBody;
     // The browser stops listening when the user presses Stop, closes the tab
     // or loses the connection. Stop the model with it.
@@ -25,6 +26,7 @@ export function chatRouter(kb: KnowledgeBase): Router {
     const { result } = await streamChat(kb, convertToModelMessages(messages), {
       model,
       abortSignal: requestAbort.signal,
+      backend: backend(),
     });
     const response = result.toUIMessageStreamResponse();
     res.status(response.status);
