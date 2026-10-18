@@ -11,6 +11,7 @@ import { buildSystemPrompt } from "./system-prompt.js";
 import { buildReadTools, buildWriteTools, formatTree } from "./tools.js";
 import { TraceRecorder, TraceStore, type TraceUsage } from "./trace.js";
 import { parseDuration } from "../util/duration.js";
+import { runCodexActions } from "./codex.js";
 
 const DEFAULT_MAX_STEPS = 12;
 
@@ -57,6 +58,8 @@ async function resolveAgentModel(
   mode: "query" | "mutate" | "chat",
   env: NodeJS.ProcessEnv = process.env
 ): Promise<ResolvedAgentModel> {
+  if (env.LLM_BACKEND === "codex") throw new Error("Codex subscription backend does not support web chat; use query or mutation.");
+  if (env.LLM_BACKEND && env.LLM_BACKEND !== "api") throw new Error(`Unsupported LLM_BACKEND '${env.LLM_BACKEND}'. Supported values: api, codex.`);
   const primaryConfig = withModelOverride(resolveModelConfig(env), options.model);
   const primary = await createModel(primaryConfig);
   const fallbackConfig = resolveFallbackConfig(env);
@@ -202,6 +205,19 @@ export async function runQuery(
   const maxSteps = resolveMaxSteps().steps;
   let modelChain: string[] = [];
   try {
+    if (process.env.LLM_BACKEND === "codex") {
+      modelChain = [options.model ?? process.env.CODEX_MODEL ?? "codex-subscription"];
+      const result = await runCodexActions(`${buildSystemPrompt(ctx)}\n\nUser query:\n${question}`, buildReadTools(kb, recorder), maxSteps, modelAbortSignal(options), { model: options.model ?? process.env.CODEX_MODEL });
+      if (result.kind === "step-limit") {
+        const answer = `The search used all ${maxSteps} steps without reaching an answer. Raise AGENT_MAX_STEPS to let it look further.`;
+        const trace = recorder.finalize("query", question, answer, "step-limit", modelChain);
+        await traceStore(kb).save(trace);
+        return { answer, steps: result.steps, traceId: trace.id, stepLimited: true };
+      }
+      const trace = recorder.finalize("query", question, result.text, "success", modelChain);
+      await traceStore(kb).save(trace);
+      return { answer: result.text, steps: result.steps, traceId: trace.id };
+    }
     const resolved = await resolveAgentModel(options, "query");
     modelChain = resolved.modelChain;
     const result = await generateText({
@@ -240,6 +256,21 @@ export async function runMutation(
   const maxSteps = resolveMaxSteps().steps;
   let modelChain: string[] = [];
   try {
+    if (process.env.LLM_BACKEND === "codex") {
+      modelChain = [options.model ?? process.env.CODEX_MODEL ?? "codex-subscription"];
+      const result = await runCodexActions(`${buildSystemPrompt(ctx)}\n\nMutation instruction:\n${instruction}`, { ...buildReadTools(kb, recorder), ...buildWriteTools(kb, filesChanged, recorder) }, maxSteps, modelAbortSignal(options), { model: options.model ?? process.env.CODEX_MODEL });
+      if (result.kind === "step-limit") {
+        const files = [...filesChanged].sort();
+        const message = `The run used all ${maxSteps} steps and was stopped before it finished${files.length ? "; the files it changed may be incomplete" : " or changed any file"}. Raise AGENT_MAX_STEPS to give it more room.`;
+        const trace = recorder.finalize("mutation", instruction, message, "step-limit", modelChain);
+        await traceStore(kb).save(trace);
+        return files.length ? { ok: false, status: "partial", filesChanged: files, error: message, traceId: trace.id } : { ok: false, status: "failed", error: message };
+      }
+      if (!filesChanged.size && result.text.trim() === "") throw new Error("Mutation returned an empty response without changing any files.");
+      const trace = recorder.finalize("mutation", instruction, result.text, "success", modelChain);
+      await traceStore(kb).save(trace);
+      return { ok: true, result: { summary: result.text, filesChanged: [...filesChanged].sort(), steps: result.steps, traceId: trace.id } };
+    }
     const resolved = await resolveAgentModel(options, "mutate");
     modelChain = resolved.modelChain;
     const result = await generateText({
@@ -304,6 +335,8 @@ export async function streamChat(
   messages: ModelMessage[],
   options: AgentOptions = {}
 ) {
+  if (process.env.LLM_BACKEND === "codex") throw new Error("Codex subscription backend does not support web chat; select LLM_BACKEND=api for web chat.");
+  if (process.env.LLM_BACKEND && process.env.LLM_BACKEND !== "api") throw new Error(`Unsupported LLM_BACKEND '${process.env.LLM_BACKEND}'. Supported values: api, codex.`);
   const ctx = await promptContext(kb, "chat");
   const recorder = new TraceRecorder();
   const filesChanged = new Set<string>();
